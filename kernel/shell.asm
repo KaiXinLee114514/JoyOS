@@ -4,14 +4,19 @@
 ;  能干的:
 ;      help            列出命令
 ;      echo <文字>     把文字打回来
+;      zh              显示中文(点阵字库,直接往帧缓冲里 blit)
 ;      clear           清屏
 ;      info            系统信息(CR0/CR3/IDT/段寄存器/读盘方式...)
 ;      page <十六进制> 查一个虚拟地址被映射到哪(页目录 + 页表逐级查)
 ;      fault           故意踩一个没映射的地址,看页错误 panic 屏
 ;      reboot          重启(通过 8042 键盘控制器)
+;      ls              列 FAT16 根目录
+;      cat <文件>      把一个文本文件(UTF-8)打出来,中文能直接看
+;      write <文件> <内容>  写文件(创建或覆盖,真的落到磁盘上)
+;      run <文件>      把程序从磁盘读进内存跑(.BIN,平铺二进制)
 ;
-;  注意:VGA 文本模式用的是 BIOS 自带字形,只有 ASCII —— 屏幕上别写中文,
-;  写进去只会显示成乱码(想要中文得自带点阵字库,那是另一个工程)。
+;  注意:键盘直接给字节,没有输入法 —— 命令行本身只能打 ASCII。
+;  想看中文就用 cat(文件里存的是 UTF-8),或者让程序自己打。
 ;
 ;  结构:读一行(shell_readline)→ 切成"命令 + 参数"(shell_execute)→ 查表跳转。
 ;  行编辑只有退格和回车 —— 光标键要先处理 0xE0 前缀,留给你自己加。
@@ -192,6 +197,246 @@ cmd_help:
     call term_print
     ret
 
+; ---------------------------------------------------------------------------
+;  ls:列根目录
+; ---------------------------------------------------------------------------
+cmd_ls:
+    cmp byte [fat_ok], 0
+    je .nomount
+    call fat_list
+    ret
+.nomount:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_no_fat
+    call term_print
+    ret
+
+; ---------------------------------------------------------------------------
+;  cat <文件>:把文件内容原样打出来(UTF-8 文本可以直接看)
+; ---------------------------------------------------------------------------
+cmd_cat:
+    cmp byte [fat_ok], 0
+    je cmd_ls.nomount
+    mov esi, [cmd_arg]
+    call strip_name                    ; 去掉尾巴上的空格
+    mov esi, [cmd_arg]
+    mov edi, FILE_BUF
+    call fat_read_file
+    cmp eax, -1
+    je .notfound
+    mov [file_size], eax
+    mov esi, FILE_BUF
+    call term_print                     ; 内容是 UTF-8,term_print 直接吃
+    cmp byte [FILE_BUF + 0], 0          ; 空文件就算了
+    jne .newline
+    ret
+.newline:
+    mov al, 10
+    call term_putc
+    ret
+.notfound:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_no_file
+    call term_print
+    ret
+
+; ---------------------------------------------------------------------------
+;  write <文件> <内容>:写文件(创建或覆盖)
+; ---------------------------------------------------------------------------
+cmd_write:
+    cmp byte [fat_ok], 0
+    je cmd_ls.nomount
+    ; 先把文件名从参数里切出来(到空格为止),再写内容
+    mov esi, [cmd_arg]
+    mov edi, name_buf
+    xor ecx, ecx
+.copy_name:
+    lodsb
+    test al, al
+    jz .empty
+    cmp al, ' '
+    je .name_done
+    mov [edi], al
+    inc edi
+    inc ecx
+    cmp ecx, 12                         ; 8.3 最多 12 个字符(含点)
+    jb .copy_name
+.name_done:
+    mov byte [edi], 0
+    ; 跳过空格,内容从这里开始
+.skip:
+    lodsb
+    test al, al
+    jz .no_content
+    cmp al, ' '
+    je .skip
+    dec esi                             ; 退回这个字符
+    mov edi, esi                        ; 内容是 UTF-8,原样写
+    call strlen
+    mov ecx, eax
+    mov esi, name_buf
+    call fat_write_file
+    cmp eax, -1
+    je .failed
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_wrote
+    call term_print
+    mov esi, name_buf
+    call term_print
+    mov al, 10
+    call term_putc
+    ret
+.empty:
+.no_content:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_write_usage
+    call term_print
+    ret
+.failed:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_write_fail
+    call term_print
+    ret
+
+; ---------------------------------------------------------------------------
+;  run <文件>:把程序读进 PROG_ADDR 然后 call 进去
+;  名字不带点就自动补 .BIN(所以 run HELLO 和 run HELLO.BIN 一样)
+;
+;  ★ 加载地址为什么是 0x120000 而不是看起来更顺眼的 0x300000:
+;    完整字库是读到 0x200000 的,1.7 MB 一直铺到 0x3AF110 ——
+;    0x300000 正好落在字库的**点阵数据中间**!程序一载入就把几个汉字的点阵改掉了
+;    (实测被踩掉的是 U+BF11~U+BF16 六个谚文字,屏幕上那几个字会变成花屏)。
+;    现在选 0x120000:上有 FILE_BUF(0x110000),下有字库(0x200000),
+;    中间 896 KB 都是空的,程序再大也踩不到字库(超了就直接拒绝,见 PROG_MAX_SIZE)。
+; ---------------------------------------------------------------------------
+cmd_run:
+    cmp byte [fat_ok], 0
+    je cmd_ls.nomount
+    mov esi, [cmd_arg]
+    call strip_name
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .usage                           ; 光敲 run 就说说程序怎么写
+    ; 把名字抄进 name_buf,顺便看有没有带 '.'
+    ; (之前这里写反了方向:从空缓冲往命令参数抄,结果名字变成空的 → file not found)
+    mov esi, [cmd_arg]
+    mov edi, name_buf
+    xor ecx, ecx
+    xor edx, edx                        ; edx = 有没有点
+.cpy:
+    lodsb
+    test al, al
+    jz .copied
+    cmp al, '.'
+    jne .cpy_store
+    mov edx, 1
+.cpy_store:
+    mov [edi], al
+    inc edi
+    inc ecx
+    cmp ecx, 12                         ; 8.3 最多 12 个字符
+    jb .cpy
+.copied:
+    mov byte [edi], 0
+    test edx, edx
+    jnz .no_ext
+    ; 没写扩展名就补 .BIN(run hello 等于 run hello.bin)
+    mov byte [edi], '.'
+    mov byte [edi + 1], 'B'
+    mov byte [edi + 2], 'I'
+    mov byte [edi + 3], 'N'
+    mov byte [edi + 4], 0
+.no_ext:
+    ; 先只看目录项里的大小:太大就别读了,免得把字库盖掉一半
+    mov esi, name_buf
+    call fat_stat
+    cmp eax, -1
+    je .notfound
+    cmp eax, PROG_MAX_SIZE
+    ja .toobig
+    mov esi, name_buf
+    mov edi, PROG_ADDR
+    call fat_read_file
+    cmp eax, -1
+    je .notfound
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_running
+    call term_print
+    mov esi, name_buf
+    call term_print
+    mov al, 10
+    call term_putc
+    mov al, COL_NORMAL
+    call term_set_color
+    pushad
+    call PROG_ADDR                      ; ← 程序在这里跑,它 ret 就回来
+    popad
+    mov al, 10
+    call term_putc
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_prog_done
+    call term_print
+    ret
+.notfound:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_no_file
+    call term_print
+    ret
+.toobig:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_prog_toobig
+    call term_print
+    ret
+.usage:
+    mov al, COL_NORMAL
+    call term_set_color
+    mov esi, api_usage
+    call term_print
+    ret
+
+; strip_name:把 [cmd_arg] 尾巴上的空格改成 0(顺便去掉换行)
+strip_name:
+    push eax
+    push esi
+    mov esi, [cmd_arg]
+.next:
+    mov al, [esi]
+    test al, al
+    jz .done
+    cmp al, ' '
+    je .cut
+    inc esi
+    jmp .next
+.cut:
+    mov byte [esi], 0
+.done:
+    pop esi
+    pop eax
+    ret
+
+; strlen:esi → eax(不含结尾 0)
+strlen:
+    push esi
+    xor eax, eax
+.loop:
+    cmp byte [esi], 0
+    je .done
+    inc esi
+    inc eax
+    jmp .loop
+.done:
+    pop esi
+    ret
+
 cmd_zh:
     mov al, COL_NORMAL
     call term_set_color
@@ -204,13 +449,25 @@ cmd_zh:
     mov esi, zh_str_table
     mov esi, [esi + ecx * 4]
     push ecx
-    call term_print_zh
+    call term_print                     ; UTF-8 字节串,走的是统一的那条路
     mov al, 10
     call term_putc
     pop ecx
     inc ecx
     jmp .next
 .done:
+    ; ---- 顺手演示两件事 ----
+    ; (1) 4 字节 UTF-8:emoji 的码位在 U+1F600 以上,得走 4 字节那条分支
+    mov esi, msg_zh_emoji
+    call term_print
+    ; (2) 故意坏的 UTF-8:截断的 3 字节序列 + 一个孤立延续字节
+    ;     → 应该画出两个替换字符 U+FFFD(�),而且后面的文字还能继续显示
+    mov esi, msg_zh_broken
+    call term_print
+    mov esi, msg_zh_broken2
+    call term_print
+    mov al, 10
+    call term_putc
     ret
 
 cmd_echo:
@@ -507,6 +764,10 @@ parse_hex:
 n_help   db 'help', 0
 n_echo   db 'echo', 0
 n_zh     db 'zh', 0
+n_ls     db 'ls', 0
+n_cat    db 'cat', 0
+n_write  db 'write', 0
+n_run    db 'run', 0
 n_clear  db 'clear', 0
 n_info   db 'info', 0
 n_page   db 'page', 0
@@ -517,6 +778,10 @@ cmd_table:
     dd n_help,   cmd_help
     dd n_echo,   cmd_echo
     dd n_zh,     cmd_zh
+    dd n_ls,     cmd_ls
+    dd n_cat,    cmd_cat
+    dd n_write,  cmd_write
+    dd n_run,    cmd_run
     dd n_clear,  cmd_clear
     dd n_info,   cmd_info
     dd n_page,   cmd_page
@@ -531,6 +796,9 @@ msg_shell_hello db 'type "help" for commands.', 10, 0
 msg_prompt      db '> ', 0
 msg_shell_unknown db 'unknown command: ', 0
 msg_zh_note     db 'zh: glyphs from GNU Unifont, blitted straight into the VBE framebuffer', 10, 0
+msg_zh_emoji    db 'emoji (4-byte UTF-8): 😀', 10, 0
+msg_zh_broken   db 'broken UTF-8: [', 0xE4, 0xBD, 0x20, 0x80, '] (should be two', 0
+msg_zh_broken2  db ' replacement chars, and this text still shows)', 10, 0
 msg_fault       db 'touching an unmapped address on purpose...', 10, 0
 msg_reboot      db 'rebooting...', 10, 0
 msg_reboot_fail db '8042 did not reset, trying triple fault...', 10, 0
@@ -543,7 +811,11 @@ msg_help db \
     'info          CPU / paging / IDT info', 10, \
     'page <hex>    walk the page tables, e.g. page 0x400000', 10, \
     'fault         touch an unmapped page on purpose', 10, \
-    'reboot        restart the machine', 10, 0
+    'reboot        restart the machine', 10, \
+    'ls            list files on the FAT16 disk', 10, \
+    'cat <file>    print a text file (UTF-8)', 10, \
+    'write <f> <t> create/overwrite a file', 10, \
+    'run <file>    run a program from disk (.BIN; bare "run" = the ABI)', 10, 0
 
 msg_info_head    db '--- JoyOS info ---', 10, 0
 msg_info_disk    db 'boot disk   : ', 0
@@ -575,6 +847,23 @@ msg_page_readonly db ' + read-only', 0
 msg_page_npde    db '  PDE not present -> would page-fault', 10, 0
 msg_page_npte    db '  PTE not present -> would page-fault', 10, 0
 msg_page_phys    db 'physical     = ', 0
+
+msg_no_fat      db 'no FAT16 filesystem (boot from the hard-disk image)', 10, 0
+msg_no_file     db 'file not found', 10, 0
+msg_wrote       db 'wrote ', 0
+msg_write_usage db 'usage: write <name> <text>', 10, 0
+msg_write_fail  db 'write failed (disk full?)', 10, 0
+msg_running     db 'running ', 0
+msg_prog_done   db 'program returned to the shell', 10, 0
+msg_prog_toobig db 'program too big for the load area', 10, 0
+
+PROG_ADDR      equ 0x120000             ; 程序加载地址(progs/*.asm 里的 ORG 要和它一致)
+PROG_MAX_SIZE  equ FONT_LOAD_ADDR - PROG_ADDR
+                                        ; 0xE0000 = 896 KB:再往上就是磁盘字库(0x200000)了
+FILE_BUF       equ 0x110000             ; cat 用的文件缓冲(1 MiB 往上,别压到字库)
+
+name_buf   times 16 db 0
+file_size  dd 0
 
 shell_buf  times SHELL_LINE_MAX db 0
 shell_len  dd 0

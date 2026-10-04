@@ -271,11 +271,15 @@ def write_vga_map(path, mapping):
 
 
 def write_zh_strings(path, strings):
-    """把中文文案转成"码位数组"(每个 dword 一个码位,0 结尾),给汇编用"""
+    """把中文文案写成 **UTF-8 字节串**(0 结尾),直接 db 进内核。
+
+    以前这里生成的是"每个码位一个 u32"的数组(内核得自己认那套格式);
+    现在内核能吃 UTF-8 了,文案就跟外界的文本文件一模一样 —— 别人不用再学一套。
+    """
     lines = [
         '; ============================================================',
-        ';  中文文案(码位数组,**0 结尾**)  **自动生成,别手改**',
-        ';  来源: font/strings.txt',
+        ';  中文文案(**UTF-8 字节串**,0 结尾)  **自动生成,别手改**',
+        ';  来源: font/strings.txt(原样 UTF-8 存进内核,不再转成码位数组)',
         '; ============================================================',
         '',
     ]
@@ -283,9 +287,9 @@ def write_zh_strings(path, strings):
     for i, txt in enumerate(strings):
         label = f'zh_str_{i + 1}'
         labels.append(label)
-        cps = ', '.join(f'0x{ord(c):08X}' for c in txt)
+        escaped = txt.replace("'", "''")          # NASM 里单引号要写成两个
         lines.append(f'{label}:')
-        lines.append(f'    dd {cps}, 0        ; {txt}')
+        lines.append(f"    db '{escaped}', 0        ; {txt}")
         lines.append('')
     lines.append(f'zh_str_count equ {len(strings)}')
     lines.append('')
@@ -307,6 +311,7 @@ def main():
     ap.add_argument('--preview', help='生成预览 PNG')
     ap.add_argument('--preview-text', help='预览图里画什么字(默认用 --chars;两个参数分开才不会互相覆盖)')
     ap.add_argument('--show', nargs='*', help='把某些字打成点阵打印出来')
+    ap.add_argument('--ranges', help='按码位范围导出,如 0x4E00-0x9FFF,0x3040-0x30FF(逗号分隔)')
     ap.add_argument('--selftest', action='store_true', help='自检:二进制里的点阵和解码的是否逐位一致')
     ap.add_argument('--vga-font', help='生成 VGA 文本模式字模表(4096 字节 = 256 个 8×16 字模)')
     ap.add_argument('--vga-map', help='生成给汇编用的"汉字→字模号"映射表')
@@ -358,11 +363,20 @@ def main():
             if missing:
                 print(f'  ⚠️  文案里有 {len(missing)} 个字没放进字模表: {"".join(missing)}', file=sys.stderr)
             write_zh_strings(args.zh_strings_out, strings)
-            print(f'  写出 {args.zh_strings_out}({len(strings)} 条文案)')
+            print(f'  写出 {args.zh_strings_out}({len(strings)} 条 UTF-8 文案)')
         print(f'  NASM 里:  vga_font_blob: incbin "{args.vga_font}"')
         return 0
 
     wanted = []
+    if args.ranges:
+        for part in args.ranges.split(','):
+            part = part.strip()
+            if not part:
+                continue
+            lo, _, hi = part.partition('-')
+            lo = int(lo, 0)
+            hi = int(hi, 0) if hi else lo
+            wanted += [c for c in range(lo, hi + 1) if c in glyphs]
     if args.ascii:
         wanted += list(range(0x20, 0x7F))
     wanted += [ord(c) for c in args.chars if c not in '\n\r']

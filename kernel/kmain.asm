@@ -49,6 +49,9 @@ COL_ERR    equ 0x0C                    ; 亮红
     mov eax, [BOOTINFO + 32]
     mov [fb_bpp], eax
 
+    ; ---- 字库:先从磁盘尝试读完整版(读不到就退回内建子集)----
+    call font_load_from_disk
+
     ; 图形模式:先把帧缓冲终端初始化(它自己会清屏,所以要在任何打印之前)
     cmp dword [vbe_ok], 0
     je .skip_fb_early
@@ -132,6 +135,38 @@ COL_ERR    equ 0x0C                    ; 亮红
     call term_print
 
     ; (帧缓冲终端在开头已经初始化过 —— 它自带清屏,调两次会把前面的输出擦掉)
+
+    ; ---- 报一下字库用了哪个 ----
+    mov esi, msg_font
+    call term_print
+    cmp dword [font_from_disk], 0
+    je .font_builtin
+    mov esi, msg_font_disk
+    call term_print
+    jmp .font_done
+.font_builtin:
+    mov esi, msg_font_builtin
+    call term_print
+.font_done:
+    mov eax, [font_glyphs]
+    call term_print_dec
+    mov esi, msg_font_glyphs
+    call term_print
+
+    ; ---- 文件系统 + 程序接口 ----
+    call fat_mount
+    call api_install
+    mov esi, msg_fs
+    call term_print
+    cmp byte [fat_ok], 0
+    je .fs_none
+    mov esi, msg_fs_ok
+    call term_print
+    jmp .fs_done
+.fs_none:
+    mov esi, msg_fs_none
+    call term_print
+.fs_done:
 
     ; ---- 键盘 ----
     call kbd_init
@@ -318,15 +353,16 @@ term_move_hw_cursor:
 .skip:
     ret
 
-; esi = 以 0 结尾的字符串
+; esi = 以 0 结尾的 **UTF-8** 字符串
+; (以前是逐字节 lodsb,现在先解码成码位再画 —— 这样中英都走一条路,而且跟外界一致)
 term_print:
     push eax
     push esi
 .next:
-    lodsb
-    test al, al
+    call utf8_decode                    ; eax = 码位(0 = 到头了),esi 前进
+    test eax, eax
     jz .done
-    call term_putc
+    call term_print_cp
     jmp .next
 .done:
     pop esi
@@ -442,6 +478,13 @@ msg_disk_chs db 'CHS fallback (BIOS has no LBA)', 10, 0
 msg_idt     db 'IDT: 256 vectors installed (errors 0-31 have handlers)', 10, 0
 msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-4 MiB (+ 0x400000 -> 0x100000)', 10, 0
 msg_kbd     db 'keyboard: PIC remapped to 0x20, IRQ1 enabled', 10, 0
+msg_font    db 'font: ', 0
+msg_font_disk    db 'loaded from disk (ATA), ', 0
+msg_font_builtin db 'built-in subset, ', 0
+msg_font_glyphs  db ' glyphs', 10, 0
+msg_fs      db 'fat16: ', 0
+msg_fs_ok   db 'mounted at LBA 6144 (ls / cat / write / run)', 10, 0
+msg_fs_none db 'not available (floppy boot?)', 10, 0
 msg_ok      db 'OK - stage 5: boot + protection + IDT + paging + keyboard + shell.', 10, 0
 
 vbe_ok       dd 0

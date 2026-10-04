@@ -3,13 +3,15 @@
 #
 #    make            只构建镜像
 #    make run        在 QEMU 里跑(开窗口,自己看)
-#    make test        无头自动化测试:软盘 + 硬盘 + 除零 + 页错误 + 键盘 + shell,六条都跑
+#    make test        无头自动化测试:软盘 + 硬盘 + 除零 + 页错误 + 键盘 + shell + 磁盘字库/FAT16,七条都跑
 #    make test-fda    只跑软盘(BIOS 不支持 LBA → CHS 退回那条路)
 #    make test-hda    只跑硬盘(BIOS 支持 LBA/EDD 那条路)
 #    make test-div    故意除零,看 0 号异常处理
-#    make test-故意访问没映射的地址,看 14 号页错误 + CR2
+#    make test-pgfault 故意访问没映射的地址,看 14 号页错误 + CR2
 #    make test-kbd    用 monitor 的 sendkey 真按键,验证键盘中断 + 回显
 #    make test-shell  真键盘输入一串命令,验证 shell 的命令/滚屏/清屏
+#    make test-hd-font 硬盘镜像:字库从磁盘读、FAT16 读/写、run 跑磁盘上的程序
+#                     (测完还会把镜像当块设备离线解析一遍,证明字节真落盘了)
 #    make div         构建"开机就除零"的镜像,自己 qemu 跑着看
 #    make clean      清干净
 #
@@ -22,11 +24,13 @@
 # ============================================================================
 
 NASM    := nasm
-# unifont 的 .hex 放哪(只有 make font 用得到,平时构建不需要它)
+# 字库源:子集(已入库,make font 离线可用)和完整字库(font/.cache/,不入库)
 UNIFONT_HEX ?= font/unifont-subset.hex
+UNIFONT_FULL ?= font/.cache/unifont_all.hex
 QEMU    := qemu-system-i386
 BUILD   := build
-IMG     := $(BUILD)/joyos.img
+IMG     := $(BUILD)/joyos.img            # 软盘镜像(1.44 MB,无字库)
+HDIMG   := $(BUILD)/joyos-hd.img         # 硬盘镜像(16 MB,带完整字库)
 DIV_IMG    := $(BUILD)/joyos-div.img
 
 BOOT_SRC    := boot/boot.asm
@@ -34,10 +38,12 @@ KERNEL_SRCS := $(wildcard kernel/*.asm)
 # 内核 incbin 了字模、%include 了映射表 —— 它们变了也必须重编内核,
 # 不然 make 会说"无事可做",你改了字库却看到的还是老字模(这个坑踩过一次)
 FONT_DEPS   := font/vga-font.bin font/vga-zh-map.asm font/vga-zh-strings.asm
+PROGS       := HELLO.BIN COUNT.BIN
+PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS))
 
-.PHONY: all run run-font test test-fda test-hda test-div test-pgfault test-kbd test-shell div font clean lst
+.PHONY: all run run-font hd subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font div font clean lst
 
-all: $(IMG)
+all: $(IMG) $(HDIMG)
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -60,6 +66,24 @@ $(BUILD)/stub.bin: kernel/stub.asm | $(BUILD)
 $(IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin tools/mkimg.py
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(IMG)
 
+# 硬盘镜像:多一个磁盘字库(内核启动时用 ATA PIO 读进内存)
+# 磁盘上的示例程序:nasm 编成平铺二进制,再被 mkfat 塞进 FAT16 分区
+$(BUILD)/%.BIN: progs/%.asm | $(BUILD)
+	$(NASM) -f bin $< -o $@
+	@printf '   程序: %s %s 字节\n' "$@" "$$(stat -c %s $@)"
+
+$(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin $(PROG_BINS) tools/mkimg.py tools/mkfat.py
+	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
+	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
+	    $(foreach p,$(PROGS),$(p)=$(BUILD)/$(p))
+
+hd: $(HDIMG)
+	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c
+
+test-hd-font: $(HDIMG) $(PROG_BINS) font/full-joyf.bin
+	@echo "── 硬盘镜像:磁盘字库 + FAT16 读写 + 从磁盘跑程序 ──"
+	python3 tests/qemu_test.py $(HDIMG) --hda --fontdisk --font font/full-joyf.bin
+
 # 两个"开机就炸"的镜像:自测代码用 -D 开关才编进去,正常镜像里没有
 $(BUILD)/kernel-div.bin: $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
 	$(NASM) -f bin -I kernel/ -DSELFTEST_FAULT=1 kernel/start.asm -o $@ -l $(BUILD)/kernel-div.lst
@@ -80,12 +104,21 @@ div: $(DIV_IMG)
 	$(QEMU) -fda $(DIV_IMG) -boot a
 
 # 从上游 .hex 重新生成字模 / 映射 / 文案(需要先下 unifont 的 .hex,见 font/README.md)
+# 从完整字库重新抽子集(需要先有 font/.cache/unifont_all.hex,见 font/README.md)
+subset: tools/unifont2bin.py font/charset.txt font/charset-cjk.txt font/charset-extra.txt
+	@test -f $(UNIFONT_FULL) || { \
+	    echo "缺 $(UNIFONT_FULL) —— 从 USTC 镜像下一个:"; \
+	    echo "  mkdir -p font/.cache && curl -o font/.cache/unifont_all.hex.gz \\"; \
+	    echo "    https://mirrors.ustc.edu.cn/gnu/unifont/unifont-18.0.01/unifont_all-18.0.01.hex.gz"; \
+	    echo "  gunzip -c font/.cache/unifont_all.hex.gz > $(UNIFONT_FULL)"; exit 1; }
+	python3 tools/mkfontsubset.py $(UNIFONT_FULL) font/unifont-subset.hex font/charset-all.txt
+
 font: tools/unifont2bin.py font/charset.txt font/strings.txt
 	python3 tools/unifont2bin.py --hex $(UNIFONT_HEX) \
 	    --vga-font font/vga-font.bin --vga-map font/vga-zh-map.asm --vga-chars-file font/charset.txt \
 	    --zh-strings-in font/strings.txt --zh-strings-out font/vga-zh-strings.asm
 
-test: test-fda test-hda test-div test-pgfault test-kbd test-shell
+test: test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font
 
 test-fda: $(IMG)
 	@echo "── 作为软盘启动(BIOS 无 LBA,应走 CHS 退回)──"

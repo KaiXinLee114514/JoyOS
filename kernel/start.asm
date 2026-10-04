@@ -17,7 +17,14 @@
 [ORG 0x10000]
 
 kmain:                                  ; 32 位内核入口(stub 里 jmp 0x10000 跳过来)
-%include "kmain.asm"                     ; 终端 + 启动信息
+;  ⚠️ 第一个被 include 的文件决定 0x10000 处的第一条指令 —— 因为 `kmain:` 本身不占字节。
+;     所以入口代码必须排在第一个,别的模块(哪怕是被前面引用的)都放后面。
+%include "kmain.asm"                     ; 终端 + 启动信息(必须在最前)
+%include "utf8.asm"                      ; UTF-8 解码
+%include "ata.asm"                       ; ATA 硬盘 PIO
+%include "fontdisk.asm"                  ; 从磁盘加载完整字库
+%include "fat.asm"                       ; FAT16 文件系统
+%include "api.asm"                       ; 程序接口 int 0x30                  ; 从磁盘加载完整字库                      ; UTF-8 解码
 %include "idt.asm"                       ; IDT / 异常 / panic 屏
 %include "paging.asm"                    ; 页目录 / 页表
 %include "fbterm.asm"                   ; 帧缓冲终端(图形模式)

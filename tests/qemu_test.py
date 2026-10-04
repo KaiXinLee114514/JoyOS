@@ -72,8 +72,16 @@ class Monitor:
         time.sleep(0.05)
 
     def type_text(self, text: str, delay: float = 0.06):
+        """按字符发给 QEMU。注意:monitor 的 sendkey 只认小写键名,
+        大写字母得发 shift+小写(不然 sendkey R 是无效按键,字符就丢了)。"""
         for ch in text:
-            self.sendkey(KEYMAP.get(ch, ch))
+            if ch in KEYMAP:
+                key = KEYMAP[ch]
+            elif 'A' <= ch <= 'Z':
+                key = "shift-" + ch.lower()
+            else:
+                key = ch
+            self.sendkey(key)
             time.sleep(delay)
 
     def screendump(self, path: str = "build/_shot.ppm"):
@@ -131,6 +139,9 @@ def render_text(text: str, glyphs: dict):
     """按终端的排版规则(8 宽/16 宽混排)渲染成 0/1 网格"""
     cells = []
     for ch in text:
+        if ch == " ":                      # 空格就是"什么都不画",不用查字库
+            cells.append((8, 16, bytes(16)))
+            continue
         g = glyphs.get(ord(ch))
         if g is None:
             return None
@@ -157,6 +168,9 @@ def image_ink_rows(img):
 def find_text(img, text: str, glyphs: dict, ink_rows=None) -> bool:
     target = render_text(text, glyphs)
     if target is None:
+        # 别静悄悄地判失败:多半是模板字库选错了(比如硬盘模式该用 font/full-joyf.bin)
+        miss = "".join(sorted({c for c in text if ord(c) not in glyphs and c != " "}))
+        print(f"  ⚠️  模板字库里没有 {miss!r},没法比对:{text!r}")
         return False
     rows = ink_rows if ink_rows is not None else image_ink_rows(img)
     H, W = len(rows), len(rows[0])
@@ -174,10 +188,188 @@ def find_text(img, text: str, glyphs: dict, ink_rows=None) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+#  独立信道之二:QEMU 关掉之后,直接把镜像文件当块设备读一遍。
+#  内核说自己"写成功了"不算数 —— 字节真的落在 FAT16 分区里才算数。
+# ---------------------------------------------------------------------------
+class Fat16:
+    """够用的只读 FAT16 解析器(根目录 + 8.3 短名 + 簇链),纯 Python"""
+
+    def __init__(self, path: str, part_lba: int = 6144):
+        self.img = open(path, "rb").read()
+        base = part_lba * 512
+        if self.img[base + 510:base + 512] != b"\x55\xaa":
+            raise ValueError(f"LBA {part_lba} 上没有 FAT16 引导扇区")
+        u16 = lambda off: int.from_bytes(self.img[base + off:base + off + 2], "little")
+        self.spc = self.img[base + 13]
+        self.reserved = u16(14)
+        self.nfats = self.img[base + 16]
+        self.root_ents = u16(17)
+        self.fat_sectors = u16(22)
+        self.root_lba = base + (self.reserved + self.nfats * self.fat_sectors) * 512
+        self.data_lba = self.root_lba + (self.root_ents * 32 + 511) // 512 * 512
+        self.fat_lba = base + self.reserved * 512
+
+    def next_cluster(self, cl: int) -> int:
+        off = self.fat_lba + cl * 2
+        return int.from_bytes(self.img[off:off + 2], "little")
+
+    def entries(self):
+        for i in range(self.root_ents):
+            e = self.root_lba + i * 32
+            raw = self.img[e:e + 32]
+            if raw[0] == 0x00:
+                return
+            if raw[0] == 0xE5 or (raw[11] & 0x0F) == 0x0F:
+                continue
+            name = raw[0:8].decode("ascii", "replace").rstrip()
+            ext = raw[8:11].decode("ascii", "replace").rstrip()
+            yield (f"{name}.{ext}" if ext else name), raw
+
+    def read(self, want: str) -> bytes:
+        want = want.upper()
+        for name, raw in self.entries():
+            if name != want:
+                continue
+            cl = int.from_bytes(raw[26:28], "little")
+            size = int.from_bytes(raw[28:32], "little")
+            out = bytearray()
+            while 2 <= cl < 0xFFF8 and len(out) < size:
+                off = self.data_lba + (cl - 2) * self.spc * 512
+                out += self.img[off:off + self.spc * 512]
+                cl = self.next_cluster(cl)
+            return bytes(out[:size])
+        raise KeyError(want)
+
+    def names(self) -> list:
+        return [n for n, _ in self.entries()]
+
+
 KEYMAP = {
     " ": "spc", ".": "dot", ",": "comma", "/": "slash", ";": "semicolon",
     "-": "minus", "=": "equal", "'": "apostrophe", "\n": "ret",
 }
+
+
+def layout_checks(font_path: str = "font/full-joyf.bin") -> list:
+    """
+    静态检查(连 QEMU 都不用开):程序加载区和磁盘字库不能重叠。
+
+    这是真踩过的坑:加载地址一开始是 0x300000,而字库从 0x200000 铺到 0x3AF110 ——
+    0x300000 正好在字库的点阵数据中间,程序一载入就把 U+782A~U+7832 九个汉字的点阵改掉了。
+    两个功能单独测都是对的,只有"跑完程序再显示那几个字"才看得出来。
+
+    所以这里直接从源码里把两个常量抠出来算一遍,谁把它们改成重叠,这一项就红。
+    """
+    out = []
+    try:
+        def const(name: str, text: str) -> int:
+            m = re.search(rf"^{name}\s+equ\s+(0x[0-9a-fA-F]+|\d+)", text, re.M)
+            if not m:
+                raise KeyError(name)
+            return int(m.group(1), 0)
+
+        shell_src = open("kernel/shell.asm").read()
+        font_src = open("kernel/fontdisk.asm").read()
+        prog = const("PROG_ADDR", shell_src)
+        file_buf = const("FILE_BUF", shell_src) if "FILE_BUF" in shell_src else 0
+        font_base = const("FONT_LOAD_ADDR", font_src)
+        font_bytes = len(open(font_path, "rb").read())
+        font_end = font_base + font_bytes
+        # PROG_MAX_SIZE 是算出来的(FONT_LOAD_ADDR - PROG_ADDR),这里也照算
+        m = re.search(r"^PROG_MAX_SIZE\s+equ\s+FONT_LOAD_ADDR\s*-\s*PROG_ADDR",
+                      shell_src, re.M)
+        declared = (font_base - prog) if m else 0
+
+        # ① 加载地址本身不能落在字库的字节范围里(0x300000 那个坑就是这个样子)
+        inside_font = font_base <= prog < font_end
+        # ② 也不能压在 cat 的文件缓冲上(它是往上长的)
+        clash = file_buf and prog < file_buf
+        out.append(("离线:程序加载区不压字库",
+                    not inside_font and not clash and declared > 0,
+                    f"加载地址 {prog:#x} 要在字库 {font_base:#x}..{font_end:#x} 之外、"
+                    f"且在 FILE_BUF {file_buf:#x} 之上"))
+
+        # ③ 程序区大小是"顶到字库为止",而且是正的
+        out.append(("离线:程序区大小算得对",
+                    m is not None and declared > 0 and prog + declared <= font_end,
+                    f"PROG_MAX_SIZE = FONT_LOAD_ADDR-PROG_ADDR = {declared:#x}(要 > 0)"))
+    except Exception as e:                                   # noqa: BLE001
+        out.append(("离线:程序加载区不压字库", False, f"检查本身出错: {e}"))
+    return out
+
+
+def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
+                   part_lba: int = 6144) -> list:
+    """
+    QEMU 关掉之后,不信内核自己说的"写成功了",直接把镜像文件当块设备读一遍。
+    这是第二条独立信道:屏幕上的字可能是我看错,磁盘上的字节不会。
+    """
+    out = []
+    raw = open(img, "rb").read()
+
+    # ---- 0) 先做不需要镜像的静态检查(内存布局) ----
+    out += layout_checks(font_path)
+
+    # ---- 1) 磁盘字库:描述块 + 本体 ----
+    try:
+        desc = raw[2047 * 512:2048 * 512]
+        blob = raw[2048 * 512:]
+        src = open(font_path, "rb").read()
+        ok = (desc[:4] == b"JFD1"
+              and blob[:4] == b"JOYF"
+              and int.from_bytes(desc[12:16], "little") == len(src)
+              and blob[:len(src)] == src)
+        out.append(("离线:字库在盘上原样", ok,
+                    f"LBA 2047 描述块 + LBA 2048 起 {len(src)} 字节与 {font_path} 一致"))
+    except Exception as e:                                   # noqa: BLE001
+        out.append(("离线:字库在盘上原样", False, str(e)))
+
+    # ---- 2) FAT16:自己解析目录树 ----
+    try:
+        fs = Fat16(img, part_lba)
+    except Exception as e:                                   # noqa: BLE001
+        return out + [("离线:解析 FAT16 分区", False, str(e))]
+
+    names = fs.names()
+    out.append(("离线:TEST.TXT 进了根目录", "TEST.TXT" in names,
+                f"LIST 里有 TEST.TXT,实际 {names}"))
+    try:
+        got = fs.read("TEST.TXT")
+        want = b"hello-from-fat16"
+        out.append(("离线:写进去的字节真落盘了", got == want,
+                    f"{want!r},实际 {got!r}"))
+    except KeyError:
+        out.append(("离线:写进去的字节真落盘了", False, "目录里没有 TEST.TXT"))
+
+    # ---- 3) 对照:镜像里本来就有的文件,字节应该和仓库里的源文件一致 ----
+    for name, path in (("README.TXT", "progs/README.TXT"),
+                       ("HELLO.BIN", "build/HELLO.BIN"),
+                       ("COUNT.BIN", "build/COUNT.BIN")):
+        want = open(path, "rb").read()
+        try:
+            got = fs.read(name)
+            out.append((f"离线:{name} 字节一致", got == want,
+                        f"{len(want)} 字节,实际 {len(got)} 字节"))
+        except Exception as e:                               # noqa: BLE001
+            out.append((f"离线:{name} 字节一致", False, str(e)))
+
+    # ---- 4) 两个 FAT 副本应该都更新了(不然掉电就丢目录项) ----
+    try:
+        idx = next(i for i, (n, _) in enumerate(fs.entries()) if n == "TEST.TXT")
+        ent = fs.root_lba + idx * 32
+        cl = int.from_bytes(raw[ent + 26:ent + 28], "little")
+        copies = []
+        for i in range(fs.nfats):
+            off = fs.fat_lba + i * fs.fat_sectors * 512 + cl * 2
+            copies.append(int.from_bytes(raw[off:off + 2], "little"))
+        # 文件比一个簇小 → 它的簇项应该是"链尾"(0xFFF8~0xFFFF),而且两份 FAT 得一样
+        out.append(("离线:两份 FAT 都写了",
+                    len(set(copies)) == 1 and copies[0] >= 0xFFF8,
+                    f"簇 {cl} 在 {fs.nfats} 份 FAT 里都是链尾,实际 {copies}"))
+    except Exception as e:                                   # noqa: BLE001
+        out.append(("离线:两份 FAT 都写了", False, str(e)))
+    return out
 
 
 def report(results) -> int:
@@ -205,8 +397,16 @@ def main() -> int:
     pgfault_mode = "--pgfault" in argv      # 故意野指针的镜像:应该出现页错误 + CR2
     kbd_mode = "--kbd" in argv              # 键盘测试:用 monitor 的 sendkey 打字,看回显
     shell_mode = "--shell" in argv          # shell 命令测试
+    hd_mode = "--fontdisk" in argv          # 硬盘镜像:磁盘字库 + FAT16 + 跑程序
+    font_path = FONT_PATH                   # 比像素用的模板字库(硬盘模式换成完整字库)
+    if "--font" in argv:
+        font_path = argv[argv.index("--font") + 1]
     argv = [a for a in argv
-            if a not in ("--dump", "--hda", "--fault", "--pgfault", "--kbd", "--shell")]
+            if a not in ("--dump", "--hda", "--fault", "--pgfault", "--kbd", "--shell",
+                         "--fontdisk")]
+    if "--font" in argv:
+        i = argv.index("--font")
+        del argv[i:i + 2]
     img = argv[0] if argv else "build/joyos.img"
     if not os.path.exists(img):
         print(f"❌ 找不到镜像 {img}(先 make)")
@@ -239,7 +439,7 @@ def main() -> int:
         # ---- 判断是文本模式还是图形模式:图形模式下读 0xB8000 没有意义 ----
         shot = mon.screendump()
         graphics = shot.size != (720, 400)
-        glyphs = load_font() if graphics else None
+        glyphs = load_font(font_path) if graphics else None
         ink = image_ink_rows(shot) if graphics else None
 
         def has(needle: str) -> bool:
@@ -297,6 +497,79 @@ def main() -> int:
         mode = ("boot disk: LBA (EDD multi-sector read)" if as_hdd
                 else "boot disk: CHS fallback (BIOS has no LBA)")
         print(f'(模式: {"图形 VBE" if graphics else "VGA 文本"})')
+
+        if hd_mode:
+            # ---- 硬盘模式:字库在磁盘上、FAT16 能读能写、程序能从磁盘跑 ----
+            results = []
+
+            # 先看开机那几行(还没敲命令,屏幕上一次输出全在)
+            results.append(("字库从磁盘加载", has("font: loaded from disk (ATA),"),
+                            "font: loaded from disk (ATA), ..."))
+            results.append(("完整字库字数", has("40208 glyphs") and not has("416 glyphs"),
+                            "40208 glyphs(内置子集是 416)"))
+            results.append(("FAT16 挂载", has("fat16: mounted at LBA 6144"),
+                            "fat16: mounted at LBA 6144"))
+
+            def run(line, wait=0.9):
+                mon.type_text(line)
+                mon.sendkey("ret")
+                time.sleep(wait)
+                rescan()
+
+            run("ls")
+            results.append(("ls 列目录",
+                            has("README.TXT") and has("HELLO.BIN") and has("COUNT.BIN"),
+                            "README.TXT / HELLO.BIN / COUNT.BIN"))
+
+            run("cat readme.txt", wait=1.2)
+            results.append(("cat 读 UTF-8 文本", has("JoyOS 磁盘说明"),
+                            "文件里的中文(UTF-8)显示出来"))
+            results.append(("cat 读得到正文", has("int 0x30"),
+                            "README.TXT 里的 int 0x30"))
+
+            run("write test.txt hello-from-fat16")
+            results.append(("write 写文件", has("wrote test.txt"), "wrote test.txt"))
+
+            run("ls")
+            results.append(("新文件进了目录", has("TEST.TXT"), "TEST.TXT"))
+
+            run("cat test.txt")
+            results.append(("写进去的读得回来", has("hello-from-fat16"), "hello-from-fat16"))
+
+            run("run", wait=0.8)
+            results.append(("裸 run 打印程序接口",
+                            has("JoyOS program API") and has("esi = UTF-8 string"),
+                            "int 0x30 的说明(裸敲 run 时打出来)"))
+
+            run("run hello", wait=1.1)
+            results.append(("run 跑磁盘上的程序",
+                            has("Hello from HELLO.BIN - I was loaded from the FAT16 disk!"),
+                            "HELLO.BIN 的英文输出"))
+            results.append(("程序里能打中文", has("我是从磁盘上的 HELLO.BIN"),
+                            "HELLO.BIN 的中文输出(UTF-8 → 点阵)"))
+            results.append(("程序返回 shell", has("program returned to the shell"),
+                            "program returned to the shell"))
+            results.append(("程序没踩坏字库(哨兵 U+7830 砰)",
+                            has("font still intact: 砰"),
+                            "font still intact: 砰 —— 这个字的点阵就在以前那个加载地址上"))
+
+            run("run count", wait=1.1)
+            results.append(("第二个程序:循环打印", has("counting: 1 2 3 4 5 6 7 8 9 10"),
+                            "counting: 1 2 3 4 5 6 7 8 9 10"))
+            results.append(("十进制/十六进制 API", has("hex demo: 0xDEADBEEF"),
+                            "hex demo: 0xDEADBEEF"))
+
+            # ---- 第二信道:先把 QEMU 关掉(让它把缓存落盘),再自己解析镜像 ----
+            qemu.terminate()
+            try:
+                qemu.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                qemu.kill()
+                qemu.wait()
+            time.sleep(0.3)
+            results += offline_checks(img, font_path)
+            return report(results)
+
         if shell_mode:
             # ---- shell:真敲命令,看输出 ----
             results = []
@@ -347,6 +620,12 @@ def main() -> int:
             run("zh", wait=1.0)
             results.append(("中文显示", has("你好，世界！"), "你好，世界！"))
             results.append(("中文长句", has("点阵字库来自"), "点阵字库来自"))
+            # 编码相关的三个用例:UTF-8 三字节(汉字)、四字节(emoji)、坏字节(替换字符)
+            results.append(("UTF-8 三字节", has("编码统一成 UTF-8"), "编码统一成 UTF-8"))
+            results.append(("UTF-8 四字节 emoji", has("😀"), "😀"))
+            results.append(("坏字节画替换符",
+                            has("broken UTF-8: [") and has("��") and has("still shows"),
+                            "[��](两个替换字符)且后面的字还在"))
             return report(results)
 
         if fault_mode:

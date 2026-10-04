@@ -145,6 +145,8 @@ vgafont_init:
 ;    ASCII(<0x80)直接打;汉字查映射表,连着打两个字格
 ; ---------------------------------------------------------------------------
 term_print_cp:
+    cmp eax, 0x20
+    jb .control                         ; 控制字符(\n \r \b 等)交给 term_putc
     cmp dword [vbe_ok], 0
     jne fb_putcp                        ; 图形模式:码位直接查表画字,不用字模号那套
     push eax
@@ -192,22 +194,9 @@ term_print_cp:
     pop eax
     ret
 
-; ---------------------------------------------------------------------------
-;  term_print_zh:esi → 以 0 结尾的码位数组(见 font/vga-zh-strings.asm)
-; ---------------------------------------------------------------------------
-term_print_zh:
-    push eax
-    push esi
-.next:
-    mov eax, [esi]
-    test eax, eax
-    jz .done
-    call term_print_cp
-    add esi, 4
-    jmp .next
-.done:
-    pop esi
-    pop eax
+.control:
+    ; 控制字符(换行/回车/退格):al = 码位,交给 term_putc
+    call term_putc
     ret
 
 ; ---------------------------------------------------------------------------

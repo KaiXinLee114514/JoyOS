@@ -183,7 +183,7 @@ fb_glyph:
     push esi
     push edi
     mov [want_cp], eax
-    mov ebx, font_blob
+    mov ebx, [font_base]                ; 默认是内建子集;读了磁盘字库就换成它
     mov edx, [ebx + 8]                  ; 字形数
     mov edi, [ebx + 12]                 ; 数据区偏移
     add edi, ebx                        ; edi = 数据区基址
@@ -200,7 +200,7 @@ fb_glyph:
     mov ebx, edx
     imul ebx, 12
     add ebx, 16
-    add ebx, font_blob                  ; → 表项地址
+    add ebx, [font_base]                ; → 表项地址
     mov eax, [ebx]                      ; 该项的码位
     cmp eax, [want_cp]
     je .hit
@@ -209,7 +209,8 @@ fb_glyph:
     jmp .find
 .go_right:
     lea ecx, [edx + 1]
-    mov eax, [font_blob + 8]
+    mov eax, [font_base]
+    mov eax, [eax + 8]
     jmp .find
 .hit:
     movzx ecx, byte [ebx + 4]           ; 宽
@@ -349,5 +350,6 @@ blit_color      dd 0
 blit_data       dd 0
 want_cp         dd 0
 
+; 内建字库(小):ASCII + 三百来个常用汉字。磁盘字库读成功后 font_base 会指向它
 font_blob:
     incbin "font/font-joyf.bin"

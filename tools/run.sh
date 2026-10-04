@@ -7,6 +7,7 @@
 #
 #    ./tools/run.sh              软盘启动(BIOS 无 LBA → 走 CHS 退回那条路)
 #    ./tools/run.sh --hdd        硬盘启动(BIOS 有 LBA → 走 EDD 那条路)
+#    ./tools/run.sh --hd         完整硬盘镜像:磁盘字库 + FAT16(能 ls/cat/write/run)
 #    ./tools/run.sh --div        开机就除零,直接看 panic 屏
 #    ./tools/run.sh --gdb        开 gdb 调试端口(-s -S,等 gdb 连上才开跑)
 #    ./tools/run.sh --monitor    把 QEMU monitor 接到当前终端(能 sendkey/xp)
@@ -36,6 +37,7 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --hdd)     MODE="hdd" ;;
+        --hd)      MODE="hd" ;;
         --div)     MODE="div" ;;
         --gdb)     EXTRA+=(-s -S) ;;
         --monitor) EXTRA+=(-monitor stdio) ;;
@@ -53,6 +55,9 @@ case "$MODE" in
     hdd)    IMG="build/joyos.img"
             DRIVE=(-drive "file=$IMG,format=raw,if=ide,index=0" -boot c)
             DESC="硬盘启动(应看到 LBA (EDD))" ;;
+    hd)     IMG="build/joyos-hd.img"
+            DRIVE=(-drive "file=$IMG,format=raw,if=ide,index=0" -boot c)
+            DESC="完整硬盘:字库在磁盘上、FAT16 能读写(试试 ls / cat README.TXT / run HELLO)" ;;
     div)    IMG="build/joyos-div.img"
             DRIVE=(-drive "file=$IMG,format=raw,if=floppy" -boot a)
             DESC="故意除零(应看到 EXCEPTION 00: divide error)" ;;
@@ -76,7 +81,7 @@ CMD=("$QEMU_BIN" "${DRIVE[@]}")
 
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '要执行的命令: '
-    printf '%q ' "${CMD[@]}"
+    printf '%s ' "${CMD[@]}"
     printf '\n'
     exit 0
 fi

@@ -57,6 +57,8 @@ start:
     mov dword [BOOTINFO + 4], KERNEL_SECTS
     mov dword [BOOTINFO + 8], KERNEL_LBA
     mov dword [BOOTINFO + 68], STUB_SECTS
+    movzx eax, byte [boot_drive]
+    mov [BOOTINFO + 72], eax            ; 启动盘号(0x80 起 = 硬盘,内核据此决定要不要读盘)
 
     mov ax, 0x0003
     int 0x10
