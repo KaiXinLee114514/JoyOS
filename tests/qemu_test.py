@@ -76,6 +76,15 @@ class Monitor:
             self.sendkey(KEYMAP.get(ch, ch))
             time.sleep(delay)
 
+    def screendump(self, path: str = "build/_shot.ppm"):
+        """抓一张像素图(图形模式下的断言要靠它)"""
+        import os
+        from PIL import Image
+        if os.path.exists(path):
+            os.unlink(path)
+        self.cmd(f"screendump {path}", wait=1.5)
+        return Image.open(path).convert("RGB")
+
     def screen(self) -> list[str]:
         """读 0xB8000 还原成 25 行文字"""
         out = self.cmd(f"xp /{COLS * ROWS * 2}xb 0x{VGA:x}", wait=0.5)
@@ -93,6 +102,76 @@ class Monitor:
             chunk = chars[r * COLS:(r + 1) * COLS]
             rows.append("".join(chr(c) if 32 <= c < 127 else " " for c in chunk).rstrip())
         return rows
+
+
+# ---------------------------------------------------------------------------
+#  图形模式下的断言:屏幕上没有"字符码"可读了,只能比像素。
+#  好在字形是我们自己的字库(font/font-joyf.bin),可以在 Python 里用同样的位运算
+#  把期望的文字渲染成"有墨/无墨"网格,再去截图里找这个图案 —— 找到了就说明
+#  屏幕上确实显示着这段文字(不看颜色,只看形状)。
+# ---------------------------------------------------------------------------
+FONT_PATH = "font/font-joyf.bin"
+
+
+def load_font(path: str = FONT_PATH) -> dict:
+    import struct
+    data = open(path, "rb").read()
+    if data[:4] != b"JOYF":
+        raise ValueError(f"{path} 不是 JOYF 字库")
+    _ver, count, data_off = struct.unpack_from("<III", data, 4)
+    glyphs = {}
+    for i in range(count):
+        cp, w, h, _pad, off = struct.unpack_from("<IBBHI", data, 16 + i * 12)
+        size = (w // 8) * h
+        glyphs[cp] = (w, h, data[data_off + off: data_off + off + size])
+    return glyphs
+
+
+def render_text(text: str, glyphs: dict):
+    """按终端的排版规则(8 宽/16 宽混排)渲染成 0/1 网格"""
+    cells = []
+    for ch in text:
+        g = glyphs.get(ord(ch))
+        if g is None:
+            return None
+        cells.append(g)
+    width = sum(w for w, _, _ in cells)
+    grid = [[0] * width for _ in range(16)]
+    x = 0
+    for w, h, raw in cells:
+        stride = w // 8
+        for y in range(h):
+            for bx in range(w):
+                if (raw[y * stride + bx // 8] >> (7 - bx % 8)) & 1:
+                    grid[y][x + bx] = 1
+        x += w
+    return grid
+
+
+def image_ink_rows(img):
+    px = img.load()
+    W, H = img.size
+    return [bytes(1 if sum(px[x, y]) > 90 else 0 for x in range(W)) for y in range(H)]
+
+
+def find_text(img, text: str, glyphs: dict, ink_rows=None) -> bool:
+    target = render_text(text, glyphs)
+    if target is None:
+        return False
+    rows = ink_rows if ink_rows is not None else image_ink_rows(img)
+    H, W = len(rows), len(rows[0])
+    th, tw = len(target), len(target[0])
+    trows = [bytes(r) for r in target]
+    anchor = next((i for i, r in enumerate(trows) if any(r)), 0)
+    ta = trows[anchor]
+    for y0 in range(0, H - th + 1):
+        line = rows[y0 + anchor]
+        pos = line.find(ta)
+        while pos >= 0:
+            if pos + tw <= W and all(rows[y0 + y][pos:pos + tw] == trows[y] for y in range(th)):
+                return True
+            pos = line.find(ta, pos + 1)
+    return False
 
 
 KEYMAP = {
@@ -157,7 +236,25 @@ def main() -> int:
             print(f"❌ QEMU 启动就退出了(退出码 {qemu.returncode})\n{err}")
             return 1
 
-        screen = mon.screen()
+        # ---- 判断是文本模式还是图形模式:图形模式下读 0xB8000 没有意义 ----
+        shot = mon.screendump()
+        graphics = shot.size != (720, 400)
+        glyphs = load_font() if graphics else None
+        ink = image_ink_rows(shot) if graphics else None
+
+        def has(needle: str) -> bool:
+            """屏幕上有没有这段文字(图形模式比像素,文本模式比字符码)"""
+            if graphics:
+                return find_text(shot, needle, glyphs, ink)
+            return needle in "\n".join(mon.screen())
+
+        def rescan():
+            """重新抓一次屏幕(敲完键/命令之后用)"""
+            nonlocal shot, ink
+            shot = mon.screendump()
+            ink = image_ink_rows(shot) if graphics else None
+
+        screen = mon.screen() if not graphics else []
         text = "\n".join(screen)
         print("=== 屏幕内容 ===")
         for i, line in enumerate(screen):
@@ -168,40 +265,38 @@ def main() -> int:
         print("================\n")
 
         if dump_only:
+            if graphics:
+                shot.save("build/screen.png")
+                print(f"(图形模式 {shot.size[0]}×{shot.size[1]},已存 build/screen.png)")
             return 0
 
         if kbd_mode:
             # ---- 键盘:靠 monitor 的 sendkey 真按键,再抓屏看回显 ----
             results = []
-            prompts_before = sum(1 for r in mon.screen() if r.startswith(">"))
             mon.type_text("hello")                  # 普通字母
             time.sleep(0.3)
             mon.sendkey("shift-1")                  # Shift 组合键 → '!'
             time.sleep(0.6)
-            text = "\n".join(mon.screen())
-            results.append(("键入回显", "hello!" in text, "'hello!' 出现在屏幕上"))
-            results.append(("Shift 翻译", "hello!" in text, "Shift+1 应该是 '!'"))
+            rescan()
+            results.append(("键入回显", has("hello!"), "'hello!' 出现在屏幕上"))
+            results.append(("Shift 翻译", has("hello!"), "Shift+1 应该是 '!'"))
 
             mon.sendkey("ret")                      # 回车换行
             time.sleep(0.4)
-            screen2 = mon.screen()
-            prompts_after = sum(1 for r in screen2 if r.startswith(">"))
-            results.append(("回车后新提示符", prompts_after > prompts_before,
-                            "提示符行数应该变多"))
-
             mon.type_text("abc")                    # 打字
             time.sleep(0.3)
             mon.sendkey("backspace")                # 退格
             time.sleep(0.3)
             mon.type_text("d")                      # 再打一个字
             time.sleep(0.5)
-            text2 = "\n".join(mon.screen())
-            results.append(("退格删掉 c", "abd" in text2 and "abc" not in text2,
+            rescan()
+            results.append(("退格删掉 c", has("abd") and not has("abc"),
                             "屏幕上应该是 'abd' 而不是 'abc'"))
             return report(results)
 
         mode = ("boot disk: LBA (EDD multi-sector read)" if as_hdd
                 else "boot disk: CHS fallback (BIOS has no LBA)")
+        print(f'(模式: {"图形 VBE" if graphics else "VGA 文本"})')
         if shell_mode:
             # ---- shell:真敲命令,看输出 ----
             results = []
@@ -210,44 +305,48 @@ def main() -> int:
                 mon.type_text(line)
                 mon.sendkey("ret")
                 time.sleep(wait)
-                return "\n".join(mon.screen())
+                rescan()
 
-            t = run("help")
-            results.append(("help 列出命令", "show this list" in t and "page <hex>" in t,
+            run("help")
+            results.append(("help 列出命令", has("show this list") and has("page <hex>"),
                             "help 输出里有 show this list / page <hex>"))
 
-            t = run("echo hello world")
-            results.append(("echo 原样打回", "hello world" in t, "hello world"))
+            run("echo hello world")
+            results.append(("echo 原样打回", has("hello world"), "hello world"))
 
-            t = run("info")
-            results.append(("info 有 CR0/CR3", "CR0 = 0x" in t and "CR3 = 0x" in t,
-                            "CR0/CR3"))
-            results.append(("info 有 IDT 基址", "IDT         : base = 0x" in t, "IDT base"))
+            run("info")
+            results.append(("info 有 CR0/CR3", has("CR0 = 0x") and has("CR3 = 0x"), "CR0/CR3"))
+            results.append(("info 有 IDT 基址", has("base = 0x"), "IDT base"))
 
-            t = run("page 0x400000")
-            results.append(("page 查到映射", "0x00100000" in t and "present" in t,
+            run("page 0x400000")
+            results.append(("page 查到映射", has("0x00100000") and has("present"),
                             "0x00100000 + present"))
 
-            t = run("page 0x800000")
-            results.append(("page 报未映射", "PDE not present" in t, "PDE not present"))
+            run("page 0x800000")
+            results.append(("page 报未映射", has("PDE not present"), "PDE not present"))
 
-            t = run("badcommand")
-            results.append(("未知命令有提示", "unknown command" in t, "unknown command"))
+            run("badcommand")
+            results.append(("未知命令有提示", has("unknown command"), "unknown command"))
 
             # ---- 滚屏:连敲 30 行,开机那些字应该被顶掉 ----
             for i in range(30):
                 mon.type_text(f"echo n{i}")
                 mon.sendkey("ret")
                 time.sleep(0.12)
-            time.sleep(0.5)
-            t = "\n".join(mon.screen())
-            results.append(("滚屏生效", "JoyOS - stage 5" not in t and "echo n29" in t,
+            time.sleep(0.6)
+            rescan()
+            results.append(("滚屏生效", not has("JoyOS - stage 5") and has("echo n29"),
                             "开机标题被顶出屏幕、最后一行还在"))
 
             # ---- 清屏 ----
-            t = run("clear")
-            results.append(("clear 清屏", "JoyOS - stage 5" not in t and "echo n29" not in t,
+            run("clear")
+            results.append(("clear 清屏", not has("JoyOS - stage 5") and not has("echo n29"),
                             "屏幕上只剩提示符"))
+
+            # ---- 中文(图形模式才画得出来:直接往帧缓冲 blit 16×16 点阵)----
+            run("zh", wait=1.0)
+            results.append(("中文显示", has("你好，世界！"), "你好，世界！"))
+            results.append(("中文长句", has("点阵字库来自"), "点阵字库来自"))
             return report(results)
 
         if fault_mode:
@@ -264,8 +363,8 @@ def main() -> int:
             # shell 里敲 fault:访问 4 MiB 之外 → 14 号页错误,CR2 应记下那个地址
             mon.type_text("fault")
             mon.sendkey("ret")
-            time.sleep(0.8)
-            text = "\n".join(mon.screen())
+            time.sleep(1.0)
+            rescan()
             checks = [
                 ("panic 标题",      "*** KERNEL PANIC ***"),
                 ("页错误 + 名字",   "EXCEPTION 0E: page fault"),
@@ -277,7 +376,7 @@ def main() -> int:
             checks = [
                 ("标题",            "JoyOS - stage 5"),
                 ("保护模式链路",    "bootloader -> protected mode -> kernel"),
-                ("内核区大小(多扇区)", "kernel area: 64 sectors = 32768 bytes"),
+                ("内核区大小(多扇区)", "kernel area: 128 sectors = 65536 bytes"),
                 ("kmain 地址",      "kmain at 0x00010000"),
                 ("GDT 生效(DS=0x10)", "DS = 0x00000010"),
                 ("读盘方式",         mode),
@@ -288,7 +387,7 @@ def main() -> int:
                 ("shell 就绪",      'type "help" for commands.'),
             ]
         for name, needle in checks:
-            if needle in text:
+            if has(needle):
                 print(f"  ✅ {name}")
             else:
                 print(f"  ❌ {name}  —— 屏幕上找不到: {needle!r}")

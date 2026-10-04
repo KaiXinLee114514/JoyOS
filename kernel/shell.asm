@@ -530,7 +530,7 @@ cmd_table:
 msg_shell_hello db 'type "help" for commands.', 10, 0
 msg_prompt      db '> ', 0
 msg_shell_unknown db 'unknown command: ', 0
-msg_zh_note     db 'zh: 中文点阵来自 GNU Unifont,但文本模式这条路还在实验(见 font/README.md)', 10, 0
+msg_zh_note     db 'zh: glyphs from GNU Unifont, blitted straight into the VBE framebuffer', 10, 0
 msg_fault       db 'touching an unmapped address on purpose...', 10, 0
 msg_reboot      db 'rebooting...', 10, 0
 msg_reboot_fail db '8042 did not reset, trying triple fault...', 10, 0

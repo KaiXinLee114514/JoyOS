@@ -50,18 +50,22 @@ $(BUILD)/boot.bin: $(BOOT_SRC) | $(BUILD)
 NASM_DEFS := $(if $(USE_CUSTOM_FONT),-DUSE_CUSTOM_FONT=1)
 
 $(BUILD)/kernel.bin: $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
-	$(NASM) -f bin -I kernel/ $(NASM_DEFS) kernel/kmain.asm -o $@ -l $(BUILD)/kernel.lst
+	$(NASM) -f bin -I kernel/ $(NASM_DEFS) kernel/start.asm -o $@ -l $(BUILD)/kernel.lst
 	@printf '   内核:     %s 字节\n' "$$(stat -c %s $@)"
 
-$(IMG): $(BUILD)/boot.bin $(BUILD)/kernel.bin tools/mkimg.py
-	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/kernel.bin $(IMG)
+$(BUILD)/stub.bin: kernel/stub.asm | $(BUILD)
+	$(NASM) -f bin kernel/stub.asm -o $@ -l $(BUILD)/stub.lst
+	@printf '   实模式stub: %s 字节\n' "$$(stat -c %s $@)"
+
+$(IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin tools/mkimg.py
+	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(IMG)
 
 # 两个"开机就炸"的镜像:自测代码用 -D 开关才编进去,正常镜像里没有
 $(BUILD)/kernel-div.bin: $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
-	$(NASM) -f bin -I kernel/ -DSELFTEST_FAULT=1 kernel/kmain.asm -o $@ -l $(BUILD)/kernel-div.lst
+	$(NASM) -f bin -I kernel/ -DSELFTEST_FAULT=1 kernel/start.asm -o $@ -l $(BUILD)/kernel-div.lst
 
-$(DIV_IMG): $(BUILD)/boot.bin $(BUILD)/kernel-div.bin tools/mkimg.py
-	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/kernel-div.bin $(DIV_IMG)
+$(DIV_IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel-div.bin tools/mkimg.py
+	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel-div.bin $(DIV_IMG)
 
 run: $(IMG)
 	$(QEMU) -fda $(IMG) -boot a
@@ -110,7 +114,7 @@ test-shell: $(IMG)
 # 看反汇编: make lst 之后翻 build/*.lst
 lst: $(BOOT_SRCS) $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
 	$(NASM) -f bin $(BOOT_SRC) -o $(BUILD)/boot.bin -l $(BUILD)/boot.lst
-	$(NASM) -f bin -I kernel/ kernel/kmain.asm -o $(BUILD)/kernel.bin -l $(BUILD)/kernel.lst
+	$(NASM) -f bin -I kernel/ kernel/start.asm -o $(BUILD)/kernel.bin -l $(BUILD)/kernel.lst
 	@echo "反汇编在 $(BUILD)/boot.lst 和 $(BUILD)/kernel.lst"
 
 clean:

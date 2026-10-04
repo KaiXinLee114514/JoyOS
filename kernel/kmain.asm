@@ -19,9 +19,7 @@
 ;      0xB8000           VGA 文本缓冲(80×25,每格 2 字节:字符 + 颜色)
 ; ============================================================================
 
-[BITS 32]
-[ORG 0x10000]
-
+BOOTINFO   equ 0x8000
 VGA_MEM    equ 0xB8000
 VGA_COLS   equ 80
 VGA_ROWS   equ 25
@@ -31,11 +29,31 @@ COL_HEADER equ 0x0B                    ; 亮青
 COL_OK     equ 0x0A                    ; 亮绿
 COL_ERR    equ 0x0C                    ; 亮红
 
-kmain:
-    ; 引导扇区把参数放在 eax/ebx/ecx 里,先搬走免得后面被覆盖
+    ; 启动参数由引导扇区/实模式 stub 写在固定地址 BOOTINFO(0x8000)
+    mov eax, [BOOTINFO + 4]
     mov [boot_sectors], eax            ; 内核区扇区数
-    mov [boot_lba], ebx                ; 内核起始 LBA
-    mov [boot_mode], ecx               ; 1 = LBA(EDD),0 = CHS 退回
+    mov eax, [BOOTINFO + 8]
+    mov [boot_lba], eax                ; 内核起始 LBA
+    mov eax, [BOOTINFO + 12]
+    mov [boot_mode], eax               ; 1 = LBA(EDD),0 = CHS 退回
+    mov eax, [BOOTINFO + 64]
+    mov [vbe_ok], eax                  ; 1 = 拿到图形模式
+    mov eax, [BOOTINFO + 16]
+    mov [fb_phys], eax
+    mov eax, [BOOTINFO + 20]
+    mov [fb_width], eax
+    mov eax, [BOOTINFO + 24]
+    mov [fb_height], eax
+    mov eax, [BOOTINFO + 28]
+    mov [fb_pitch], eax
+    mov eax, [BOOTINFO + 32]
+    mov [fb_bpp], eax
+
+    ; 图形模式:先把帧缓冲终端初始化(它自己会清屏,所以要在任何打印之前)
+    cmp dword [vbe_ok], 0
+    je .skip_fb_early
+    call fb_init
+.skip_fb_early:
 
 %ifdef USE_CUSTOM_FONT
     call vgafont_init                  ; 实验中的自定义点阵字模(见 font/README.md)
@@ -50,6 +68,7 @@ kmain:
     call term_print
     mov al, 10
     call term_putc
+
 
     mov al, COL_NORMAL
     call term_set_color
@@ -112,6 +131,8 @@ kmain:
     mov esi, msg_paging
     call term_print
 
+    ; (帧缓冲终端在开头已经初始化过 —— 它自带清屏,调两次会把前面的输出擦掉)
+
     ; ---- 键盘 ----
     call kbd_init
     mov esi, msg_kbd
@@ -152,6 +173,8 @@ term_init:
     mov byte [term_color], COL_NORMAL
     ; 落到 term_clear
 term_clear:
+    cmp dword [vbe_ok], 0
+    jne fb_clear
     push eax
     push ecx
     push edi
@@ -167,13 +190,19 @@ term_clear:
     pop eax
     ret
 
-; al = 颜色属性
+; al = 颜色属性(文本模式直接存;图形模式还要换算成 RGB)
 term_set_color:
     mov [term_color], al
+    push eax
+    call fb_color_of
+    mov [term_fb_color], eax
+    pop eax
     ret
 
 ; al = 字符(支持 \n \r \b)
 term_putc:
+    cmp dword [vbe_ok], 0
+    jne fb_putc                         ; 图形模式:走帧缓冲终端
     push eax
     push ebx
     push edi
@@ -261,6 +290,8 @@ term_scroll:
 
 ; 把光标位置告诉 VGA 硬件(不然屏幕上不会有那个闪的方块)
 term_move_hw_cursor:
+    cmp dword [vbe_ok], 0
+    jne .skip                           ; 图形模式没有硬件字符光标
     push eax
     push ebx
     push edx
@@ -284,6 +315,7 @@ term_move_hw_cursor:
     pop edx
     pop ebx
     pop eax
+.skip:
     ret
 
 ; esi = 以 0 结尾的字符串
@@ -391,6 +423,11 @@ term_print_byte:
 ; ============================================================================
 msg_title   db 'JoyOS - stage 5', 10, 0
 msg_chain   db 'bootloader -> protected mode -> kernel', 10, 0
+msg_fbdump  db 'fb: phys=', 0
+msg_fbw     db ' w=', 0
+msg_fbh     db ' h=', 0
+msg_fbp     db ' pitch=', 0
+msg_fbb     db ' bpp=', 0
 msg_zh_tag  db 'zh  : ', 0
 msg_sectors db 'kernel area: ', 0
 msg_equals  db ' sectors = ', 0
@@ -406,6 +443,13 @@ msg_idt     db 'IDT: 256 vectors installed (errors 0-31 have handlers)', 10, 0
 msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-4 MiB (+ 0x400000 -> 0x100000)', 10, 0
 msg_kbd     db 'keyboard: PIC remapped to 0x20, IRQ1 enabled', 10, 0
 msg_ok      db 'OK - stage 5: boot + protection + IDT + paging + keyboard + shell.', 10, 0
+
+vbe_ok       dd 0
+fb_phys      dd 0
+fb_width     dd 0
+fb_height    dd 0
+fb_pitch     dd 0
+fb_bpp       dd 0
 
 boot_sectors dd 0
 boot_lba     dd 0
@@ -423,15 +467,3 @@ term_print_addr:
     pop eax
     ret
 
-; ============================================================================
-;  其它模块(平坦二进制 + %include,不用链接器)
-;  注意:必须放在最后那个"补到 32 KiB"的 times 之前
-; ============================================================================
-%include "idt.asm"
-%include "paging.asm"
-%include "vgafont.asm"
-%include "keyboard.asm"
-%include "shell.asm"
-
-; 内核区补到 32 KiB,这样"多扇区"是实打实的(不是只剩几百字节的代码)
-times (64 * 512) - ($ - $$) db 0

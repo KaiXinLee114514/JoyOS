@@ -145,6 +145,8 @@ vgafont_init:
 ;    ASCII(<0x80)直接打;汉字查映射表,连着打两个字格
 ; ---------------------------------------------------------------------------
 term_print_cp:
+    cmp dword [vbe_ok], 0
+    jne fb_putcp                        ; 图形模式:码位直接查表画字,不用字模号那套
     push eax
     push ebx
     push ecx

@@ -30,12 +30,14 @@
 ; ============================================================================
 
 PD_ADDR     equ 0x1000                 ; 页目录(4 KiB)
+PT_LFB      equ 0x4000                 ; 页表:给 VBE 线性帧缓冲用(4 MiB 够 800×600×4)
 PT_LOW      equ 0x2000                 ; 页表:管 0x000000-0x3FFFFF(前 4 MiB)
 PT_DEMO     equ 0x3000                 ; 页表:管 0x400000-0x7FFFFF
 
 DEMO_VADDR  equ 0x00400000             ; 演示用虚拟地址(1 MiB 处)
 DEMO_PADDR  equ 0x00100000             ; 它映到的物理地址
 
+; 注意:帧缓冲地址用 kmain.asm 里的 fb_phys 变量(内核启动时从 BOOTINFO 抄过来的)
 PAGE_P      equ 1                      ; bit0 present
 PAGE_RW     equ 2                      ; bit1 writable
 
@@ -47,7 +49,7 @@ paging_init:
 
     ; ---- 1) 把 0x1000~0x3FFF 这 12 KiB 清零(页目录 + 两个页表)----
     mov edi, PD_ADDR
-    mov ecx, (3 * 4096) / 4            ; 12 KiB ÷ 4 字节 = 3072 个双字
+    mov ecx, (4 * 4096) / 4            ; 16 KiB:页目录 + 三张页表
     xor eax, eax
     rep stosd
 
@@ -75,6 +77,36 @@ paging_init:
     or  eax, PAGE_P | PAGE_RW
     mov [PT_DEMO + 0 * 4], eax
 
+    ; ---- 4.5) 把 VBE 线性帧缓冲也映射进来 ----
+    ; 分页只 identity-map 了前 4 MiB,而帧缓冲通常在 0xFD000000 这种高地址,
+    ; 不映射的话第一次往屏幕写像素就会吃 14 号页错误(panic 屏里 CR2 就是那个地址)。
+    ; 做法:按 4 MiB 对齐算出页目录索引,给它挂一张新页表,里面 1024 项都指向那 4 MiB。
+    cmp dword [fb_phys], 0             ; stub 没拿到图形模式就跳过
+    je .no_lfb
+    mov eax, [fb_phys]
+    shr eax, 22                        ; 页目录索引(4 MiB 为单位)
+    mov [lfb_pde_idx], eax
+    shl eax, 22                        ; 对齐到 4 MiB 的基址
+    mov [lfb_base], eax
+
+    mov edi, PT_LFB
+    mov eax, [lfb_base]
+    or  eax, PAGE_P | PAGE_RW
+    mov ecx, 1024
+.fill_lfb:
+    mov [edi], eax
+    add edi, 4
+    add eax, 4096
+    dec ecx
+    jnz .fill_lfb
+
+    mov eax, PT_LFB
+    or  eax, PAGE_P | PAGE_RW
+    mov edi, [lfb_pde_idx]
+    mov [PD_ADDR + edi * 4], eax
+
+.no_lfb:
+
     ; ---- 5) CR3 ← 页目录物理地址,然后开 CR0.PG ----
     mov eax, PD_ADDR
     mov cr3, eax
@@ -84,3 +116,6 @@ paging_init:
 
     popad
     ret
+
+lfb_pde_idx  dd 0
+lfb_base     dd 0
