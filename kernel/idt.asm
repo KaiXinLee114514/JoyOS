@@ -296,7 +296,9 @@ exc_names:
 
 align 8
 idt:
-    resb IDT_ENTRIES * 8                ; 256 × 8 = 2048 字节
+    times IDT_ENTRIES * 8 db 0          ; 256 × 8 = 2048 字节
+                                        ; (用 times db 0 而不是 resb:平坦二进制里
+                                        ;  resb 会让 nasm 报 "uninitialized space" 警告)
 idt_end:
 
 idt_desc:

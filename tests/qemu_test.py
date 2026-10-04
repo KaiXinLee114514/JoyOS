@@ -137,8 +137,9 @@ def main() -> int:
     if os.path.exists(sock):
         os.unlink(sock)
 
-    drive = (["-hda", img, "-boot", "c"] if as_hdd
-             else ["-fda", img, "-boot", "a"])
+    # 显式写 format=raw:不然 QEMU 会警告"自动探测格式有风险",还可能拒绝对块 0 写入
+    drive = ([f"-drive", f"file={img},format=raw,if=ide,index=0", "-boot", "c"] if as_hdd
+             else [f"-drive", f"file={img},format=raw,if=floppy", "-boot", "a"])
     qemu = subprocess.Popen(
         ["qemu-system-i386", *drive,
          "-display", "none", "-no-reboot",

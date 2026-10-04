@@ -34,11 +34,21 @@
 # Debian/Ubuntu
 sudo apt install nasm qemu-system-x86 python3
 
-make            # 构建 build/joyos.img(1.44MB 软盘镜像)
-make run        # 开窗口在 QEMU 里跑(自己敲键盘玩)
-make test       # 无头自动化测试:6 组,全过会打 ✅
-make clean
+make                    # 构建 build/joyos.img(1.44MB 软盘镜像)
+make run                # 开窗口在 QEMU 里跑(自己敲键盘玩)
+make test               # 无头自动化测试:6 组,全过会打 ✅
+make clean              # 清掉 build/
+
+./tools/run.sh          # 启动脚本:自动构建 + 选"怎么挂盘"
+./tools/run.sh --hdd    #   当硬盘挂 → 会走 LBA/EDD 那条路
+./tools/run.sh --div    #   开机就除零 → 直接看 panic 屏
+./tools/run.sh --gdb    #   开 gdb 调试端口(-s -S)
+./tools/run.sh --monitor #  把 QEMU monitor 接到终端(能 sendkey / xp 读显存)
+./tools/run.sh --dry-run #  只打印 qemu 命令行,不启动(排错用)
+QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 ```
+
+QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` 切到 monitor 控制台(`Ctrl+Alt+1` 切回来)。
 
 `make test` 的 6 组(每组都真的启动 QEMU、抓 VGA 显存、断言屏幕内容):
 
@@ -67,6 +77,7 @@ kernel/paging.asm      页目录 + 页表 + 开分页
 kernel/keyboard.asm    8259A 重映射、IRQ1 键盘中断、扫描码翻译、环形缓冲
 kernel/shell.asm       shell:行编辑、命令解析、各命令实现
 tools/mkimg.py         把 boot.bin(第 0 扇区)+ kernel.bin(从第 1 扇区)拼成镜像
+tools/run.sh           QEMU 启动脚本(软盘/硬盘/panic 演示/gdb/monitor/dry-run)
 tests/qemu_test.py     无头测试:monitor socket 抓 VGA + sendkey 注入按键
 tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 4 节)
 ```
@@ -151,7 +162,72 @@ virtual      = 0x00800000
 PDE index    = 0x00000002 [2] = 0x00000000  PDE not present -> would page-fault
 ```
 
-## 6. 还没做的(想练手就从这里挑)
+## 6. 怎么改(五分钟能见效的几个)
+
+改完 `make` 一下,`./tools/run.sh` 就能看到效果。
+
+### 6.1 改开机那句话
+
+`kernel/kmain.asm` 最下面的数据区,`msg_title` 就是第一行:
+
+```asm
+msg_title   db 'JoyOS - stage 5', 10, 0     ; 10 = 换行,0 = 字符串结束
+```
+
+**注意**:VGA 文本模式只有 ASCII 字形,写中文会变成乱码(见 4.4)。
+
+### 6.2 加一条 shell 命令
+
+三处,都在 `kernel/shell.asm`:
+
+```asm
+; 1) 写处理函数(想打印就用 term_print,想读参数用 [cmd_arg])
+cmd_hi:
+    mov esi, msg_hi
+    call term_print
+    ret
+
+msg_hi db 'hi there', 10, 0                 ; 2) 加字符串
+
+; 3) 在命令表里登记(名字 + 处理函数)
+n_hi db 'hi', 0
+cmd_table:
+    dd n_hi, cmd_hi
+    ...
+```
+
+命令名匹配是**整词**比较(`str_eq`),所以 `page` 不会被 `pa` 之类误命中。
+
+### 6.3 改分页怎么映射
+
+`kernel/paging.asm` 顶部:
+
+```asm
+DEMO_VADDR  equ 0x00400000      ; 虚拟地址
+DEMO_PADDR  equ 0x00100000      ; 映到哪块物理内存
+```
+
+改完在 shell 里 `page 0x400000` 就能看到 PDE/PTE 变了。想让它"映了但不许写",
+把那项的 `PAGE_RW` 去掉(变成只读),写它就会吃 13 号通用保护异常。
+
+### 6.4 让 panic 屏显示更多
+
+`kernel/idt.asm` 里 `isr_common` 就是那个"红屏 + 停机"。异常帧里的东西都在栈上:
+
+```
+[ebp+32]=向量号  [ebp+36]=错误码  [ebp+40]=EIP  [ebp+44]=CS  [ebp+48]=EFLAGS
+```
+
+想再打 `CR3`、`DS`、或者页表项,照着 `mov eax, cr2 / call term_print_hex` 那样加一行就行。
+
+### 6.5 想看汇编到底编成了什么
+
+```bash
+make lst        # 生成 build/boot.lst 和 build/kernel.lst(带机器码的反汇编)
+qemu ... -s -S  # 配合 gdb:target remote :1234
+```
+
+## 7. 还没做的(想练手就从这里挑)
 
 - **PIT 定时器(IRQ0)**:有了它才能做 `uptime`、闪烁光标、`sleep`
 - **光标键 / Home / End**:要处理扫描码的 `0xE0` 前缀
@@ -162,7 +238,7 @@ PDE index    = 0x00000002 [2] = 0x00000000  PDE not present -> would page-fault
 - **文件系统**:现在读盘是按 LBA 裸读,连 FAT12 都还没有
 - **鼠标(IRQ12)**:PS/2 鼠标比键盘多几个坑(要发命令、读 3 字节包)
 
-## 7. 许可
+## 8. 许可
 
 MIT —— 随便用、随便改、随便抄(见 [LICENSE](LICENSE))。
 要是这个仓库帮你搞懂了保护模式或者分页,那就够了。
