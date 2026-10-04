@@ -267,6 +267,10 @@ qemu ... -s -S  # 配合 gdb:target remote :1234
 398 个字形(ASCII + 312 个汉字,23 KB 的 `.hex` 子集),`tools/unifont2bin.py` 负责转成
 内核直接 `incbin` 的二进制。**授权按 GPL-2+ 单独标注**(不并入仓库的 MIT)。
 
+**编码现状**:字符编号一直是标准 Unicode 码位,但内核里存中文用的是"每字符 4 字节的码位数组",
+不是 UTF-8,所以现在还读不了外部的 UTF-8 文本 —— 细节、实证和改造方案见
+[docs/encoding.md](docs/encoding.md)。
+
 顺带说明:文本模式那条路也做过一遍(把字模塞进 VGA plane 2、汉字劈成两个字符格),
 寄存器细节都查清了写在 [font/README.md](font/README.md) 里,但上限只有 63 个字,
 所以现在默认走图形模式;那个实验仍可用 `make run-font` 跑。
