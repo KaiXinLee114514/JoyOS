@@ -22,6 +22,8 @@
 # ============================================================================
 
 NASM    := nasm
+# unifont 的 .hex 放哪(只有 make font 用得到,平时构建不需要它)
+UNIFONT_HEX ?= font/unifont-subset.hex
 QEMU    := qemu-system-i386
 BUILD   := build
 IMG     := $(BUILD)/joyos.img
@@ -29,8 +31,11 @@ DIV_IMG    := $(BUILD)/joyos-div.img
 
 BOOT_SRC    := boot/boot.asm
 KERNEL_SRCS := $(wildcard kernel/*.asm)
+# 内核 incbin 了字模、%include 了映射表 —— 它们变了也必须重编内核,
+# 不然 make 会说"无事可做",你改了字库却看到的还是老字模(这个坑踩过一次)
+FONT_DEPS   := font/vga-font.bin font/vga-zh-map.asm font/vga-zh-strings.asm
 
-.PHONY: all run test test-fda test-hda test-div test-pgfault test-kbd test-shell div clean lst
+.PHONY: all run run-font test test-fda test-hda test-div test-pgfault test-kbd test-shell div font clean lst
 
 all: $(IMG)
 
@@ -41,15 +46,18 @@ $(BUILD)/boot.bin: $(BOOT_SRC) | $(BUILD)
 	$(NASM) -f bin $< -o $@ -l $(BUILD)/boot.lst
 	@printf '   引导扇区: %s 字节 (必须 512)\n' "$$(stat -c %s $@)"
 
-$(BUILD)/kernel.bin: $(KERNEL_SRCS) | $(BUILD)
-	$(NASM) -f bin -I kernel/ kernel/kmain.asm -o $@ -l $(BUILD)/kernel.lst
+# USE_CUSTOM_FONT=1 时启用实验中的自定义字模(见 font/README.md)
+NASM_DEFS := $(if $(USE_CUSTOM_FONT),-DUSE_CUSTOM_FONT=1)
+
+$(BUILD)/kernel.bin: $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
+	$(NASM) -f bin -I kernel/ $(NASM_DEFS) kernel/kmain.asm -o $@ -l $(BUILD)/kernel.lst
 	@printf '   内核:     %s 字节\n' "$$(stat -c %s $@)"
 
 $(IMG): $(BUILD)/boot.bin $(BUILD)/kernel.bin tools/mkimg.py
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/kernel.bin $(IMG)
 
 # 两个"开机就炸"的镜像:自测代码用 -D 开关才编进去,正常镜像里没有
-$(BUILD)/kernel-div.bin: $(KERNEL_SRCS) | $(BUILD)
+$(BUILD)/kernel-div.bin: $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
 	$(NASM) -f bin -I kernel/ -DSELFTEST_FAULT=1 kernel/kmain.asm -o $@ -l $(BUILD)/kernel-div.lst
 
 $(DIV_IMG): $(BUILD)/boot.bin $(BUILD)/kernel-div.bin tools/mkimg.py
@@ -58,8 +66,20 @@ $(DIV_IMG): $(BUILD)/boot.bin $(BUILD)/kernel-div.bin tools/mkimg.py
 run: $(IMG)
 	$(QEMU) -fda $(IMG) -boot a
 
+# 带自定义点阵字模的实验版(见 font/README.md;默认构建不启用)
+run-font:
+	$(MAKE) -B build/kernel.bin USE_CUSTOM_FONT=1
+	$(MAKE) $(IMG)
+	$(QEMU) -fda $(IMG) -boot a
+
 div: $(DIV_IMG)
 	$(QEMU) -fda $(DIV_IMG) -boot a
+
+# 从上游 .hex 重新生成字模 / 映射 / 文案(需要先下 unifont 的 .hex,见 font/README.md)
+font: tools/unifont2bin.py font/charset.txt font/strings.txt
+	python3 tools/unifont2bin.py --hex $(UNIFONT_HEX) \
+	    --vga-font font/vga-font.bin --vga-map font/vga-zh-map.asm --vga-chars-file font/charset.txt \
+	    --zh-strings-in font/strings.txt --zh-strings-out font/vga-zh-strings.asm
 
 test: test-fda test-hda test-div test-pgfault test-kbd test-shell
 
@@ -88,7 +108,7 @@ test-shell: $(IMG)
 	python3 tests/qemu_test.py $(IMG) --shell
 
 # 看反汇编: make lst 之后翻 build/*.lst
-lst: $(BOOT_SRC) $(KERNEL_SRCS) | $(BUILD)
+lst: $(BOOT_SRCS) $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
 	$(NASM) -f bin $(BOOT_SRC) -o $(BUILD)/boot.bin -l $(BUILD)/boot.lst
 	$(NASM) -f bin -I kernel/ kernel/kmain.asm -o $(BUILD)/kernel.bin -l $(BUILD)/kernel.lst
 	@echo "反汇编在 $(BUILD)/boot.lst 和 $(BUILD)/kernel.lst"

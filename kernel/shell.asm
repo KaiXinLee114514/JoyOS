@@ -192,6 +192,27 @@ cmd_help:
     call term_print
     ret
 
+cmd_zh:
+    mov al, COL_NORMAL
+    call term_set_color
+    mov esi, msg_zh_note
+    call term_print
+    xor ecx, ecx                        ; 一条一条打
+.next:
+    cmp ecx, zh_str_count
+    jae .done
+    mov esi, zh_str_table
+    mov esi, [esi + ecx * 4]
+    push ecx
+    call term_print_zh
+    mov al, 10
+    call term_putc
+    pop ecx
+    inc ecx
+    jmp .next
+.done:
+    ret
+
 cmd_echo:
     mov esi, [cmd_arg]
     call term_print
@@ -485,6 +506,7 @@ parse_hex:
 ; ---------------------------------------------------------------------------
 n_help   db 'help', 0
 n_echo   db 'echo', 0
+n_zh     db 'zh', 0
 n_clear  db 'clear', 0
 n_info   db 'info', 0
 n_page   db 'page', 0
@@ -494,6 +516,7 @@ n_reboot db 'reboot', 0
 cmd_table:
     dd n_help,   cmd_help
     dd n_echo,   cmd_echo
+    dd n_zh,     cmd_zh
     dd n_clear,  cmd_clear
     dd n_info,   cmd_info
     dd n_page,   cmd_page
@@ -507,6 +530,7 @@ cmd_table:
 msg_shell_hello db 'type "help" for commands.', 10, 0
 msg_prompt      db '> ', 0
 msg_shell_unknown db 'unknown command: ', 0
+msg_zh_note     db 'zh: 中文点阵来自 GNU Unifont,但文本模式这条路还在实验(见 font/README.md)', 10, 0
 msg_fault       db 'touching an unmapped address on purpose...', 10, 0
 msg_reboot      db 'rebooting...', 10, 0
 msg_reboot_fail db '8042 did not reset, trying triple fault...', 10, 0
@@ -514,6 +538,7 @@ msg_reboot_fail db '8042 did not reset, trying triple fault...', 10, 0
 msg_help db \
     'help          show this list', 10, \
     'echo <text>   print the text back', 10, \
+    'zh            print Chinese (bitmap glyphs from GNU Unifont)', 10, \
     'clear         clear the screen', 10, \
     'info          CPU / paging / IDT info', 10, \
     'page <hex>    walk the page tables, e.g. page 0x400000', 10, \

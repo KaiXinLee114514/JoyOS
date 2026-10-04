@@ -37,6 +37,10 @@ kmain:
     mov [boot_lba], ebx                ; 内核起始 LBA
     mov [boot_mode], ecx               ; 1 = LBA(EDD),0 = CHS 退回
 
+%ifdef USE_CUSTOM_FONT
+    call vgafont_init                  ; 实验中的自定义点阵字模(见 font/README.md)
+%endif
+
     call term_init                     ; 清屏 + 光标归位
 
     ; ---- 开机报到 ----
@@ -51,6 +55,14 @@ kmain:
     call term_set_color
     mov esi, msg_chain
     call term_print
+
+%ifdef USE_CUSTOM_FONT
+    ; 中文自检:这一行是从 Unifont 点阵拼出来的
+    mov esi, msg_zh_tag
+    call term_print
+    mov esi, zh_str_2                   ; "这是 JoyOS 的中文显示。"
+    call term_print_zh
+%endif
 
     mov esi, msg_sectors
     call term_print
@@ -118,6 +130,7 @@ kmain:
     xor ecx, ecx
     div ecx                              ; 除零 → 0 号异常
 %endif
+
 
     jmp shell_main                       ; 进 shell(不返回)
 
@@ -378,6 +391,7 @@ term_print_byte:
 ; ============================================================================
 msg_title   db 'JoyOS - stage 5', 10, 0
 msg_chain   db 'bootloader -> protected mode -> kernel', 10, 0
+msg_zh_tag  db 'zh  : ', 0
 msg_sectors db 'kernel area: ', 0
 msg_equals  db ' sectors = ', 0
 msg_bytes   db ' bytes loaded from disk', 10, 0
@@ -415,6 +429,7 @@ term_print_addr:
 ; ============================================================================
 %include "idt.asm"
 %include "paging.asm"
+%include "vgafont.asm"
 %include "keyboard.asm"
 %include "shell.asm"
 
