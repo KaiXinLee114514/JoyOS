@@ -1,37 +1,46 @@
 # JoyOS(胡闹OS)
 
-![JoyOS shell](docs/screenshot.png)
+![JoyOS 硬盘模式:字库从磁盘读、FAT16 列目录、跑磁盘上的程序](docs/screenshot-fat.png)
 
-上图是图形模式(800×600 VBE)下跑 `info` 和 `zh` 的实拍;下面是中文那几行的 2 倍放大:
+上图是完整硬盘镜像的实拍:字库从磁盘读进来(40 208 个字形)、FAT16 挂上了,
+`ls` 列目录、`run HELLO` 跑磁盘上的程序、`write` / `cat` 读写文件。
 
-![中文显示](docs/screenshot-zh.png)
+下面是图形模式(800×600 VBE)里敲 `info` 和 `zh` 的样子,以及中文那几行的 2 倍放大:
 
-一个**从头写的、只有 2000 多行的 x86 操作系统**,能启动、能分页、能敲键盘、有个自己的 shell。
-没有引用任何现成内核 —— 引导扇区是手写的机器码级汇编,VGA 输出、中断、页表全靠自己填。
+![JoyOS shell](docs/screenshot.png) ![中文显示](docs/screenshot-zh.png)
+
+一个**从头写的、4000 多行的 x86 操作系统**,能启动、能分页、能读硬盘、
+有自己的文件系统和 shell,还能**跑你写的小程序**。
+没有引用任何现成内核 —— 引导扇区是手写的机器码级汇编,VGA 输出、中断、页表、ATA 驱动全靠自己填。
 
 写它的目的不是"做个能用的系统",而是**把 计算机启动到底发生了什么 一层层摊开给你看**:
-从 BIOS 把 512 字节读进 0x7C00,到 GDT/保护模式/IDT/分页/键盘中断,每一段都在源码注释里讲清楚,
-包括**踩过的坑**(下面有专门一节)。
+从 BIOS 把 512 字节读进 0x7C00,到 GDT/保护模式/IDT/分页/键盘中断/ATA 读盘/FAT16,
+每一段都在源码注释里讲清楚,包括**踩过的坑**(下面有专门一节)。
 
 > 你可以随便改。改坏了 `make test` 会告诉你哪一项坏了。
+>
+> 想最快见效?**别碰内核,写个程序丢到磁盘上跑** —— 见 [docs/programs.md](docs/programs.md)。
 
 ---
 
-## 1. 现在能干什么(阶段 5 完成)
+## 1. 现在能干什么
 
 | 功能 | 说明 |
 |---|---|
 | 启动 | 512 字节引导扇区,BIOS 传统 MBR 方式加载到 `0x7C00` |
-| **多扇区读盘** | 一次读多个扇区把 32 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
+| **多扇区读盘** | 一次读多个扇区把 64 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
 | 保护模式 | GDT(代码段 + 数据段,平坦 4 GiB)、`CR0.PE`、32 位段寄存器全部就位 |
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
 | 分页 | 页目录 + 页表,恒等映射前 4 MiB,另外把 `0x400000` 映到物理 `0x100000`,开 `CR0.PG` |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift),64 字节环形缓冲 |
+| **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
+| **FAT16 文件系统** | 挂载 / 按名字找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)、`ls` 列目录 |
+| **跑磁盘上的程序** | `run HELLO`:从磁盘读进 `0x120000` 然后执行(超 896 KB 直接拒绝),程序用 `int 0x30` 调用内核(见 [docs/programs.md](docs/programs.md)) |
 | **图形模式** | 实模式 stub 里用 VBE 问出 **800×600×32 线性帧缓冲**模式,页表把帧缓冲映射进来,终端直接往显存画像素 |
-| 点阵字库 | 从 **GNU Unifont** 抽了 398 个字形(ASCII + 312 个汉字),码位二分查找后 blit 到帧缓冲 |
-| 中文显示 | ✅ 一个汉字 16×16 直接画在帧缓冲上,没有 63 个字的限制了(见 [font/README.md](font/README.md)) |
+| **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
+| 中文显示 | ✅ 一个汉字 16×16 直接画在帧缓冲上;文本是标准 **UTF-8**(四字节 emoji、坏字节替换符都处理了) |
 | 终端 | 会滚屏的终端(文本模式走 VGA 文本缓冲,图形模式走帧缓冲),支持 `\n` `\r` `\b` |
-| shell | `help` `echo` `clear` `info` `page` `fault` `reboot`,带退格的行编辑 |
+| shell | `help` `echo` `zh` `clear` `info` `page` `fault` `reboot` `ls` `cat` `write` `run`,带退格的行编辑 |
 
 ## 2. 快速开始
 
@@ -41,13 +50,15 @@
 # Debian/Ubuntu
 sudo apt install nasm qemu-system-x86 python3
 
-make                    # 构建 build/joyos.img(1.44MB 软盘镜像)
-make run                # 开窗口在 QEMU 里跑(自己敲键盘玩)
-make test               # 无头自动化测试:6 组,全过会打 ✅
+make                    # 构建两个镜像:build/joyos.img(软盘)+ build/joyos-hd.img(硬盘)
+make run                # 软盘镜像,开窗口在 QEMU 里跑(自己敲键盘玩)
+make hd                 # 完整硬盘镜像:字库 + FAT16 + 示例程序
+make test               # 无头自动化测试:7 组,全过会打 ✅
 make clean              # 清掉 build/
 
 ./tools/run.sh          # 启动脚本:自动构建 + 选"怎么挂盘"
-./tools/run.sh --hdd    #   当硬盘挂 → 会走 LBA/EDD 那条路
+./tools/run.sh --hdd    #   把软盘镜像当硬盘挂 → 会走 LBA/EDD 那条路
+./tools/run.sh --hd     #   完整硬盘镜像(推荐:能 ls / cat / run)
 ./tools/run.sh --div    #   开机就除零 → 直接看 panic 屏
 ./tools/run.sh --gdb    #   开 gdb 调试端口(-s -S)
 ./tools/run.sh --monitor #  把 QEMU monitor 接到终端(能 sendkey / xp 读显存)
@@ -55,9 +66,20 @@ make clean              # 清掉 build/
 QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 ```
 
+在硬盘模式里值得敲一遍的:
+
+```
+> ls                    ← 列 FAT16 根目录
+> cat README.TXT        ← 读一个 UTF-8 文本文件(里面有中文)
+> run HELLO             ← 跑磁盘上的程序
+> write MY.TXT hello    ← 写文件(真的落到磁盘上)
+> cat MY.TXT            ← 再读回来
+> run                   ← 裸敲 run 会打印程序接口说明书
+```
+
 QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` 切到 monitor 控制台(`Ctrl+Alt+1` 切回来)。
 
-`make test` 的 6 组(每组都真的启动 QEMU、抓 VGA 显存、断言屏幕内容):
+`make test` 的 7 组(每组都真的启动 QEMU、抓屏、断言屏幕内容):
 
 | 目标 | 测什么 |
 |---|---|
@@ -66,12 +88,16 @@ QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` �
 | `test-div` | 故意除零 → 0 号异常,panic 屏要出现 |
 | `test-pgfault` | shell 里敲 `fault` → 14 号页错误,CR2 要等于出错地址 |
 | `test-kbd` | 用 QEMU monitor 的 `sendkey` **真按键**,验证回显、Shift、回车、退格 |
-| `test-shell` | 敲 `help`/`info`/`page`/`echo`/`clear`,验证命令、滚屏、清屏 |
+| `test-shell` | 敲 `help`/`info`/`page`/`echo`/`clear`,验证命令、滚屏、清屏、中文、UTF-8 边界 |
+| `test-hd-font` | 硬盘镜像:字库从磁盘读、`ls`/`cat`/`write`/`run`,**再离线解析镜像**证明字节真落盘 |
+
+最后那一项有两套独立的验证手段:一套看屏幕像素(把期望的文字用字库渲染成图案再去截图里找),
+一套在 QEMU 关掉之后**直接解析镜像文件的 FAT16 分区**(不信内核自己打印的"写成功了")。
 
 ```bash
-make test-fda      # 单独跑某一组
+make test-hd-font  # 单独跑某一组
 make div           # 构建"开机就除零"的镜像,自己开着 QEMU 看 panic 屏
-python3 tests/qemu_test.py build/joyos.img --dump    # 只把屏幕打出来,不做断言(调试用)
+python3 tests/qemu_test.py build/joyos-hd.img --hda --dump   # 只把屏幕打出来,不做断言
 ```
 
 ## 3. 源码地图
@@ -79,31 +105,52 @@ python3 tests/qemu_test.py build/joyos.img --dump    # 只把屏幕打出来,不
 ```
 boot/boot.asm          引导扇区(512 字节内):探 LBA/CHS 读盘 → 跳 stub
 kernel/stub.asm        实模式 stub(搬到 0x500):问 VBE 要图形模式 → GDT → 保护模式
-kernel/start.asm       内核镜像入口:拼装 stub 之后的 32 位部分
-kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
+kernel/start.asm       内核镜像入口:拼装 stub 之后的 32 位部分(顺序有讲究,见注释)
 kernel/kmain.asm       内核入口 + 终端驱动(滚屏、光标、十六进制/十进制打印)
-kernel/idt.asm         IDT、32 个异常入口、panic 屏
-kernel/paging.asm      页目录 + 页表 + 开分页
+kernel/utf8.asm        UTF-8 解码(坏字节 → U+FFFD,防溢出/代理区都拦了)
+kernel/idt.asm         IDT、32 个异常入口、panic 屏,idt_install 负责装门
+kernel/paging.asm      页目录 + 页表 + 开分页(含帧缓冲那张页表)
 kernel/keyboard.asm    8259A 重映射、IRQ1 键盘中断、扫描码翻译、环形缓冲
+kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
+kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
+kernel/ata.asm         ATA(IDE)PIO 驱动:读扇区 + 写扇区 + FLUSH CACHE
+kernel/fontdisk.asm    启动时把完整字库从磁盘读进 0x200000(读不到就用内建子集)
+kernel/fat.asm         FAT16:挂载/找文件/读/写/列目录(根目录 + 8.3 名字)
+kernel/api.asm         int 0x30 程序接口(打印字符串/数字/码位、设颜色、等按键)
 kernel/shell.asm       shell:行编辑、命令解析、各命令实现
-tools/mkimg.py         把 boot.bin(第 0 扇区)+ kernel.bin(从第 1 扇区)拼成镜像
-tools/run.sh           QEMU 启动脚本(软盘/硬盘/panic 演示/gdb/monitor/dry-run)
-tests/qemu_test.py     无头测试:monitor socket 抓 VGA + sendkey 注入按键
-tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 4 节)
+progs/HELLO.asm        示例程序(最简)      —— 编译成 HELLO.BIN 放进镜像
+progs/COUNT.asm        示例程序(打印/颜色/码位)
+progs/README.TXT       也放进镜像,shell 里 cat README.TXT 能看(UTF-8 中文)
+tools/mkimg.py         拼镜像:boot(第 0 扇区)+ stub + kernel + 磁盘字库
+tools/mkfat.py         在镜像里造 FAT16 分区,并把文件放进去
+tools/unifont2bin.py   Unifont .hex → JOYF 二进制字库 / VGA 字模 / 中文文案
+tools/mkfontsubset.py  从完整 .hex 里抽出要用的字形(生成入库的小子集)
+tools/run.sh           QEMU 启动脚本(软盘/硬盘/完整硬盘/panic 演示/gdb/monitor/dry-run)
+tests/qemu_test.py     无头测试:monitor socket 抓屏 + sendkey 注入按键 + 离线解析镜像
+tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 节)
 ```
 
 内核是**平坦二进制 + `%include`**,没有用链接器 —— 所有 `.asm` 在同一个翻译单元里,
-所以 `kernel/*.asm` 之间可以直接互相调用。这样简单,代价是符号名不能重复。
+所以 `kernel/*.asm` 之间可以直接互相调用。这样简单,代价是符号名不能重复,
+而且**第一个被 include 的文件决定入口地址**(`kernel/start.asm` 里有注释说明)。
 
-内存布局(这个阶段的约定,写死在代码里):
+内存布局(写死在代码里):
 
 ```
 0x000000 - 0x0004FF   中断向量表 / BIOS 数据区
-0x001000 - 0x003FFF   页目录 + 页表        (paging.asm)
+0x001000              页目录                (paging.asm,PD_ADDR)
+0x002000              页表:前 4 MiB         (PT_LOW)
+0x003000              页表:0x400000→0x100000 (PT_DEMO)
+0x004000              页表:VBE 线性帧缓冲    (PT_LFB,按帧缓冲物理地址对齐)
 0x007C00              引导扇区(512 字节)
-0x010000 - 0x017FFF   内核本体(32 KiB = 64 扇区)
+0x010000 - 0x017FFF   内核本体(64 KiB = 128 扇区)
 0x090000              内核栈(往下长)
 0x0B8000              VGA 文本缓冲(80×25,每格 2 字节:字符 + 颜色)
+0x100000              FAT 扇区缓冲           (fat.asm 的 FAT_BUF)
+0x110000              cat 的文件缓冲         (shell.asm 的 FILE_BUF)
+0x1F0000              读磁盘描述块的临时缓冲 (fontdisk.asm)
+0x200000 - 0x3AF110   完整字库(从磁盘读进来,1.7 MB)
+0x120000              程序加载地址           (shell.asm 的 PROG_ADDR,最多 896 KB)
 ```
 
 ## 4. 图形模式(VBE + 帧缓冲)
@@ -123,9 +170,25 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 4 
 坑:16×16 的汉字一行是**两个字节**,低地址那个才是左半边 —— 一开始我用 bit15 开始往左画,
 结果**汉字左右两半反了**(每个字看着像"对折过"的样子)。修法是 `rol ax, 8` 把两个字节换回来。
 
-## 5. 踩过的坑(这部分才是精华)
+## 5. 磁盘:字库、FAT16、跑程序
 
-### 5.1 软盘的 BIOS 不支持 LBA 扩展读
+这一块单独写了一页:**[docs/filesystem.md](docs/filesystem.md)** —— 镜像的 LBA 地图、
+ATA PIO 的寄存器顺序和两个坑、磁盘字库怎么加载、FAT16 的字段和写文件流程、
+`mkfat.py` 怎么用、测试怎么用两条信道证明"字节真的落盘了"。
+
+想写程序的话看另一页:**[docs/programs.md](docs/programs.md)** —— `int 0x30` 的六个功能、
+为什么用中断而不是 `call` 内核函数、程序的内存/栈约定、怎么加进镜像。
+
+一句话版:
+
+```
+run HELLO      → fat_stat 看大小 → fat_read_file 读进 0x120000 → call 进去 → 程序 ret 回 shell
+程序里:         mov eax, 0 / mov esi, 字符串 / int 0x30   ← 打印一行
+```
+
+## 6. 踩过的坑(这部分才是精华)
+
+### 6.1 软盘的 BIOS 不支持 LBA 扩展读
 
 最开始只写了 `int 0x13 AH=42h`(LBA 扩展读,一次读 8 个扇区),结果 QEMU 里直接 `DISK READ FAILED`。
 
@@ -146,39 +209,91 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 4 
 `boot/boot.asm` 现在两条路都有,`make test-fda` / `make test-hda` 各测一条。
 这个探针留在 `tests/probe_disk.asm` 里 —— 你要是换个 BIOS 环境,先跑它。
 
-### 5.2 panic 屏里 EFLAGS 多了个 bit16,不是 bug
+### 6.2 一次要 255 个扇区,只有第一个是真的
+
+读磁盘字库时,命令发出去状态也正常,但内存里**只有第一个扇区是数据,后面全是 0** ——
+屏幕上每个字都成了 missing glyph 的方框。
+
+原因:ATA 规范允许驱动器**只传一部分**,PIO 模式下每传一个扇区都得等一次 `DRQ`。
+改成分块(16 扇区一块)+ 每扇区都 `ata_wait_drq` 才读全。
+
+### 6.3 `mov al, 0xE0` 把 LBA 弄丢了
+
+选盘的字节要写进 `al`,而 LBA 正好在 `eax` 里 —— 低 8 位当场被覆盖,
+"读 LBA 0x1E0"变成"读 LBA 0x00"。教训是**看内存里的字节,别信"函数返回成功"**。
+
+### 6.4 `mov ax, 0x10` 把系统调用号冲掉了
+
+`int 0x30` 的入口要先把自己换到内核数据段(`mov ax, 0x10`)—— 而功能号正好在 `eax` 里。
+于是分发器看到的永远是 `0x10`,所有功能都匹配不上。修法是先把功能号存到 `ebp`。
+
+这类"低 16 位被顺手写掉"的坑出现了两次(6.3 和 6.4),都是同一个原因:
+**保护模式里段寄存器只有 16 位,而 `eax` 的低半截在别处有用。**
+
+### 6.5 程序加载地址选在了字库中间(最阴的一个)
+
+程序本来是加载到 `0x300000` 的 —— 离内核很远,看着挺顺眼。但完整字库是读到 `0x200000` 的,
+1.7 MB 一直铺到 `0x3AF110`,**`0x300000` 正好落在点阵数据中间**:
+程序一载入就把几个汉字的点阵覆盖掉了(249 字节的 `HELLO.BIN` 踩掉 U+782A~U+7832 九个汉字,
+"砰"会画成花屏)。
+
+阴在哪:**两个功能单独测都是对的** —— `run HELLO` 正常、中文也正常显示,
+只有"跑完程序之后再显示那几个特定的字"才看得出来,我一开始甚至怀疑是字库文件坏了。
+
+修法三件事:
+
+1. 加载地址挪到 `0x120000`(上面是 `FILE_BUF`,下面是字库,中间 896 KB 全是空的);
+2. `run` 先用 `fat_stat` 看目录项里的文件大小,超过 `PROG_MAX_SIZE`(896 KB)直接拒绝,
+   不让它读进来把字库盖掉;
+3. 测试里加了两道锁:一道**哨兵**(`run HELLO` 之后屏幕必须能正确画出 U+7830 砰,
+   它的点阵就在以前会被踩掉的那段里),一道**静态检查**(从源码里读出 `PROG_ADDR` /
+   `FONT_LOAD_ADDR` 和字库文件大小,算程序区和字库区有没有重叠)。
+   两道锁都实测过"改回旧地址就会红"。
+
+顺带记一个算错过的地方:字形记录的是**相对数据区**的偏移,所以字形地址是
+`字库基址 + data_off + off`,不是 `基址 + off` —— 漏掉 `data_off` 差了 482 KB,
+"哪几个字被踩掉"的结论会全错。**偏移量属于哪个基准,比偏移量本身重要。**
+
+### 6.6 panic 屏里 EFLAGS 多了个 bit16,不是 bug
 
 除零的 panic 屏打出 `EFLAGS = 0x00010046`,而开机时明明是 `0x00000046`,多出来的 `0x10000` 是 bit16(RF,Resume Flag)。
 这是 CPU 自己加的:**故障类异常会把 RF 压进异常帧**,这样 `iret` 回去重试那条指令时不会立刻又炸一次。
 我为了这个 `0x10046` 查了一轮(还先把它错看成了 bit8 的 TF),最后在 `idt.asm` 里写清楚了。
 
-### 5.3 同一行连续打印会被自己盖掉 / `div` 会冲掉颜色寄存器
+### 6.7 同一行连续打印会被自己盖掉 / `div` 会冲掉颜色寄存器
 
 - 早期 VGA 驱动每次打印都"回到行首",导致同一行第二次 `print` 把第一次的内容盖了 ——
   后来改成**只有换行才重新定位**。
 - 打印十进制时用 `div`,而 `div` 会把 `edx` 当余数输出 —— 而颜色正好存在 `dl` 里,
   结果数字颜色全乱。改成**颜色存内存**,不放在寄存器里。
 
-### 5.4 VGA 文本模式只有 ASCII 字形
+### 6.8 VGA 文本模式只有 ASCII 字形
 
 屏幕上写中文会变成乱码(BIOS 自带字模只有 ASCII)。
-所以**代码注释全是中文,但所有会显示出来的字符串都是英文**。
 
-注意别想着"换个字模就能显示中文":VGA 文本模式一个字符格**只有 8 像素宽**
+别想着"换个字模就能显示中文":VGA 文本模式一个字符格**只有 8 像素宽**
 (字模是 8×N 的点阵,高度可以用 CRTC 的 Maximum Scan Line 调到 16 甚至 32),
 而标准汉字是 **16×16** —— 8 像素宽的格子根本塞不下一个汉字,换字模也救不了。
-真要显示中文只有进图形模式自己画点阵(见第 7 节)。
+真要显示中文只有进图形模式自己画点阵(见第 4 节)。
+(文本模式那条路我也试到底了:字模塞进 VGA plane 2、汉字劈成两个字符格,
+寄存器细节写在 [font/README.md](font/README.md) 里,但上限只有 63 个字,所以默认走图形模式,
+那个实验仍可用 `make run-font` 跑。)
 
-## 5. shell 命令
+## 7. shell 命令
 
 ```
 help          列出命令
 echo <text>   把文字打回来
+zh            显示中文(点阵字库,直接 blit 到帧缓冲)
 clear         清屏
 info          CR0/CR2/CR3/CR4、IDT 基址与限长、段寄存器、读盘方式
 page <hex>    逐级走页表,查虚拟地址映射到哪(例:page 0x400000)
 fault         故意踩没映射的地址,看页错误 panic 屏
 reboot        重启(通过 8042 键盘控制器)
+ls            列 FAT16 根目录(名字 + 字节数;硬盘模式才有)
+cat <file>    把文件(UTF-8 文本)打出来,中文能直接看
+write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
+run <file>    把程序读进 0x120000 跑(名字不带点会自动补 .BIN;裸敲 run 打印接口说明)
 ```
 
 `page` 的输出示例(这就是分页在干的事):
@@ -194,11 +309,26 @@ virtual      = 0x00800000
 PDE index    = 0x00000002 [2] = 0x00000000  PDE not present -> would page-fault
 ```
 
-## 6. 怎么改(五分钟能见效的几个)
+键盘直接给字节、**没有输入法**,所以命令行本身只能打 ASCII;
+想看中文就用 `cat`(文件里是 UTF-8),或者让程序自己打。
 
-改完 `make` 一下,`./tools/run.sh` 就能看到效果。
+## 8. 怎么改
 
-### 6.1 改开机那句话
+改完 `make` 一下,`./tools/run.sh --hd` 就能看到效果。
+
+### 8.1 加一个自己的程序(最推荐)
+
+```bash
+cp progs/HELLO.asm progs/MYPROG.asm     # 改吧
+make                                    # Makefile 会自动编 progs/*.asm
+python3 tools/mkfat.py build/joyos-hd.img 6144 8 MYPROG.BIN=build/MYPROG.BIN
+make hd                                 # 或者在 Makefile 的 PROGS 里加一行,让 make hd 自动带上
+> run MYPROG
+```
+
+接口、约定、例子都在 **[docs/programs.md](docs/programs.md)**。
+
+### 8.2 改开机那句话
 
 `kernel/kmain.asm` 最下面的数据区,`msg_title` 就是第一行:
 
@@ -206,9 +336,9 @@ PDE index    = 0x00000002 [2] = 0x00000000  PDE not present -> would page-fault
 msg_title   db 'JoyOS - stage 5', 10, 0     ; 10 = 换行,0 = 字符串结束
 ```
 
-**注意**:VGA 文本模式只有 ASCII 字形,写中文会变成乱码(见 4.4)。
+中文也直接写(字符串是 UTF-8,图形模式下能显示;文本模式会成乱码,见 6.8)。
 
-### 6.2 加一条 shell 命令
+### 8.3 加一条 shell 命令
 
 三处,都在 `kernel/shell.asm`:
 
@@ -230,7 +360,19 @@ cmd_table:
 
 命令名匹配是**整词**比较(`str_eq`),所以 `page` 不会被 `pa` 之类误命中。
 
-### 6.3 改分页怎么映射
+### 8.4 往镜像里放个文件
+
+```bash
+python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
+    NOTES.TXT=my-notes.txt HELLO.BIN=build/HELLO.BIN
+make hd
+> cat NOTES.TXT
+```
+
+参数含义、为什么是 6144、每簇几个扇区怎么选的,见
+[docs/filesystem.md 第 6 节](docs/filesystem.md)。
+
+### 8.5 改分页怎么映射
 
 `kernel/paging.asm` 顶部:
 
@@ -242,7 +384,7 @@ DEMO_PADDR  equ 0x00100000      ; 映到哪块物理内存
 改完在 shell 里 `page 0x400000` 就能看到 PDE/PTE 变了。想让它"映了但不许写",
 把那项的 `PAGE_RW` 去掉(变成只读),写它就会吃 13 号通用保护异常。
 
-### 6.4 让 panic 屏显示更多
+### 8.6 让 panic 屏显示更多
 
 `kernel/idt.asm` 里 `isr_common` 就是那个"红屏 + 停机"。异常帧里的东西都在栈上:
 
@@ -252,47 +394,42 @@ DEMO_PADDR  equ 0x00100000      ; 映到哪块物理内存
 
 想再打 `CR3`、`DS`、或者页表项,照着 `mov eax, cr2 / call term_print_hex` 那样加一行就行。
 
-### 6.5 想看汇编到底编成了什么
+### 8.7 想看汇编到底编成了什么
 
 ```bash
 make lst        # 生成 build/boot.lst 和 build/kernel.lst(带机器码的反汇编)
-qemu ... -s -S  # 配合 gdb:target remote :1234
+qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 ```
 
-## 7. 中文显示(实验中,详见 font/README.md)
+## 9. 中文与字库(详见 font/README.md)
 
-中文现在**能正常显示**了:图形模式下把 16×16 点阵直接 blit 到帧缓冲,shell 里敲 `zh` 就能看到。
+中文**能正常显示**:图形模式下把 16×16 点阵直接 blit 到帧缓冲,shell 里敲 `zh` 就能看到。
 
-数据来源与生成方式见 [font/README.md](font/README.md):`font/` 目录里是 GNU Unifont 抽出的
-398 个字形(ASCII + 312 个汉字,23 KB 的 `.hex` 子集),`tools/unifont2bin.py` 负责转成
-内核直接 `incbin` 的二进制。**授权按 GPL-2+ 单独标注**(不并入仓库的 MIT)。
+数据来源与生成方式见 [font/README.md](font/README.md):`font/` 目录里是 GNU Unifont 抽出的字形
+(入库的是 416 字形的 23 KB `.hex` 子集 + 二进制;完整 40 208 字形的 1.7 MB 字库**放在磁盘镜像里**,
+由 `tools/mkfontsubset.py` 生成)。**授权按 GPL-2+ 单独标注**(不并入仓库的 MIT)。
 
-**编码现状**:字符编号一直是标准 Unicode 码位,但内核里存中文用的是"每字符 4 字节的码位数组",
-不是 UTF-8,所以现在还读不了外部的 UTF-8 文本 —— 细节、实证和改造方案见
-[docs/encoding.md](docs/encoding.md)。
+**编码现状**:字符编号是标准 Unicode 码位,**内核文本也已经是标准 UTF-8** ——
+`term_print` 会先把 UTF-8 解成码位再画(见 `kernel/utf8.asm`),所以中文文案可以像普通字符串一样
+`db '你好,世界!', 0` 写进内核,程序里也一样;坏字节会画成替换字符 `�` 而不是卡死。
+细节(包括之前那套"码位数组"的历史)见 [docs/encoding.md](docs/encoding.md)。
 
-顺带说明:文本模式那条路也做过一遍(把字模塞进 VGA plane 2、汉字劈成两个字符格),
-寄存器细节都查清了写在 [font/README.md](font/README.md) 里,但上限只有 63 个字,
-所以现在默认走图形模式;那个实验仍可用 `make run-font` 跑。
+## 10. 还没做的(想练手就从这里挑)
 
-## 8. 还没做的(想练手就从这里挑)
-
+- **删文件 / 建子目录 / 长文件名**:现在只有根目录 + 8.3 短名(`rm` 会是最短的一步:
+  目录项首字节写 `0xE5` + 把簇链标回空闲)
+- **程序带参数**:`run PROG arg` 需要定义一个"启动信息块"(参数放哪、栈怎么给)
+- **保护程序搞坏内核**:现在程序和内核平起平坐,能直接改内核内存 ——
+  真正的下一步是 ring 3 + TSS + 每进程页表,`int 0x80` 当系统调用
 - **PIT 定时器(IRQ0)**:有了它才能做 `uptime`、闪烁光标、`sleep`
 - **光标键 / Home / End**:要处理扫描码的 `0xE0` 前缀
-- **更多 shell 命令**:`mem`(要先用 BIOS `int 0x15 E820` 问内存图)、`hexdump`、`calc`
-- **自己的点阵字库(顺便想想中文)**:现在屏幕上的字全是 BIOS 自带的 8×16 ASCII 字模。
-  能改的是字模本身 —— 文本模式下用 `int 0x10 AX=1110h` 加载自己的 8×16 字模,
-  或者进保护模式后直接往 VGA plane 2 写字模数据 —— 所以你自己画的 8×16 图标、
-  极简字是能显示出来的。但**标准汉字是 16×16,塞不进 8 像素宽的字符格**:
-  要正经中文得先切图形模式(VBE 800×600),自己往帧缓冲上画点阵,
-  字库还得从磁盘读(HZK16 一个字库约 216 KB → 得先有文件系统)。
-  最费劲,也最有成就感。
-- **改 GDT 做真正的用户态**:加 TSS、ring 3 代码段,用 `int 0x80` 做系统调用
-- **把页表放到别处 / 动态分配**:现在页目录是硬编码在 `0x1000`
-- **文件系统**:现在读盘是按 LBA 裸读,连 FAT12 都还没有
+- **ELF 加载 / 内存分配**:现在程序是平铺二进制读到固定地址,`malloc` 也没有
 - **鼠标(IRQ12)**:PS/2 鼠标比键盘多几个坑(要发命令、读 3 字节包)
+- **从磁盘读内核**:现在内核还是引导扇区按固定 LBA 读的,没有"从文件系统加载内核"
 
-## 9. 许可
+## 11. 许可
 
 MIT —— 随便用、随便改、随便抄(见 [LICENSE](LICENSE))。
-要是这个仓库帮你搞懂了保护模式或者分页,那就够了。
+`font/` 目录里的字形数据来自 GNU Unifont,按 **GPL-2+** 单独授权(见 [font/LICENSE](font/LICENSE))。
+
+要是这个仓库帮你搞懂了保护模式、分页或者文件系统,那就够了。
