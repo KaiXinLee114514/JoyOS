@@ -221,6 +221,12 @@ cmd_cat:
     mov esi, [cmd_arg]
     call strip_name                    ; 去掉尾巴上的空格
     mov esi, [cmd_arg]
+    call fat_stat                       ; 先看大小:缓冲区只到 PROG_ARG_ADDR 为止
+    cmp eax, -1
+    je .notfound
+    cmp eax, FILE_MAX
+    ja .toobig
+    mov esi, [cmd_arg]
     mov edi, FILE_BUF
     call fat_read_file
     cmp eax, -1
@@ -234,6 +240,12 @@ cmd_cat:
 .newline:
     mov al, 10
     call term_putc
+    ret
+.toobig:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_file_toobig
+    call term_print
     ret
 .notfound:
     mov al, COL_ERR
@@ -317,11 +329,14 @@ cmd_write:
 cmd_run:
     cmp byte [fat_ok], 0
     je cmd_ls.nomount
-    mov esi, [cmd_arg]
-    call strip_name
+    ; ★ 这里**不能**调 strip_name:它会把第一个空格改成 0,而空格后面的那截
+    ;   正是要传给程序的参数(`run EDIT NOTES.TXT`)—— 一改参数就没了(踩过)。
+    ;   文件名在下面抄进 name_buf,到空格自然就停了。
     mov esi, [cmd_arg]
     cmp byte [esi], 0
     je .usage                           ; 光敲 run 就说说程序怎么写
+    mov dword [PROG_ARG_ADDR], 0        ; 参数先当"没有"(上一条命令可能留了残渣)
+    mov byte [PROG_ARG_STR], 0
     ; 把名字抄进 name_buf,顺便看有没有带 '.'
     ; (之前这里写反了方向:从空缓冲往命令参数抄,结果名字变成空的 → file not found)
     mov esi, [cmd_arg]
@@ -332,6 +347,8 @@ cmd_run:
     lodsb
     test al, al
     jz .copied
+    cmp al, ' '                         ; 空格之后那截是"给程序的参数"
+    je .args
     cmp al, '.'
     jne .cpy_store
     mov edx, 1
@@ -341,6 +358,7 @@ cmd_run:
     inc ecx
     cmp ecx, 12                         ; 8.3 最多 12 个字符
     jb .cpy
+
 .copied:
     mov byte [edi], 0
     test edx, edx
@@ -351,6 +369,35 @@ cmd_run:
     mov byte [edi + 2], 'I'
     mov byte [edi + 3], 'N'
     mov byte [edi + 4], 0
+    jmp .no_ext
+
+.args:
+    ; 名字到这里结束,剩下的是参数:`run EDIT NOTES.TXT` 里的 NOTES.TXT
+    mov byte [edi], 0
+    push edx                            ; edx/edi 后面还要用来补 .BIN,先存一下
+    push edi
+.skip_sp:
+    cmp byte [esi], ' '
+    jne .copy_args
+    inc esi
+    jmp .skip_sp
+.copy_args:
+    mov edi, PROG_ARG_STR
+    mov ecx, PROG_ARG_MAX - 1
+.loop_args:
+    lodsb
+    test al, al
+    jz .args_done
+    mov [edi], al
+    inc edi
+    dec ecx
+    jnz .loop_args
+.args_done:
+    mov byte [edi], 0
+    mov dword [PROG_ARG_ADDR], 'JARG'   ; 告诉程序"这次真有参数"
+    pop edi
+    pop edx
+    jmp .copied
 .no_ext:
     ; 先只看目录项里的大小:太大就别读了,免得把字库盖掉一半
     mov esi, name_buf
@@ -856,11 +903,14 @@ msg_write_fail  db 'write failed (disk full?)', 10, 0
 msg_running     db 'running ', 0
 msg_prog_done   db 'program returned to the shell', 10, 0
 msg_prog_toobig db 'program too big for the load area', 10, 0
+msg_file_toobig db 'file too big to print (over 60 KiB)', 10, 0
 
 PROG_ADDR      equ 0x120000             ; 程序加载地址(progs/*.asm 里的 ORG 要和它一致)
 PROG_MAX_SIZE  equ FONT_LOAD_ADDR - PROG_ADDR
                                         ; 0xE0000 = 896 KB:再往上就是磁盘字库(0x200000)了
 FILE_BUF       equ 0x110000             ; cat 用的文件缓冲(1 MiB 往上,别压到字库)
+FILE_MAX       equ PROG_ARG_ADDR - FILE_BUF
+                                        ; 0xF000 = 60 KB:再往上就是程序参数块(0x11F000)
 
 name_buf   times 16 db 0
 file_size  dd 0

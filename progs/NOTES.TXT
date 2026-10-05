@@ -1,0 +1,15 @@
+JoyOS NOTES.TXT
+================
+
+这个文件是给你改着玩的。用编辑器打开它:
+
+    run EDIT              (默认就是编辑这个文件)
+    run EDIT NOTES.TXT    也可以显式写文件名
+
+里面能干的事:
+  · 方向键 / Home / End / Delete / PgUp / PgDn 移动光标
+  · 打字、回车换行、退格删字
+  · Ctrl-S 存盘(存的就是磁盘上这个文件)
+  · Ctrl-Q 退出(没存盘的话会再问一次)
+
+Ctrl-Q 走人之后,shell 里可以 cat NOTES.TXT 看看存进去的样子。

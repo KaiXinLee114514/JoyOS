@@ -18,6 +18,18 @@
 ;  ── 为什么用环形缓冲区 ──────────────────────────────────────────────────
 ;  中断随时会来,可能比程序"取字符"快得多。所以中断只往缓冲区里塞,
 ;  取字符的程序慢慢取;缓冲区满了就丢掉新的(总比覆盖还没读的强)。
+;
+;  ── 扩展键(方向键那一家子)───────────────────────────────────────────
+;  方向键之类的键,键盘先发一个 0xE0 前缀,再发真正的扫描码。裸塞进去的话,
+;  "上"就只剩一个 0x48 —— 和字符 'H' 分不清了。所以:
+;      扩展键 → 往缓冲区塞两个字节:0x1B(ESC) + (0x80 | 编号)
+;  编号表见 sc_ext:1 上 2 下 3 左 4 右 5 Home 6 End 7 Delete 8 PgUp 9 PgDn。
+;  用 0x80 起是因为普通按键翻出来的字符都 < 0x80,两者永远不会撞。
+;  单敲 ESC 键只塞一个 0x1B(后面没跟着 0x8x),取键时两种情况分得开。
+;
+;  ── Ctrl ────────────────────────────────────────────────────────────────
+;  按住 Ctrl 再按字母 → 塞控制码(字母 & 0x1F,Ctrl-S = 0x13)。
+;  编辑器那种"不占屏幕的快捷键"就靠它。
 ; ============================================================================
 
 PIC1_CMD   equ 0x20                    ; 主片:命令口
@@ -117,14 +129,24 @@ keyboard_irq:
     in al, KBD_DATA                    ; 扫描码必须读走,否则控制器不再中断
     mov bl, al
 
+    ; ---- 前缀字节:0xE0/0xE1 后面的那个扫描码是"扩展键" ----
+    cmp bl, 0xE0
+    je .prefix
+    cmp bl, 0xE1
+    je .prefix
+    cmp byte [ext_pending], 0
+    jne .extended
+
+    ; ---------------- 普通键 ----------------
     test bl, 0x80                      ; bit7=1 → 松键
     jnz .release
 
-    ; ---------------- 按下 ----------------
     cmp bl, 0x2A                       ; 左 Shift
     je .shift_on
     cmp bl, 0x36                       ; 右 Shift
     je .shift_on
+    cmp bl, 0x1D                       ; 左 Ctrl
+    je .ctrl_on
     cmp bl, 0x3A                       ; Caps Lock(先只当"按了没用")
     je .done
 
@@ -138,7 +160,38 @@ keyboard_irq:
 .translated:
     test al, al                        ; 0 = 这个键我们不认识
     jz .done
+    cmp byte [ctrl_down], 0            ; Ctrl + 字母 → 控制码(Ctrl-S = 0x13)
+    je .push
+    cmp al, 'a'
+    jb .push
+    cmp al, 'z'
+    ja .push
+    sub al, 'a' - 1
+.push:
     call kbd_push
+    jmp .done
+
+    ; ---------------- 扩展键(前缀已经收到)----------------
+.extended:
+    mov byte [ext_pending], 0
+    test bl, 0x80
+    jnz .done                          ; 扩展键的松开:忽略
+    movzx ecx, bl
+    cmp ecx, 0x80
+    jae .done
+    mov al, [sc_ext + ecx]
+    test al, al
+    jz .done                           ; 表里是 0 = 这个扩展键我们不管
+    mov [ext_code], al
+    mov al, 27                         ; 先塞 ESC …
+    call kbd_push
+    mov al, [ext_code]
+    or al, 0x80                        ; … 再塞 0x80|编号
+    call kbd_push
+    jmp .done
+
+.prefix:
+    mov byte [ext_pending], 1
     jmp .done
 
     ; ---------------- 松开 ----------------
@@ -148,6 +201,8 @@ keyboard_irq:
     je .shift_off
     cmp bl, 0x36
     je .shift_off
+    cmp bl, 0x1D
+    je .ctrl_off
     jmp .done
 
 .shift_on:
@@ -155,6 +210,12 @@ keyboard_irq:
     jmp .done
 .shift_off:
     mov byte [shift_down], 0
+    jmp .done
+.ctrl_on:
+    mov byte [ctrl_down], 1
+    jmp .done
+.ctrl_off:
+    mov byte [ctrl_down], 0
 
 .done:
     mov al, PIC_EOI                    ; 告诉 PIC"这条中断处理完了"
@@ -187,27 +248,126 @@ kbd_push:
     ret
 
 ; ---------------------------------------------------------------------------
+;  kbd_avail:缓冲区里现在有几个字节(读 head/tail 时关中断)
+; ---------------------------------------------------------------------------
+kbd_avail:
+    cli
+    push ebx
+    mov eax, [kbd_head]
+    mov ebx, [kbd_tail]
+    sti
+    sub eax, ebx
+    and eax, KBD_BUF_SIZE - 1
+    pop ebx
+    ret
+
+; ---------------------------------------------------------------------------
+;  kbd_consume:从队尾丢掉 ecx 个字节
+; ---------------------------------------------------------------------------
+kbd_consume:
+    push eax
+    cli
+    mov eax, [kbd_tail]
+    add eax, ecx
+    and eax, KBD_BUF_SIZE - 1
+    mov [kbd_tail], eax
+    sti
+    pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+;  kbd_seq_len:看队尾这两个字节是不是"ESC + 0x80|编号"
+;              是 → eax = 1(并且 edx = 编号),不是 → eax = 0
+;  ★ 这里踩过一个坑:`call kbd_avail` 会把 eax 改成"缓冲区里有几个字节",
+;    所以"不是序列"那条路**必须显式把 eax 清零** —— 不然返回的是个数(2、3…),
+;    调用方以为"这是个方向键",一次吃掉两个字节还把它翻译成扩展键,
+;    结果打字全乱(表现为"键盘失灵",其实是取键的那头吃错了)。
+; ---------------------------------------------------------------------------
+kbd_seq_len:
+    push ebx
+    push ecx
+    call kbd_avail
+    cmp eax, 2
+    jb .no                              ; 只有一个字节,肯定不是序列
+    mov ebx, [kbd_tail]
+    cmp byte [kbd_buf + ebx], 27
+    jne .no
+    inc ebx
+    and ebx, KBD_BUF_SIZE - 1
+    movzx edx, byte [kbd_buf + ebx]
+    mov ecx, edx
+    and ecx, 0xF0
+    cmp ecx, 0x80
+    jne .no
+    and edx, 0x0F                       ; 编号
+    mov eax, 1
+    pop ecx
+    pop ebx
+    ret
+.no:
+    xor eax, eax
+    pop ecx
+    pop ebx
+    ret
+
+; ---------------------------------------------------------------------------
+;  kbd_getkey:取一个"键事件"(没有就 hlt 等中断)
+;      普通键 → eax = ASCII(0..0xFF;回车 13、退格 8、ESC 27、Ctrl-S 19 …)
+;      扩展键 → eax = 0x100 + 编号(1 上 2 下 3 左 4 右 5 Home 6 End 7 Del 8 PgUp 9 PgDn)
+;  程序要用方向键就用这个;老代码用 kbd_getchar(它会把扩展键跳过去)。
+; ---------------------------------------------------------------------------
+kbd_getkey:
+    push ebx
+.loop:
+    call kbd_seq_len
+    test eax, eax
+    jz .plain
+    mov ecx, 2                          ; 扩展键:吃掉 ESC + 编号
+    call kbd_consume
+    mov eax, edx
+    add eax, 0x100
+    pop ebx
+    ret
+.plain:
+    call kbd_avail
+    test eax, eax
+    jz .wait
+    mov ebx, [kbd_tail]
+    movzx eax, byte [kbd_buf + ebx]
+    mov ecx, 1
+    call kbd_consume
+    pop ebx
+    ret
+.wait:
+    hlt                                ; 睡着等键盘中断把 CPU 叫醒
+    jmp .loop
+
+; ---------------------------------------------------------------------------
 ;  kbd_getchar:取一个字符(没有就 hlt 等中断),返回 al
+;  扩展键(方向键…)会被**跳过** —— 只想读打字的老程序不会突然收到 0x1B
 ; ---------------------------------------------------------------------------
 kbd_getchar:
     push ebx
 .loop:
-    cli                                ; 读 head/tail 时别被打断
-    mov eax, [kbd_head]
-    cmp eax, [kbd_tail]
-    jne .have
-    sti
-    hlt                                ; 睡着等键盘中断把 CPU 叫醒
-    jmp .loop
-.have:
+    call kbd_seq_len
+    test eax, eax
+    jz .plain
+    mov ecx, 2
+    call kbd_consume
+    jmp .loop                           ; 扩展键:丢掉,继续等下一个
+.plain:
+    call kbd_avail
+    test eax, eax
+    jz .wait
     mov ebx, [kbd_tail]
     movzx eax, byte [kbd_buf + ebx]
-    inc ebx
-    and ebx, KBD_BUF_SIZE - 1
-    mov [kbd_tail], ebx
-    sti
+    mov ecx, 1
+    call kbd_consume
     pop ebx
     ret
+.wait:
+    hlt
+    jmp .loop
 
 ; ---------------------------------------------------------------------------
 ;  扫描码 → 字符表(Set 1)。索引 = 扫描码,值 = 字符,0 = 不处理
@@ -255,6 +415,30 @@ sc_hi:
     times 0x80 - ($ - sc_hi) db 0
 
 shift_down db 0
+ctrl_down  db 0
+ext_pending db 0
+ext_code   db 0
 kbd_buf    times KBD_BUF_SIZE db 0
 kbd_head   dd 0
 kbd_tail   dd 0
+
+; ---------------------------------------------------------------------------
+;  扩展键(0xE0 前缀后面那个扫描码 → 编号,0 = 不管)
+;  编号:1 上 2 下 3 左 4 右 5 Home 6 End 7 Delete 8 PgUp 9 PgDn
+; ---------------------------------------------------------------------------
+sc_ext:
+    times 0x47 db 0
+    db 5                               ; 47 Home
+    db 1                               ; 48 ↑
+    db 8                               ; 49 PgUp
+    db 0                               ; 4A(小键盘 -)
+    db 3                               ; 4B ←  ★ 带 0xE0 前缀的 0x4B 就是左方向键
+    db 0                               ; 4C(小键盘 5)
+    db 4                               ; 4D →  (0x4D 同理,是右方向键)
+    db 0                               ; 4E(小键盘 +)
+    db 6                               ; 4F End
+    db 2                               ; 50 ↓
+    db 9                               ; 51 PgDn
+    db 0                               ; 52 Insert
+    db 7                               ; 53 Delete
+    times 0x80 - ($ - sc_ext) db 0

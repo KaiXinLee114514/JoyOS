@@ -301,6 +301,49 @@ fb_putcp:
     popad
     ret
 
+; ---------------------------------------------------------------------------
+;  fb_putcp_at:eax = 码位,ebx = 行,ecx = 列 → 就画在那一格上(不动全局光标)
+;      → [pa_cells] = 这个字占了几格(ASCII 1 格,汉字 2 格)
+;  全屏程序(编辑器)用它重画指定位置,和 fb_putcp 的区别就是"光标不动、不换行"。
+; ---------------------------------------------------------------------------
+fb_putcp_at:
+    push esi                            ; ★ 必须保住调用方的 esi:term_puts_at 把它当 UTF-8 游标用,
+    ;                                     而下面要 esi = 点阵地址。不存的话第一轮循环之后
+    ;                                     游标就飘进点阵里了 —— 现象是"一行只画出第一个字"。
+    mov [pa_cp], eax
+    mov [pa_row], ebx
+    mov [pa_col], ecx
+    call fb_glyph                       ; eax = 点阵, ecx = 宽(像素)
+    test eax, eax
+    jz .miss
+    mov esi, eax
+    mov [pa_w], ecx
+    mov eax, [pa_col]
+    shl eax, 3                          ; 列 → 像素
+    mov ebx, [pa_row]
+    shl ebx, 4                          ; 行 → 像素
+    mov edx, [term_fb_color]
+    mov ecx, [pa_w]
+    call fb_blit
+    mov eax, [pa_w]
+    shr eax, 3                          ; 像素宽 → 格数
+    mov [pa_cells], eax
+    pop esi
+    ret
+.miss:
+    ; 字库里没这个字:画方框占一格,免得整行错位
+    mov esi, missing_glyph
+    mov eax, [pa_col]
+    shl eax, 3
+    mov ebx, [pa_row]
+    shl ebx, 4
+    mov edx, [term_fb_color]
+    mov ecx, 8
+    call fb_blit
+    mov dword [pa_cells], 1
+    pop esi
+    ret
+
 fb_newline:
     mov dword [fb_cur_x], 0
     mov eax, [fb_cur_y]
@@ -343,6 +386,13 @@ fb_cur_x        dd 0
 fb_cur_y        dd 0
 cur_glyph_w     dd 8
 term_fb_color   dd 0x00AAAAAA
+
+; fb_putcp_at 用的临时变量(不能借用 fb_cur_x/y —— 那两个字要保住)
+pa_cp           dd 0
+pa_row          dd 0
+pa_col          dd 0
+pa_w            dd 8
+pa_cells        dd 1
 blit_x          dd 0
 blit_y          dd 0
 blit_w          dd 8

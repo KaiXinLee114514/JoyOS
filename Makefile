@@ -38,7 +38,7 @@ KERNEL_SRCS := $(wildcard kernel/*.asm)
 # 内核 incbin 了字模、%include 了映射表 —— 它们变了也必须重编内核,
 # 不然 make 会说"无事可做",你改了字库却看到的还是老字模(这个坑踩过一次)
 FONT_DEPS   := font/vga-font.bin font/vga-zh-map.asm font/vga-zh-strings.asm
-PROGS       := HELLO.BIN COUNT.BIN
+PROGS       := HELLO.BIN COUNT.BIN CALC.BIN EDIT.BIN
 PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS))
 
 .PHONY: all run run-font hd subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font div font clean lst
@@ -72,16 +72,22 @@ $(BUILD)/%.BIN: progs/%.asm | $(BUILD)
 	$(NASM) -f bin $< -o $@
 	@printf '   程序: %s %s 字节\n' "$@" "$$(stat -c %s $@)"
 
-$(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin $(PROG_BINS) tools/mkimg.py tools/mkfat.py
+# 注意 progs/README.TXT、progs/NOTES.TXT 也要当依赖:改了它们镜像就得重做,
+# 不然测试会拿"旧内容"去比新文件,报个莫名其妙的字节数不一致(踩过)
+$(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
+          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
-	    $(foreach p,$(PROGS),$(p)=$(BUILD)/$(p))
+	    NOTES.TXT=progs/NOTES.TXT $(foreach p,$(PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
 	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c
 
-test-hd-font: $(HDIMG) $(PROG_BINS) font/full-joyf.bin
-	@echo "── 硬盘镜像:磁盘字库 + FAT16 读写 + 从磁盘跑程序 ──"
+# 先强制重建镜像:上一轮测试往盘里写的 TEST.TXT / NEWFILE.TXT 会留在这儿,
+# 第二次跑就变成"编辑器把内容追加了一遍",测试自己就不干净了
+test-hd-font: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
+	@echo "── 硬盘镜像:磁盘字库 + FAT16 读写 + 计算器 + 编辑器 ──"
+	$(MAKE) -s -B $(HDIMG)
 	python3 tests/qemu_test.py $(HDIMG) --hda --fontdisk --font font/full-joyf.bin
 
 # 两个"开机就炸"的镜像:自测代码用 -D 开关才编进去,正常镜像里没有

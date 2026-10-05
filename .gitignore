@@ -4,3 +4,5 @@ build/
 __pycache__/
 *.pyc
 font/.cache/
+# vim 源码是从外面拉进来玩的,别扫进仓库(300+ MB)
+externded/

@@ -67,15 +67,19 @@ class Monitor:
         return self.buf.decode("utf-8", "replace")
 
     def sendkey(self, key: str):
-        """只发不等 —— sendkey 没有回显,等就是白等"""
+        """只发不等 —— sendkey 没有回显,等就是白等。
+        间隔别太大:整个测试要敲几百个键,0.05 秒就是十几秒的纯等待"""
         self.s.sendall(f"sendkey {key}\n".encode())
-        time.sleep(0.05)
+        time.sleep(0.03)
 
-    def type_text(self, text: str, delay: float = 0.06):
-        """按字符发给 QEMU。注意:monitor 的 sendkey 只认小写键名,
-        大写字母得发 shift+小写(不然 sendkey R 是无效按键,字符就丢了)。"""
+    def type_text(self, text: str, delay: float = 0.04):
+        """按字符发给 QEMU。注意:monitor 的 sendkey 只认**键名**,
+        大写字母要发 shift+小写,带 Shift 的符号也要查 SHIFTED 表
+        (不然 sendkey '*' 是无效按键,字符就丢了)。"""
         for ch in text:
-            if ch in KEYMAP:
+            if ch in SHIFTED:
+                key = "shift-" + SHIFTED[ch]
+            elif ch in KEYMAP:
                 key = KEYMAP[ch]
             elif 'A' <= ch <= 'Z':
                 key = "shift-" + ch.lower()
@@ -90,7 +94,7 @@ class Monitor:
         from PIL import Image
         if os.path.exists(path):
             os.unlink(path)
-        self.cmd(f"screendump {path}", wait=1.5)
+        self.cmd(f"screendump {path}", wait=1.0)
         return Image.open(path).convert("RGB")
 
     def screen(self) -> list[str]:
@@ -245,9 +249,59 @@ class Fat16:
         return [n for n, _ in self.entries()]
 
 
+def screen_text(img, glyphs: dict, rows: int = 40, cols: int = 100) -> list:
+    """
+    把图形模式的屏幕**读回成文字**:每个 8×16 字符格跟字库里的 ASCII 字形比一遍,
+    一样就翻译成那个字符。
+
+    为什么有用:`find_text` 只能回答"有没有这段字",排查"这一行现在到底长什么样"时
+    还得靠眼睛看截图;这个函数直接把屏幕变成可打印的文本,断言和排错都省事。
+    16 像素宽的汉字占两格,这里只当两格图案比不出来 → 显示成 '??'。
+    """
+    rows_ink = image_ink_rows(img)
+    W = img.size[0]
+    # 每个 ASCII 字形展开成 16 字节的"位图行"bytes
+    table = {}
+    for cp, (w, h, raw) in glyphs.items():
+        if w != 8 or h != 16 or cp < 32 or cp > 126:
+            continue
+        table.setdefault(bytes(raw[:16]), chr(cp))
+    out = []
+    for r in range(rows):
+        y0 = r * 16
+        if y0 + 16 > len(rows_ink):
+            break
+        band = rows_ink[y0:y0 + 16]
+        line = []
+        for c in range(cols):
+            x0 = c * 8
+            if x0 + 8 > W:
+                break
+            cell = bytes(
+                sum((band[y][x0 + x] & 1) << (7 - x) for x in range(8))
+                for y in range(16)
+            )
+            if not any(cell):
+                line.append(" ")
+                continue
+            line.append(table.get(cell, "?"))
+        out.append("".join(line).rstrip())
+    return out
+
+
 KEYMAP = {
     " ": "spc", ".": "dot", ",": "comma", "/": "slash", ";": "semicolon",
     "-": "minus", "=": "equal", "'": "apostrophe", "\n": "ret",
+}
+
+# 要按 Shift 才能打出来的符号:QEMU 的 sendkey 只认键名,不认"打出来是什么字符"。
+# 不映射的话 sendkey '*' 是无效按键,字符就悄悄丢了(踩过:计算器里 '*' 按不出来)。
+SHIFTED = {
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+    "&": "7", "*": "8", "(": "9", ")": "0", "_": "minus", "+": "equal",
+    ":": "semicolon", '"': "apostrophe", "<": "comma", ">": "dot",
+    "?": "slash", "~": "grave_accent", "|": "backslash",
+    "{": "bracket_left", "}": "bracket_right",
 }
 
 
@@ -341,6 +395,14 @@ def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
                     f"{want!r},实际 {got!r}"))
     except KeyError:
         out.append(("离线:写进去的字节真落盘了", False, "目录里没有 TEST.TXT"))
+
+    # ---- 3b) 编辑器存的文件:内容必须和我们敲的键一模一样 ----
+    try:
+        got = fs.read("NEWFILE.TXT")
+        want = b"hello editor\nsecond line"    # 测试里敲的就是这两行
+        out.append(("离线:编辑器存的文件正确", got == want, f"{want!r},实际 {got!r}"))
+    except KeyError:
+        out.append(("离线:编辑器存的文件正确", False, "目录里没有 NEWFILE.TXT"))
 
     # ---- 3) 对照:镜像里本来就有的文件,字节应该和仓库里的源文件一致 ----
     for name, path in (("README.TXT", "progs/README.TXT"),
@@ -521,11 +583,17 @@ def main() -> int:
                             has("README.TXT") and has("HELLO.BIN") and has("COUNT.BIN"),
                             "README.TXT / HELLO.BIN / COUNT.BIN"))
 
-            run("cat readme.txt", wait=1.2)
-            results.append(("cat 读 UTF-8 文本", has("JoyOS 磁盘说明"),
+            # 中文断言用 NOTES.TXT:它短,一屏放得下;READER 文件 2 KB 多,
+            # 头几行会被滚屏顶掉(head 部分看不见,不是显示不出来)
+            run("cat notes.txt", wait=1.2)
+            results.append(("cat 读 UTF-8 文本", has("这个文件是给你改着玩的"),
                             "文件里的中文(UTF-8)显示出来"))
+            results.append(("cat 读中文行", has("看看存进去的样子"),
+                            "NOTES.TXT 最后一行也在屏幕上"))
+
+            run("cat readme.txt", wait=1.4)
             results.append(("cat 读得到正文", has("int 0x30"),
-                            "README.TXT 里的 int 0x30"))
+                            "README.TXT 里的 int 0x30(接口表)"))
 
             run("write test.txt hello-from-fat16")
             results.append(("write 写文件", has("wrote test.txt"), "wrote test.txt"))
@@ -538,7 +606,7 @@ def main() -> int:
 
             run("run", wait=0.8)
             results.append(("裸 run 打印程序接口",
-                            has("JoyOS program API") and has("esi = UTF-8 string"),
+                            has("JoyOS program API") and has("[ORG 0x120000]"),
                             "int 0x30 的说明(裸敲 run 时打出来)"))
 
             run("run hello", wait=1.1)
@@ -558,6 +626,68 @@ def main() -> int:
                             "counting: 1 2 3 4 5 6 7 8 9 10"))
             results.append(("十进制/十六进制 API", has("hex demo: 0xDEADBEEF"),
                             "hex demo: 0xDEADBEEF"))
+
+            # ---- 计算器(CALC.BIN):全屏程序,直接读屏幕文字来断言 ----
+            def calc(keys: str) -> str:
+                """敲一串键,把屏幕读成文字返回(全屏程序没法用 find_text 逐句找)"""
+                mon.type_text(keys)
+                time.sleep(0.8)
+                rescan()
+                return "\n".join(screen_text(shot, glyphs))
+
+            run("run calc", wait=1.2)
+            screen_now = "\n".join(screen_text(shot, glyphs))
+            results.append(("计算器起来了", "JoyOS calculator" in screen_now,
+                            "标题行 JoyOS calculator"))
+
+            for keys, want, name in [
+                ("12.5*4=",      "=  50",        "12.5 × 4 = 50"),
+                ("c3.5+1.25=",   "=  4.75",      "3.5 + 1.25 = 4.75"),
+                ("c7s",          "=  49",        "7 平方 = 49"),
+                ("c1/3=",        "=  0.333333",  "1 ÷ 3 = 0.333333(定点 6 位小数)"),
+                ("c2-5=",        "=  -3",        "2 - 5 = -3(负数)"),
+                ("c5/0=",        "divide by zero", "除以 0 要报错而不是崩"),
+                ("c99999=",      "overflow",     "超出范围报 overflow"),
+                ("c0.001*1000=", "=  1",         "小数点:0.001 × 1000 = 1"),
+            ]:
+                text = calc(keys)
+                results.append((f"计算器 {name}", want in text, f"屏幕上出现 {want!r}"))
+
+            calc("q")                           # 退出计算器
+            results.append(("计算器退出", "program returned to the shell" in calc(""),
+                            "回到 shell"))
+
+            # ---- 文本编辑器(EDIT.BIN)----
+            run("run edit newfile.txt", wait=1.5)
+            screen_now = "\n".join(screen_text(shot, glyphs))
+            results.append(("编辑器打开新文件", "JoyOS editor" in screen_now
+                            and "newfile.txt" in screen_now,
+                            "标题栏显示 JoyOS editor --- newfile.txt"))
+            results.append(("编辑器读到了参数",
+                            "newfile.txt" in screen_now and "NOTES.TXT" not in screen_now,
+                            "`run EDIT NEWFILE.TXT` 里的文件名传进去了"))
+
+            mon.type_text("hello editor")       # 打字
+            mon.sendkey("ret")
+            time.sleep(0.3)
+            mon.type_text("second line")
+            time.sleep(0.5)
+            rescan()
+            screen_now = "\n".join(screen_text(shot, glyphs))
+            results.append(("编辑器能打字", "hello editor" in screen_now,
+                            "打进去的字出现在正文里"))
+
+            mon.sendkey("ctrl-s")               # 存盘
+            time.sleep(0.9)
+            rescan()
+            screen_now = "\n".join(screen_text(shot, glyphs))
+            results.append(("Ctrl-S 存盘", "saved to disk" in screen_now, "状态行 saved to disk"))
+
+            mon.sendkey("ctrl-q")               # 退出
+            time.sleep(1.0)
+            rescan()
+            results.append(("Ctrl-Q 退出编辑器", has("editor closed."),
+                            "editor closed. + 回到 shell"))
 
             # ---- 第二信道:先把 QEMU 关掉(让它把缓存落盘),再自己解析镜像 ----
             qemu.terminate()

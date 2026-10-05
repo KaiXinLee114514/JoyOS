@@ -353,6 +353,152 @@ term_move_hw_cursor:
 .skip:
     ret
 
+; ============================================================================
+;  全屏程序要用的三个终端功能(编辑器那种"画面由我控制"的程序)
+;
+;  普通程序用 term_print 一行行往下吐就行,但编辑器要**在屏幕任意位置写字**、
+;  要**知道屏幕多大**、还要**不滚屏**(滚屏会把刚画好的界面顶掉)。
+;  所以这里给三个:定位光标、问屏幕大小、在指定位置画一串字。
+; ============================================================================
+
+; ---------------------------------------------------------------------------
+;  term_size:→ eax = 每行几个字符格,ebx = 几行
+;  字符格 = 8 像素宽、16 像素高(VGA 文本模式固定 80×25)
+; ---------------------------------------------------------------------------
+term_size:
+    cmp dword [vbe_ok], 0
+    jne .fb
+    mov eax, VGA_COLS
+    mov ebx, VGA_ROWS
+    ret
+.fb:
+    mov eax, [fb_width]
+    shr eax, 3                          ; 像素宽 ÷ 8
+    mov ebx, [fb_height]
+    shr ebx, 4                          ; 像素高 ÷ 16
+    ret
+
+; ---------------------------------------------------------------------------
+;  term_set_cursor:ebx = 行,ecx = 列(超出屏幕就夹到边界内)
+; ---------------------------------------------------------------------------
+term_set_cursor:
+    push eax
+    push ebx
+    push ecx
+    cmp dword [vbe_ok], 0
+    jne .fb
+
+    ; ---- 文本模式:行/列各自夹住 ----
+    cmp ebx, VGA_ROWS
+    jb .row_ok
+    mov ebx, VGA_ROWS - 1
+.row_ok:
+    cmp ecx, VGA_COLS
+    jb .col_ok
+    mov ecx, VGA_COLS - 1
+.col_ok:
+    mov [term_row], bl
+    mov [term_col], cl
+    call term_move_hw_cursor
+    jmp .done
+
+.fb:
+    ; ---- 图形模式:光标是像素坐标(fb_cur_x / fb_cur_y)----
+    call term_size                      ; eax = 列数,ebx = 行数
+    cmp ecx, eax
+    jb .fcol_ok
+    lea ecx, [eax - 1]
+.fcol_ok:
+    mov eax, [fb_height]
+    shr eax, 4
+    cmp ebx, eax
+    jb .frow_ok
+    lea ebx, [eax - 1]
+.frow_ok:
+    shl ecx, 3                          ; 列 × 8 像素
+    shl ebx, 4                          ; 行 × 16 像素
+    mov [fb_cur_x], ecx
+    mov [fb_cur_y], ebx
+.done:
+    pop ecx
+    pop ebx
+    pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+;  term_puts_at:在指定位置画一串 UTF-8 字,**不滚屏、不动全局光标**
+;      esi = 字符串   ebx = 行   ecx = 列   edx = 这一行最多占几个字符格
+;      → eax = 实际占了几格
+;  编辑器靠它重画一行:先定位,再整行写过去。写到 edx 就不写了(免得顶到
+;  屏幕最后一格触发换行 → 滚屏,把界面顶掉)。
+;  文本模式下只画 ASCII(8 像素的格子塞不下汉字),非 ASCII 画成 '?'。
+; ---------------------------------------------------------------------------
+term_puts_at:
+    pushad
+    mov [tpa_row], ebx
+    mov [tpa_col], ecx
+    mov [tpa_start], ecx
+    mov [tpa_max], edx
+.next:
+    call utf8_decode                    ; eax = 码位(0 = 到头),esi 前进
+    test eax, eax
+    jz .done
+    cmp eax, 10                         ; 换行:这一行画到这儿就够了
+    je .done
+    cmp eax, 13
+    je .done
+    cmp eax, 0x20
+    jb .next                            ; 其它控制字符不画
+    cmp dword [vbe_ok], 0
+    je .text
+
+    ; ---- 图形模式:先问字形多宽,放不下就停(不画半个字)----
+    mov [tpa_cp], eax
+    call fb_glyph                       ; eax = 点阵, ecx = 宽(像素)
+    test eax, eax
+    jnz .have_w
+    mov ecx, 8                          ; 字库没这个字:按 8 像素(方框)算
+.have_w:
+    shr ecx, 3                          ; 像素 → 格
+    mov eax, [tpa_col]
+    add eax, ecx
+    cmp eax, [tpa_max]
+    ja .done
+    mov eax, [tpa_cp]
+    mov ebx, [tpa_row]
+    mov ecx, [tpa_col]
+    call fb_putcp_at                    ; → [pa_cells] = 占几格
+    mov eax, [pa_cells]
+    add [tpa_col], eax
+    jmp .check
+
+.text:
+    cmp eax, 0x80
+    jb .ascii
+    mov eax, '?'                        ; 文本模式画不了汉字,给个记号
+.ascii:
+    mov edx, [tpa_row]
+    imul edx, VGA_COLS                  ; 行 × 80
+    add edx, [tpa_col]
+    shl edx, 1                          ; 每格 2 字节
+    add edx, VGA_MEM
+    mov [edx], al
+    mov al, [term_color]
+    mov [edx + 1], al
+    inc dword [tpa_col]
+
+.check:
+    mov eax, [tpa_col]
+    cmp eax, [tpa_max]
+    jb .next
+.done:
+    mov eax, [tpa_col]
+    sub eax, [tpa_start]
+    mov [tpa_written], eax
+    popad
+    mov eax, [tpa_written]
+    ret
+
 ; esi = 以 0 结尾的 **UTF-8** 字符串
 ; (以前是逐字节 lodsb,现在先解码成码位再画 —— 这样中英都走一条路,而且跟外界一致)
 term_print:
@@ -501,6 +647,14 @@ boot_mode    dd 0
 term_row     db 0
 term_col     db 0
 term_color   db COL_NORMAL
+
+; 全屏 API(term_puts_at / term_set_cursor)用的临时变量
+tpa_row      dd 0
+tpa_col      dd 0
+tpa_start    dd 0
+tpa_max      dd 0
+tpa_cp       dd 0
+tpa_written  dd 0
 
 ; 函数里用到的小工具:把当前执行地址(kmain 的偏移)打出来
 term_print_addr:
