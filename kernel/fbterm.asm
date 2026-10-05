@@ -95,6 +95,17 @@ fb_scroll:
 ; ---------------------------------------------------------------------------
 fb_blit:
     pushad
+    ; ★ 越界保护:坐标或宽度离谱就什么都不画。
+    ;   (以前没有这层保护:一旦算出来的 x/y 是野值,像素就写到帧缓冲外面,
+    ;    运气不好正好写进内核自己的内存 —— 表现为"整块内存被写成同一个值"。)
+    cmp eax, [fb_width]
+    jae .skip
+    cmp ebx, [fb_height]
+    jae .skip
+    cmp ecx, 16
+    ja .skip
+    test ecx, ecx
+    jz .skip
     mov [blit_x], eax
     mov [blit_y], ebx
     mov [blit_data], esi
@@ -172,6 +183,9 @@ fb_blit:
 
     popad
     ret
+.skip:
+    popad
+    ret
 
 ; ---------------------------------------------------------------------------
 ;  fb_glyph:按 Unicode 码位查字模 → eax = 点阵地址, ecx = 宽(8/16);没找到返回 eax=0
@@ -214,8 +228,16 @@ fb_glyph:
     jmp .find
 .hit:
     movzx ecx, byte [ebx + 4]           ; 宽
+    cmp ecx, 8                          ; 只有 8 和 16 两种宽度
+    jb .miss
+    cmp ecx, 16
+    ja .miss
     mov eax, [ebx + 8]                  ; 数据偏移
     add eax, edi
+    ; ★ 越界保护:点阵必须落在字库区里(字库读了一半/表被写坏时,
+    ;   这个指针会是野值,画出来的就是随机内存内容,甚至写到别处去)
+    cmp eax, [font_base]
+    jb .miss
     jmp .out
 .miss:
     xor eax, eax
@@ -297,6 +319,12 @@ fb_putcp:
     mov ecx, 8
     call fb_blit
     add dword [fb_cur_x], 8
+    ; ★ 这里以前**没有**右边越界检查:一行里缺字多了,x 会一路涨出屏幕,
+    ;   后面的像素就画到帧缓冲外面去了。和正常字一样,到边就换行。
+    mov eax, [fb_width]
+    cmp [fb_cur_x], eax
+    jb .done
+    call fb_newline
 .done:
     popad
     ret
