@@ -108,13 +108,32 @@ ld -m elf_i386 -T lib/joyos.ld build/crt0.o build/Foo.o build/minic.o -o build/F
 `ls` 里能看到它:`CHELLO.BIN` 8888 字节 —— 其中大约 6 KB 是迷你 libc 和 crt0,
 所以"每个 C 程序自己带一份 libc"也不算浪费(反正是从磁盘读的)。
 
-## 5. 下一步(和 vite/vim 的关系)
+## 5. 现成的例子:`progs/` 里的 C 程序和 STEVIE
 
-这个系统里**跑不了真的 vim**:vim 要 libc、要 `fork`/`waitpid`/`ioctl`/`termios`、
-要目录树和交换文件 —— 那是"POSIX 用户态"那一层的东西,不是编译器能变出来的。
-(实测那份 vim 源码:`src/*.c` 有 557,683 行,`os_unix.c` 里光 `close()` 79 次、
-`ioctl()` 24 次、`kill()` 17 次、`fork()`/`waitpid()`/`select()`/`sigaction()` 各若干。)
+* `progs/CHELLO.c`:printf / malloc / 参数 / 读文件,把能用的都试一遍;
+* `third_party/stevie/`:**STEVIE 3.68 —— 公有领域的 vi 克隆(vim 的前身)**,整个移植过来了:
 
-但 C 一上线,**公有领域**的实现就能移植了:STEVIE 3.68(vi 的克隆、vim 的前身)
-只依赖一个很小的平台层 —— 画字符、定位光标、收键、读写文件,大约 20 个函数,
-把这层换成 `int 0x30`,就能有自己的一份 vi。这是下一阶段的目标(见 README 的待办)。
+```bash
+make hd
+> run vi NOTES.TXT      # 打开编辑器(:w 存盘、:q 退出、i 进插入模式、ESC 回普通模式)
+```
+
+它的"机器相关层"本来叫 `nt.c`(Windows NT 版),现在换成我们自己写的
+`third_party/stevie/joyos.c`:屏幕走 `int 0x30` 的 9/13 号(定位 + 在指定位置画字),
+键盘走 10 号(方向键直接映到 STEVIE 的 `K_UARROW` 那套键值),文件走 7/8 号。
+编辑器核心(约 10 900 行)一行没改 —— 这正说明"平台层收得干净"的代码有多好移植。
+
+平台层要提供的东西一共就这些:
+
+```
+windinit / windexit / windgoto(row,col) / wchangescreen   屏幕
+outchar / outstr / flushbuf                                画字符
+inchar                                                     收键
+fopenb / fixname                                           文件和文件名
+beep / delay / sleep / sig / dochdir / mysystem / doshell   杂项(多数是空实现)
+```
+
+**真人实测的坑**:`fixname` 在 NT 版里是 `fixname(char *s)` —— 一个参数、返回静态缓冲,
+而我第一版按"三个参数、写到调用方缓冲"写了。`stevie.h` 里是老式声明 `char *fixname();`,
+**参数个数不对编译器不吭声**,于是存盘时文件名变成空的:vi 报"存盘成功",磁盘上却多了
+一个名字全是空格的目录项。教训:移植老代码里的平台函数,先看原实现,别按自己以为的签名单干。

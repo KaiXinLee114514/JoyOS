@@ -702,6 +702,11 @@ int fputs(const char *s, FILE *f)
     return n;
 }
 
+int putchar(int c)
+{
+    return fputc(c, stdout);
+}
+
 int puts(const char *s)
 {
     fputs(s, stdout);

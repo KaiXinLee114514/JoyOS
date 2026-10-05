@@ -53,10 +53,13 @@ C_LD        := ld -m elf_i386 -T lib/joyos.ld
 CRT0_OBJ    := $(BUILD)/crt0.o
 MINIC_OBJ   := $(BUILD)/minic.o
 ifeq ($(CC_OK),yes)
-C_PROGS     := CHELLO.BIN
+C_PROGS     := CHELLO.BIN VI.BIN
 else
 C_PROGS     :=
 endif
+
+# STEVIE(公版 vi 克隆,third_party/stevie)的构建:核心 + 我们写的 joyos.c 后端
+VI_OBJS     := $(addprefix $(BUILD)/vi/,$(notdir $(patsubst %.c,%.o,$(wildcard third_party/stevie/*.c))))
 
 PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS) $(C_PROGS))
 
@@ -107,12 +110,22 @@ $(CRT0_OBJ): lib/crt0.asm | $(BUILD)
 $(MINIC_OBJ): lib/minic.c lib/minic.h include/joyos.h | $(BUILD)
 	$(CC) $(C_CFLAGS) -c $< -o $@
 
+# STEVIE 的每个源文件(注意这条要写在通用 progs/%.c 规则前面)
+$(BUILD)/vi/%.o: third_party/stevie/%.c lib/minic.h include/joyos.h | $(BUILD)
+	@mkdir -p $(BUILD)/vi
+	$(CC) $(C_CFLAGS) -Ithird_party/stevie -c $< -o $@
+
 $(BUILD)/%.o: progs/%.c include/joyos.h lib/minic.h | $(BUILD)
 	$(CC) $(C_CFLAGS) -c $< -o $@
 
 $(BUILD)/%.BIN: $(BUILD)/%.o $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
 	$(C_LD) $(CRT0_OBJ) $< $(MINIC_OBJ) -o $@ 2>/dev/null
 	@printf '   C 程序: %s %s 字节(链接地址 0x120000)\n' "$@" "$$(stat -c %s $@)"
+
+# vi:STEVIE 核心 + 迷你 libc + crt0
+$(BUILD)/VI.BIN: $(VI_OBJS) $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
+	$(C_LD) $(CRT0_OBJ) $(MINIC_OBJ) $(VI_OBJS) -o $@
+	@printf '   C 程序: %s %s 字节(STEVIE 移植,链接地址 0x120000)\n' "$@" "$$(stat -c %s $@)"
 
 # 注意 progs/README.TXT、progs/NOTES.TXT 也要当依赖:改了它们镜像就得重做,
 # 不然测试会拿"旧内容"去比新文件,报个莫名其妙的字节数不一致(踩过)

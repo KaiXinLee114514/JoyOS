@@ -52,6 +52,7 @@ int   fputc(int c, FILE *f);
 int   putc(int c, FILE *f);
 char *fgets(char *s, int n, FILE *f);
 int   fputs(const char *s, FILE *f);
+int   putchar(int c);
 int   puts(const char *s);
 int   printf(const char *fmt, ...);
 int   fprintf(FILE *f, const char *fmt, ...);

@@ -260,19 +260,19 @@ def screen_text(img, glyphs: dict, rows: int = 40, cols: int = 100) -> list:
     """
     rows_ink = image_ink_rows(img)
     W = img.size[0]
-    # 每个 ASCII 字形展开成 16 字节的"位图行"bytes
     table = {}
     for cp, (w, h, raw) in glyphs.items():
         if w != 8 or h != 16 or cp < 32 or cp > 126:
             continue
         table.setdefault(bytes(raw[:16]), chr(cp))
-    out = []
-    for r in range(rows):
-        y0 = r * 16
+
+    def read_row(r, dy):
+        """读第 r 行(按 dy 纵向偏移切 16 像素高的格子)→(认出多少格, 文本)"""
+        y0 = r * 16 + dy
         if y0 + 16 > len(rows_ink):
-            break
+            return 0, ""
         band = rows_ink[y0:y0 + 16]
-        line = []
+        hit, line = 0, []
         for c in range(cols):
             x0 = c * 8
             if x0 + 8 > W:
@@ -284,8 +284,24 @@ def screen_text(img, glyphs: dict, rows: int = 40, cols: int = 100) -> list:
             if not any(cell):
                 line.append(" ")
                 continue
-            line.append(table.get(cell, "?"))
-        out.append("".join(line).rstrip())
+            ch = table.get(cell)
+            if ch:
+                hit += 1
+                line.append(ch)
+            else:
+                line.append("?")
+        return hit, "".join(line).rstrip()
+
+    # ★ 为什么逐行挑偏移:600 像素 ÷ 16 = 37.5,内核滚屏后最后一行的 y 是 584
+    #   (y%16=8),上面那些行是 y%16=0 —— 一屏里同时存在两种对齐。
+    #   所以每行都试 dy=0 和 dy=8,谁认出的字多用谁(vi 的状态行就在最下面那行)。
+    out = []
+    for r in range(rows):
+        if r * 16 + 16 > len(rows_ink):
+            break
+        h0, l0 = read_row(r, 0)
+        h8, l8 = read_row(r, 8)
+        out.append(l8 if h8 > h0 else l0)
     return out
 
 
@@ -395,6 +411,14 @@ def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
                     f"{want!r},实际 {got!r}"))
     except KeyError:
         out.append(("离线:写进去的字节真落盘了", False, "目录里没有 TEST.TXT"))
+
+    # ---- 3c) vi 存出来的文件:STEVIE 移植能不能真的写盘 ----
+    try:
+        got = fs.read("VITEST.TXT")
+        want = b"hello from stevie\n"       # 测试里进插入模式敲的就是这行
+        out.append(("离线:vi 存的文件正确", got == want, f"{want!r},实际 {got!r}"))
+    except KeyError:
+        out.append(("离线:vi 存的文件正确", False, "目录里没有 VITEST.TXT"))
 
     # ---- 3b) 编辑器存的文件:内容必须和我们敲的键一模一样 ----
     try:
@@ -572,10 +596,29 @@ def main() -> int:
             results.append(("FAT16 挂载", has("fat16: mounted at LBA 6144"),
                             "fat16: mounted at LBA 6144"))
 
-            def run(line, wait=0.9):
+            def wait_idle(max_wait=25.0):
+                """等屏幕不再变化。
+
+                为什么需要:cat 一个 2 KB 的中文文件,内核要一个字一个字画进 VBE
+                帧缓冲 —— 在 QEMU 里那是 MMIO,画满一屏要好几秒。固定 sleep 不是
+                等太久就是等不够,而"等不够"会让后面所有步骤都跟着乱
+                (敲进去的命令排在那次输出后面,断言时屏幕上还没有结果)。
+                """
+                last = None
+                t0 = time.time()
+                while time.time() - t0 < max_wait:
+                    blob = mon.screendump().tobytes()
+                    if blob == last:
+                        return
+                    last = blob
+                    time.sleep(0.3)
+
+            def run(line, wait=0.9, idle=False):
                 mon.type_text(line)
                 mon.sendkey("ret")
                 time.sleep(wait)
+                if idle:
+                    wait_idle()
                 rescan()
 
             run("ls")
@@ -591,7 +634,7 @@ def main() -> int:
             results.append(("cat 读中文行", has("看看存进去的样子"),
                             "NOTES.TXT 最后一行也在屏幕上"))
 
-            run("cat readme.txt", wait=1.4)
+            run("cat readme.txt", wait=0.6, idle=True)
             results.append(("cat 读得到正文", has("int 0x30"),
                             "README.TXT 里的 int 0x30(接口表)"))
 
@@ -626,6 +669,36 @@ def main() -> int:
                             "counting: 1 2 3 4 5 6 7 8 9 10"))
             results.append(("十进制/十六进制 API", has("hex demo: 0xDEADBEEF"),
                             "hex demo: 0xDEADBEEF"))
+
+            # ---- vi(STEVIE 移植):打开 → 插入模式打字 → :w 存盘 → :q 退出 ----
+            run("run vi vitest.txt", wait=3.0)
+            text_now = "\n".join(screen_text(shot, glyphs))
+            results.append(("vi 起来了", "vitest.txt" in text_now and "~" in text_now,
+                            "vi 的 ~ 空行和 \"vitest.txt\" 状态行"))
+
+            mon.sendkey("i")                    # 插入模式
+            time.sleep(0.5)
+            mon.type_text("hello from stevie")
+            time.sleep(1.0)
+            mon.sendkey("esc")                  # 回普通模式
+            time.sleep(0.5)
+            rescan()
+            text_now = "\n".join(screen_text(shot, glyphs))
+            results.append(("vi 能打字", "hello from stevie" in text_now,
+                            "插入模式下打的字出现在屏幕上"))
+
+            mon.type_text(":w")                 # 存盘
+            mon.sendkey("ret")
+            time.sleep(2.0)
+            rescan()
+            text_now = "\n".join(screen_text(shot, glyphs))
+            results.append(("vi :w 存盘", "vitest.txt" in text_now,
+                            "状态行报出文件名(存过盘)"))
+
+            mon.type_text(":q")                 # 退出
+            mon.sendkey("ret")
+            time.sleep(2.0)
+            results.append(("vi :q 退出", has("vi closed."), "回到 shell"))
 
             # ---- 计算器(CALC.BIN):全屏程序,直接读屏幕文字来断言 ----
             def calc(keys: str) -> str:

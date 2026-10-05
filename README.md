@@ -46,6 +46,7 @@
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
 | **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-Q` 退出 |
 | **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q) |
+| **vi(STEVIE 移植)** | `run VI NOTES.TXT`:公有领域的 vi 克隆(STEVIE 3.68,vim 的前身),约 10 900 行 C 一行没改,只把平台层换成 `int 0x30` —— 插入模式、方向键、`:w` 存盘、`:q` 退出 |
 | **C 语言支持** | 普通 `gcc -m32` 就能编(`make cc-check`);自带 crt0 + 迷你 libc(malloc/printf/stdio)+ `joyos.h`,程序照样是平铺二进制丢进 FAT16 跑(见 [docs/c-programs.md](docs/c-programs.md)) |
 | **图形模式** | 实模式 stub 里用 VBE 问出 **800×600×32 线性帧缓冲**模式,页表把帧缓冲映射进来,终端直接往显存画像素 |
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
@@ -89,6 +90,7 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 > run CALC              ← 计算器:12.5*4=  7s(平方)  c(清零)  q(退出)
 > run EDIT              ← 编辑器:改 NOTES.TXT,方向键移动,Ctrl-S 存盘,Ctrl-Q 退出
 > run EDIT MY.TXT       ← 也可以指定文件(不存在就是新文件)
+> run VI NOTES.TXT      ← vi(STEVIE 移植):i 进插入模式,ESC 回普通模式,:w 存盘,:q 退出
 ```
 
 QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` 切到 monitor 控制台(`Ctrl+Alt+1` 切回来)。
@@ -142,6 +144,7 @@ include/joyos.h        C 程序用的头:14 个 int 0x30 包装 + 颜色/键值�
 lib/minic.c            迷你 libc(约 600 行:字符串/内存/printf/一点点 stdio)
 lib/crt0.asm           C 程序入口:清 BSS → main() → ret 回 shell
 lib/joyos.ld           链接脚本:0x120000 + 平铺二进制 + BSS 边界符号
+third_party/stevie/    公版 STEVIE(vi 克隆)的源码 + 我们写的 joyos.c 后端(替换 nt.c)
 progs/README.TXT       也放进镜像,shell 里 cat README.TXT 能看(UTF-8 中文)
 tools/mkimg.py         拼镜像:boot(第 0 扇区)+ stub + kernel + 磁盘字库
 tools/mkfat.py         在镜像里造 FAT16 分区,并把文件放进去
