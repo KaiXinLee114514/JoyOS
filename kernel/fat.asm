@@ -345,22 +345,47 @@ fat_chdir:
 ; ---------------------------------------------------------------------------
 ;  fat_path:esi = "DOCS/NOTE.TXT"(也认反斜杠)→ 逐段进目录,
 ;            返回 eax = 最后一段(文件名)的指针,CF=1 = 中间有一层进不去
-;  说明:进目录靠改 [fat_dir],所以调用前请先把 [fat_dir] 清 0(从根开始)
+;
+;  为什么要先把整条路径抄进自己的缓冲(path_buf):
+;    · 直接改调用方的字符串(cmd_arg)再恢复,一旦哪一步提前返回,字符串就被切坏了;
+;    · 更要紧的是:内核里到处都用 esi 传名字,改来改去容易把"当前段的指针"
+;      和"下一段的位置"搞混 —— 第一版就是这么坏的:fat_name83 收到的是整条路径
+;      ("DOCS/NOTE.TXT" 被它当成 8.3 名 → "DOCS/NOT" + "TXT",于是永远找不到)。
+;    自己抄一份、在副本上切段,就没有这些牵扯了。
+;
+;  调用前请把 [fat_dir] 清 0(从根目录开始)
 ; ---------------------------------------------------------------------------
+PP_MAX equ 64                           ; 路径最长 63 字符(8.3 名 + 目录,够用)
 fat_path:
     push ebx
     push ecx
     push edx
     push esi
     push edi
-    mov [pp_cur], esi
+    ; ---- 1) 抄一份路径进 path_buf ----
+    mov edi, path_buf
+    mov ecx, PP_MAX - 1
+.cpy:
+    mov al, [esi]
+    test al, al
+    jz .cpy_done
+    mov [edi], al
+    inc esi
+    inc edi
+    dec ecx
+    jnz .cpy
+.cpy_done:
+    mov byte [edi], 0
+    mov dword [pp_cur], path_buf
+
+    ; ---- 2) 一段一段地进目录 ----
 .next:
-    mov esi, [pp_cur]
+    mov ebx, [pp_cur]                   ; ebx = 这一段的名字(nasm 里 ebx 最"干净")
     xor ecx, ecx
 .scan:
-    mov al, [esi + ecx]
+    mov al, [ebx + ecx]
     test al, al
-    jz .done                            ; 没有分隔符了 → 剩下这截就是文件名
+    jz .done                            ; 到头了 → ebx 就是文件名
     cmp al, '/'
     je .split
     cmp al, 0x5C                        ; 反斜杠(NASM 里 '\\' 是两个字符,别那么写)
@@ -368,25 +393,16 @@ fat_path:
     inc ecx
     jmp .scan
 .split:
-    mov edi, esi
-    add edi, ecx                        ; edi → 分隔符
-    mov al, [edi]
-    mov [pp_sep], al
-    mov [pp_next], edi
-    mov byte [edi], 0                   ; 临时把"DIR/FILE"切成 "DIR"
-    mov esi, [pp_cur]
-    call fat_chdir
-    pushf
-    mov edi, [pp_next]
-    mov al, [pp_sep]
-    mov [edi], al                       ; 恢复原来的分隔符
-    popf
-    jc .fail
-    lea eax, [edi + 1]                  ; 下一段
-    mov [pp_cur], eax
+    lea edx, [ebx + ecx]                ; edx → 分隔符
+    mov byte [edx], 0                   ; 把这一段的尾巴切掉
+    mov esi, ebx
+    call fat_chdir                      ; 进目录(里面会用它自己的 esi)
+    jc .fail                            ; 恢复与否都要走:失败就整体失败
+    lea edx, [edx + 1]                  ; 下一段
+    mov [pp_cur], edx
     jmp .next
 .done:
-    mov eax, [pp_cur]
+    mov eax, ebx
     pop edi
     pop esi
     pop edx
@@ -866,6 +882,7 @@ fat_dir         dd 0                    ; 当前目录的首簇:0 = 根目录
 fat_scan_cluster dd 0
 fat_scan_sect   dd 0
 pp_cur          dd 0
+path_buf        times PP_MAX db 0       ; fat_path 自己抄一份路径(别去改调用方的字符串)
 pp_next         dd 0
 pp_sep          db 0
 fat_size        dd 0
