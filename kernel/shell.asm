@@ -203,7 +203,29 @@ cmd_help:
 cmd_ls:
     cmp byte [fat_ok], 0
     je .nomount
+    mov esi, [cmd_arg]
+    call strip_name
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .list                            ; 没参数:列当前目录
+    mov dword [fat_dir], 0
+    call fat_path                       ; 前面的目录先进去,剩最后一截
+    jc .nofound
+    cmp byte [eax], 0
+    je .list                            ; 路径以 / 收尾,已经站在里面了
+    mov esi, eax
+    call fat_chdir                      ; 最后一截也当目录进
+    jc .nofound
+.list:
     call fat_list
+    mov dword [fat_dir], 0
+    ret
+.nofound:
+    mov dword [fat_dir], 0
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_no_dir
+    call term_print
     ret
 .nomount:
     mov al, COL_ERR
@@ -280,7 +302,7 @@ cmd_write:
     mov [edi], al
     inc edi
     inc ecx
-    cmp ecx, 12                         ; 8.3 最多 12 个字符(含点)
+    cmp ecx, 60                         ; 8.3 是 12 个字符,但带上目录就长了(PP_MAX=64)(含点)
     jb .copy_name
 .name_done:
     mov byte [edi], 0
@@ -363,7 +385,7 @@ cmd_run:
     mov [edi], al
     inc edi
     inc ecx
-    cmp ecx, 12                         ; 8.3 最多 12 个字符
+    cmp ecx, 60                         ; 8.3 是 12 个字符,但带上目录就长了(PP_MAX=64)
     jb .cpy
 
 .copied:
@@ -909,6 +931,7 @@ msg_page_phys    db 'physical     = ', 0
 
 msg_no_fat      db 'no FAT16 filesystem (boot from the hard-disk image)', 10, 0
 msg_no_file     db 'file not found', 10, 0
+msg_no_dir      db 'not a directory', 10, 0
 msg_wrote       db 'wrote ', 0
 msg_write_usage db 'usage: write <name> <text>', 10, 0
 msg_write_fail  db 'write failed (disk full?)', 10, 0
@@ -924,7 +947,7 @@ FILE_BUF       equ 0x110000             ; cat 用的文件缓冲(1 MiB 往上,�
 FILE_MAX       equ PROG_ARG_ADDR - FILE_BUF
                                         ; 0xF000 = 60 KB:再往上就是程序参数块(0x11F000)
 
-name_buf   times 16 db 0
+name_buf   times 64 db 0              ; 名字里可能带目录(DOCS/NOTE.TXT),留宽一点
 prog_name_ptr dd 0                      ; run 用的:去掉目录部分之后的程序名
 cat_name_ptr dd 0                       ; cat 用的:去掉目录部分之后的文件名
 file_size  dd 0

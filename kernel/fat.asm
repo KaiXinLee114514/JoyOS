@@ -780,14 +780,37 @@ fat_write_file:
 ; ---------------------------------------------------------------------------
 fat_list:
     pushad
-    mov dword [fat_scan], 0
+    mov eax, [fat_dir]
+    test eax, eax
+    jnz .cluster_init
+    ; ---- 根目录:固定区域 ----
     mov eax, [fat_root_lba]
-    mov [fat_scan_lba], eax
-.sector:
-    mov eax, [fat_scan]
-    cmp eax, [fat_root_ents]
+    mov [fl_lba], eax
+    mov eax, [fat_root_ents]
+    mov [fl_ents], eax
+    mov dword [fl_spc], 0               ; 0 = 固定区域,没有"下一簇"
+    jmp .sector
+.cluster_init:
+    mov [fl_clus], eax
+.cluster:
+    mov eax, [fl_clus]
+    cmp eax, 0xFFF8                     ; 链尾
     jae .done
-    mov eax, [fat_scan_lba]
+    test eax, eax
+    jz .done
+    sub eax, 2
+    imul eax, [fat_spc]
+    add eax, [fat_data_lba]
+    mov [fl_lba], eax
+    mov eax, [fat_spc]
+    mov [fl_ents], eax
+    shl dword [fl_ents], 4              ; 每扇区 16 个目录项
+    mov [fl_spc], eax                   ; 记住这是子目录,一簇完了要接着走链
+.sector:
+    mov eax, [fl_ents]
+    test eax, eax
+    jz .run_done
+    mov eax, [fl_lba]
     mov ecx, 1
     mov edi, FAT_BUF
     call ata_read_sectors
@@ -806,6 +829,8 @@ fat_list:
     mov al, [esi + 11]
     and al, 0x0F
     cmp al, 0x0F
+    je .skip
+    cmp byte [esi], '.'                 ; . 和 .. 不列出来(列出来太乱)
     je .skip
     ; 打名字(8+3)—— 8.3 的名字是空格补齐的,补的那些空格不打了
     push ebx
@@ -855,18 +880,34 @@ fat_list:
 .size:
     mov al, ' '
     call term_putc
+    mov al, [esi + 11]
+    test al, 0x10                        ; attr bit4 = 目录,不显示"大小"
+    jnz .isdir
     mov eax, [esi + 28]
     call term_print_dec
     mov esi, msg_fat_bytes
     call term_print
     pop ebx
+    jmp .skip
+.isdir:
+    mov esi, msg_fat_dir
+    call term_print
+    pop ebx
 .skip:
     add ebx, 32
-    inc dword [fat_scan]
     jmp .entry
 .next:
-    inc dword [fat_scan_lba]
+    inc dword [fl_lba]
+    sub dword [fl_ents], 16
     jmp .sector
+.run_done:
+    cmp dword [fl_spc], 0               ; 根目录到头就是真的完了
+    je .done
+    mov eax, [fl_clus]                  ; 子目录:跟着簇链再进一簇
+    mov [fat_cluster], eax
+    call fat_next_cluster
+    mov [fl_clus], eax
+    jmp .cluster
 .done:
     popad
     ret
@@ -908,7 +949,12 @@ fat_stat_size   dd 0
 fat_first_cluster dd 0
 fat_prev_cluster  dd 0
 fat_chunk_bytes   dd 0
+fl_lba          dd 0
+fl_ents         dd 0
+fl_clus         dd 0
+fl_spc          dd 0
 fat_name_ptr    dd 0
 fat_name        times 11 db 0
 msg_fat_bytes   db ' bytes', 10, 0
+msg_fat_dir     db ' <DIR>', 10, 0
 fat_dir_lba     dd 0
