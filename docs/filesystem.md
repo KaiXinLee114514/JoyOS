@@ -1,4 +1,4 @@
-# JoyOS 的磁盘:ATA PIO、磁盘字库、FAT16
+# JoyOS 的磁盘:ATA PIO、磁盘字库、FAT16 / FAT32
 
 这一页讲清楚**磁盘上有什么、内核怎么读它、怎么往里写**。涉及三个文件:
 
@@ -129,7 +129,8 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 
 ## 5. FAT16(`kernel/fat.asm`)
 
-只做"够用"的那一小块:根目录 + 8.3 短名。**没有**长文件名、**没有**子目录、**没有**删除。
+只做"够用"的那一小块:8.3 短名 + 子目录 + FAT16/FAT32 两种格式。
+**没有**长文件名(LFN)、**没有**文件时间戳。子目录的建立/删除/进出是有的(见下面 5.2)。
 
 引导扇区里用到的字段(偏移都是相对分区起点,`fat_mount` 逐个读出来):
 
@@ -140,12 +141,28 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 | 14 | 保留扇区数(FAT 表从这后面开始) | `fat_reserved` |
 | 16 | FAT 份数(通常 2) | `fat_nfats` |
 | 17 | 根目录项数(每项 32 字节) | `fat_root_ents` |
-| 22 | 每份 FAT 占几扇区 | `fat_size` |
+| 22 | 每份 FAT 占几扇区(**0 = 这是 FAT32**,FAT32 用下面 36/44/48 的字段) | `fat_size` |
+| 36 | FAT32:每份 FAT 占几扇区(32 位) | `fat_size` |
+| 44 | FAT32:根目录首簇(根也是一条簇链) | `fat_root_cluster` |
+| 48 | FAT32:FSInfo 扇区号 | `fat_fsinfo` |
 | 510 | 0xAA55 签名(对不上就不是引导扇区) | — |
 
 算出来的三个位置:`fat_fat_lba`(FAT 表)、`fat_root_lba`(根目录)、`fat_data_lba`(数据区起点),
 加上 `fat_spc` 就能把"簇号"翻译成"扇区号":`LBA = fat_data_lba + (簇 - 2) * fat_spc`。
 (簇 0 和 1 是 FAT 表自己用的保留值,所以数据簇从 2 开始。)
+
+**判 FAT16 还是 FAT32 就看偏移 22 那个 16 位字段是不是 0** —— 这是规范里唯一的硬性区别,
+不用猜、也不用读分区表。认出来之后差别在四个地方(代码里都收在一个 `fat_fat32` 标志后面):
+
+| | FAT16 | FAT32 |
+|---|---|---|
+| FAT 表项 | 2 字节 | 4 字节(高 4 位是保留位,读出来要 `& 0x0FFFFFFF`) |
+| 根目录 | 固定区域(`root_ents` × 32 字节) | 普通簇链,起点 = 偏移 44 里的簇号 |
+| 链尾门槛 | ≥ 0xFFF8 | ≥ 0x0FFFFFF8(`fat_eoc` 变量) |
+| 目录项里的首簇 | 偏移 +26(16 位) | +26 低 16 位 + **偏移 +20 高 16 位** |
+
+所以"找空目录项"、"沿目录链找名字"、"给目录加一簇"这些逻辑两种格式**一份代码就够**,
+只有 `fat_next_cluster` / `fat_set_entry` / `fat_alloc_cluster` / 取簇号的地方分了岔。
 
 函数一览:
 
@@ -159,7 +176,28 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 | `fat_set_entry` | 改一个 FAT 项,**两份 FAT 都写** |
 | `fat_alloc_cluster` | 找一个空闲簇,标记成链尾 |
 | `fat_write_file` | 写文件:有就覆盖,没有就新建(占一个目录项) |
-| `fat_list` | 列根目录(名字 + 字节数),`ls` 用的 |
+| `fat_list` | 列当前目录(名字 + 字节数,目录显示 `<DIR>`),`ls` 用的 |
+| `fat_chdir` | 进子目录(检查 attr bit4、取首簇),`cd` 用的 |
+| `fat_path` | 把 `DOCS/NOTE.TXT` 按 `/`(或 `\`)切开,逐层 `fat_chdir`,返回最后一段的指针 |
+| `fat_free_slot` | 在当前目录里找空目录项;子目录满了会自动往簇链上接一个新簇(先清零) |
+| `fat_mkdir` | 建目录:占空位 → 分簇 → 清簇 → 写 `.` 和 `..` → 目录项写回父目录 |
+| `fat_rmdir` | 删目录:先扫一遍确认只有 `.`/`..`(非空就拒绝),再释放整条簇链、父目录项标 0xE5 |
+| `fat_dotdot` | 从当前目录第一簇的 `..` 项里读父目录簇号(`cd ..` 用的) |
+| `fat_zero_cluster` | 把一簇全写 0(新目录要干净的簇) |
+| `fat_ent_cluster` | 从目录项里取首簇(FAT16 取 +26,FAT32 再拼 +20 的高位) |
+
+### 5.2 子目录与路径
+
+* `fat_dir` 就是"当前目录":**0 = 根目录**,其它值 = 该目录的首簇号。所有查找/列目录/
+  找空位都要先问它一句"根还是簇链",这三处的写法都是同一个岔路。
+* `.` 和 `..` 是真的写在盘上的目录项(建目录时就写好),`ls` 会把它们藏起来;
+  `cd ..` 就是读 `..` 项里的簇号 —— 顶层目录的 `..` 按 FAT 的老规矩填 0,也就是"根"。
+* shell 里每条命令执行前后会保存/恢复 `fat_dir`(分发命令的地方各存一次),
+  所以 `cat DOCS/X.TXT` 这种命令只是"借"用一下目录游标,不会把你的 `cd` 弄丢;
+  `cd` 自己会把新目录写回那份保存值。
+* `int 0x30` 的文件接口(7 读 / 8 写)也走 `fat_path`,所以 `cat`、`run`、编辑器、
+  vi 存盘都认 `DOCS/NOTE.TXT` 这种路径,而且相对**当前目录**:先 `cd DOCS` 再
+  `run VI NOTE.TXT`,存的还是 `DOCS/NOTE.TXT`。
 
 ### 写文件的完整流程
 
@@ -175,8 +213,10 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 
 ### 限制(想扩展就从这里挑)
 
-* 只能根目录、只能 8.3 名字(长文件名需要 LFN 的校验和 + 目录簇链);
-* 没有 `del`、没有子目录、没有时间戳(目录项里那几字节留着 0);
+* 只能 8.3 名字(长文件名需要 LFN 的校验和 + 目录簇链);
+* 没有 `del`(删文件)、没有时间戳(目录项里那几字节留着 0);
+* 覆盖写文件时旧的簇链没释放(会漏簇;数据没错,"盘上多占几个簇");
+* FSInfo 只读进来放着,写盘时不更新它(其它系统只是少个"还有多少空闲"的提示);
 * 写文件不做"磁盘满"以外的错误恢复,也不检查簇是不是真的空闲(`fat_alloc_cluster` 只看
   FAT 项是不是 0)。
 
@@ -191,7 +231,29 @@ python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
 * 第 2 个参数是分区起始 LBA(必须和 `FAT_PART_LBA` 一致),第 3 个是分区大小(MB);
 * 后面全是 `镜像里的名字=宿主机上的文件`;
 * 每簇几个扇区是**自动挑**的:`mkfat.py` 会算一遍让簇数落在 FAT16 要求的
-  `[4085, 65525)` 里(8 MB 时是 2 扇区/簇,数据区起点 LBA 6241,8143 个簇)。
+  `[4085, 65525)` 里(8 MB 时是 2 扇区/簇,数据区起点 LBA 6241,8143 个簇);
+* 名字以 `/` 结尾 = 建目录;名字里带 `/` 的文件会自动把父目录建出来:
+
+```bash
+python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
+    README.TXT=progs/README.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
+```
+
+### FAT32 分区
+
+加 `--fat32`:同一条命令行、同一个内核,只是分区按 FAT32 格式化(保留 32 扇区、
+4 字节 FAT 表项、根目录 = 簇 2 + FSInfo/备份引导扇区)。
+FAT32 规定**簇数至少 65525**,8 MB 的分区怎么调都凑不够,所以镜像得开大:
+
+```bash
+python3 tools/mkimg.py build/boot.bin build/stub.bin build/kernel.bin build/joyos-hd32.img \
+    font/full-joyf.bin --disk-mb 96
+python3 tools/mkfat.py build/joyos-hd32.img 6144 88 --fat32 README.TXT=progs/README.TXT \
+    DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
+```
+
+`make hd32` / `make test-hd32` 就是这两步。为什么会自动挑成 2 扇区/簇:
+`mkfat.py` 从 32 扇区/簇往下试,第一个"簇数 ≥ 65525"的就被选中。
 
 `make hd` 会自动跑这一步(`Makefile` 里 `$(HDIMG)` 规则),所以平时只要:
 
@@ -212,12 +274,18 @@ make hd          # 构建 + 直接启动完整硬盘镜像
 
 **信道二:离线解析镜像。** 测试跑完先把 QEMU 关掉(让它落盘),然后**不看内核**,
 用 `qemu_test.py` 里那个 70 行的 `Fat16` 类(纯 Python,自己算引导扇区字段、
-自己走簇链)把 `build/joyos-hd.img` 当块设备读一遍,断言:
+自己走簇链;它同样按"偏移 22 是不是 0"认 FAT32)把镜像当块设备读一遍,断言:
 
 * `TEST.TXT` 真的出现在根目录里,内容真的是 `hello-from-fat16`(这是 shell 里
   `write test.txt hello-from-fat16` 写进去的);
+* 子目录里的东西也对:`DOCS/NOTE.TXT` 和 `progs/NOTES.TXT` 字节一致、
+  `DOCS/SUBFILE.TXT` 是 shell 里 `cd DOCS` 之后 `write` 出来的、`TESTDIR/INNER.TXT`
+  是在二级目录里写的、`rmdir` 删掉的空目录真的从根目录消失了;
 * 两份 FAT 里那个簇项都是"链尾",也就是**两份 FAT 都被更新了**;
 * 镜像里原来的 `README.TXT` / `HELLO.BIN` / `COUNT.BIN` 字节和仓库里的源文件**一模一样**;
 * LBA 2047 的字库描述块 + LBA 2048 起的字库和 `font/full-joyf.bin` 字节一致。
 
 这条证明"字节真的落在磁盘上了" —— 内核自己打印的 `wrote test.txt` 不算证据。
+
+`make test-hd32` 是同一套断言跑在 FAT32 镜像上(外加一项"开机信息里认出的是 FAT32"),
+同一个内核、同一份解析器,所以"FAT16 能跑但 FAT32 只是摆设"这种情况跑不出来。
