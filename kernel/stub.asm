@@ -149,6 +149,20 @@ stub_entry:
     movzx eax, word [best_mode]
     mov [BOOTINFO + 60], eax            ; 模式号
     mov dword [BOOTINFO + 64], 1        ; vbe_ok = 1
+    ; ---- 诊断用:把 VBE 报的几个"可能不一致"的字段原样带给内核 ----
+    ;  (VBE 2.0 的 BytesPerScanLine(0x10)在有些 BIOS/虚拟机里是"窗口模式"的值,
+    ;   真正的线性帧缓冲行距在 VBE 3.0 的 LinBytesPerScanLine(0x32)—— 这就是
+    ;   同一个内核在 QEMU 正常、在 VirtualBox 花屏的那个坑)
+    mov eax, [VBE_INFO + 0x04]
+    mov [BOOTINFO + 76], eax            ; VBE 版本
+    movzx eax, word [VBE_MODEINFO + 0x10]
+    mov [BOOTINFO + 80], eax            ; BytesPerScanLine(老字段)
+    movzx eax, word [VBE_MODEINFO + 0x32]
+    mov [BOOTINFO + 84], eax            ; LinBytesPerScanLine(VBE3 新字段)
+    movzx eax, word [VBE_MODEINFO + 0x00]
+    mov [BOOTINFO + 88], eax            ; ModeAttributes
+    movzx eax, byte [VBE_MODEINFO + 0x19]
+    mov [BOOTINFO + 92], eax            ; BitsPerPixel(冗余,确认用)
 
     mov si, msg_mode_ok
     call print16

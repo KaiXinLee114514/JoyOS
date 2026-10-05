@@ -349,8 +349,15 @@ fb_newline:
     mov eax, [fb_cur_y]
     add eax, FB_CELL_H
     mov [fb_cur_y], eax
+    ; ★ 底边必须"夹到 16 的整数倍":屏幕高度不一定能被 16 整除
+    ;   (800×600 → 600 = 37×16 + 8,最下面 8 像素是半个格子)。
+    ;   以前这里夹到 600-16 = 584,584 % 16 = 8 —— 一旦滚屏,新写的每一行
+    ;   都比滚上去的旧行低 8 像素,于是"两代字叠在一起":QEMU 里表现为
+    ;   上下各半行的重影,VirtualBox 里相位越滚越乱、整屏花掉(踩过)。
+    ;   先把高度按 16 对齐,再减一行,光标就永远落在格子线上。
     mov ebx, [fb_height]
-    sub ebx, FB_CELL_H
+    and ebx, ~(FB_CELL_H - 1)           ; 向下取整到 16 的倍数:600 → 592
+    sub ebx, FB_CELL_H                  ; 最后一行的起点:592-16 = 576 = 36×16
     cmp eax, ebx
     jbe .ok
     mov [fb_cur_y], ebx

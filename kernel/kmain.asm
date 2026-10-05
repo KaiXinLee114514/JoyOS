@@ -137,6 +137,42 @@ COL_ERR    equ 0x0C                    ; 亮红
     ; (帧缓冲终端在开头已经初始化过 —— 它自带清屏,调两次会把前面的输出擦掉)
 
     ; ---- 报一下字库用了哪个 ----
+    ; ---- 帧缓冲几何(排 QEMU / VirtualBox 差异:谁报的行距对不上一眼可见)----
+    mov esi, msg_fbdump
+    call term_print
+    mov eax, [fb_phys]
+    call term_print_hex
+    mov esi, msg_fbw
+    call term_print
+    mov eax, [fb_width]
+    call term_print_dec
+    mov esi, msg_fbh
+    call term_print
+    mov eax, [fb_height]
+    call term_print_dec
+    mov esi, msg_fbp
+    call term_print
+    mov eax, [fb_pitch]
+    call term_print_dec
+    mov esi, msg_fbb
+    call term_print
+    mov eax, [fb_bpp]
+    call term_print_dec
+    mov esi, msg_fbmi16
+    call term_print
+    mov eax, [BOOTINFO + 80]
+    call term_print_dec
+    mov esi, msg_fbmi32
+    call term_print
+    mov eax, [BOOTINFO + 84]
+    call term_print_dec
+    mov esi, msg_fbvbe
+    call term_print
+    mov eax, [BOOTINFO + 76]
+    call term_print_hex
+    mov al, 10
+    call term_putc
+
     mov esi, msg_font
     call term_print
     cmp dword [font_from_disk], 0
@@ -620,6 +656,9 @@ msg_fbw     db ' w=', 0
 msg_fbh     db ' h=', 0
 msg_fbp     db ' pitch=', 0
 msg_fbb     db ' bpp=', 0
+msg_fbmi16  db '  modeinfo: bytesPerScanLine=', 0
+msg_fbmi32  db ' linBytesPerScanLine=', 0
+msg_fbvbe   db ' vbe=0x', 0
 msg_zh_tag  db 'zh  : ', 0
 msg_sectors db 'kernel area: ', 0
 msg_equals  db ' sectors = ', 0
