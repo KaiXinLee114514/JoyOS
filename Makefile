@@ -133,7 +133,9 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
           $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
-	    NOTES.TXT=progs/NOTES.TXT $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
+	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
+	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN \
+	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
 	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c

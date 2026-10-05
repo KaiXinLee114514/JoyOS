@@ -226,12 +226,13 @@ cmd_cat:
     call fat_path
     jc .notfound
     mov esi, eax                        ; 剩下的那截才是文件名
+    mov [cat_name_ptr], eax             ; 读的时候也要用这一截,别又拿整条路径
     call fat_stat                       ; 先看大小:缓冲区只到 PROG_ARG_ADDR 为止
     cmp eax, -1
     je .notfound
     cmp eax, FILE_MAX
     ja .toobig
-    mov esi, [cmd_arg]
+    mov esi, [cat_name_ptr]
     mov edi, FILE_BUF
     call fat_read_file
     cmp eax, -1
@@ -925,6 +926,7 @@ FILE_MAX       equ PROG_ARG_ADDR - FILE_BUF
 
 name_buf   times 16 db 0
 prog_name_ptr dd 0                      ; run 用的:去掉目录部分之后的程序名
+cat_name_ptr dd 0                       ; cat 用的:去掉目录部分之后的文件名
 file_size  dd 0
 
 shell_buf  times SHELL_LINE_MAX db 0
