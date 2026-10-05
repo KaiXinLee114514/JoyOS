@@ -140,11 +140,95 @@ fat_name83:
     ret
 
 ; ---------------------------------------------------------------------------
-;  fat_find:在根目录里找 fat_name,找到了返回 eax = 目录项所在的扇区 LBA,
-;            [fat_entry_off] = 表项在扇区内的偏移;找不到返回 eax = -1
+;  fat_find:在 [fat_dir] 指向的目录里找 fat_name(11 字节 8.3 名)
+;            [fat_dir] = 0 → 根目录(固定区域);否则是子目录(沿簇链找)
+;            找到了返回 eax = 目录项所在的扇区 LBA,
+;            [fat_entry_off] = 表项在扇区内的偏移;[fat_found_lba] 也记一份;
+;            找不到返回 eax = -1
 ; ---------------------------------------------------------------------------
 fat_find:
     pushad
+    mov eax, [fat_dir]
+    test eax, eax
+    jz .root                            ; 0 = 根目录(固定区域)
+    ; ------------------------------------------------------------------
+    ;  子目录:目录本身是一条簇链,一簇一簇地读
+    ;  (FAT32 的根目录也走这条路 —— 它的"根"就是一条从 root_cluster 起的簇链)
+    ; ------------------------------------------------------------------
+    mov [fat_scan_cluster], eax
+.ccluster:
+    mov eax, [fat_scan_cluster]
+    cmp eax, 0xFFF8                     ; 链尾
+    jae .not_found
+    test eax, eax
+    jz .not_found
+    sub eax, 2
+    imul eax, [fat_spc]
+    add eax, [fat_data_lba]
+    mov [fat_scan_lba], eax             ; 这一簇的第一扇区
+    mov dword [fat_scan_sect], 0
+.csector:
+    mov eax, [fat_scan_sect]
+    cmp eax, [fat_spc]
+    jae .cnext
+    mov eax, [fat_scan_lba]
+    add eax, [fat_scan_sect]
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    cmp eax, 0
+    jne .not_found
+    mov dword [fat_cache_lba], -1
+    xor ebx, ebx
+.centry:
+    cmp ebx, 512
+    jae .cdone
+    mov esi, FAT_BUF
+    add esi, ebx
+    movzx eax, byte [esi]
+    test al, al
+    jz .not_found                       ; 0 = 后面都是空的
+    cmp al, 0xE5
+    je .cskip
+    mov al, [esi + 11]
+    and al, 0x0F
+    cmp al, 0x0F
+    je .cskip                           ; 长文件名项
+    mov edi, fat_name
+    mov ecx, 11
+    push esi
+.ccmp:
+    mov al, [esi]
+    cmp al, [edi]
+    jne .cdiff
+    inc esi
+    inc edi
+    dec ecx
+    jnz .ccmp
+    pop esi
+    mov [fat_entry_off], ebx
+    mov eax, [fat_scan_lba]
+    add eax, [fat_scan_sect]
+    mov [fat_found_lba], eax
+    popad
+    mov eax, [fat_found_lba]
+    ret
+.cdiff:
+    pop esi
+.cskip:
+    add ebx, 32
+    jmp .centry
+.cdone:
+    inc dword [fat_scan_sect]
+    jmp .csector
+.cnext:
+    mov eax, [fat_scan_cluster]
+    mov [fat_cluster], eax
+    call fat_next_cluster
+    mov [fat_scan_cluster], eax
+    jmp .ccluster
+
+.root:
     mov dword [fat_scan], 0             ; 已经看过几个目录项
     mov eax, [fat_root_lba]
     mov [fat_scan_lba], eax
@@ -209,6 +293,114 @@ fat_find:
 .not_found:
     popad
     mov eax, -1
+    ret
+
+; ---------------------------------------------------------------------------
+;  fat_chdir:esi = 目录名(8.3 短名)→ 把 [fat_dir] 换成这个目录的首簇
+;            成功 CF=0,失败 CF=1(名字不存在 / 不是目录)
+; ---------------------------------------------------------------------------
+fat_chdir:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+    call fat_name83                     ; esi → 11 字节 8.3 名(fat_name)
+    call fat_find
+    cmp eax, -1
+    je .fail
+    ; 找到的位置在 [fat_found_lba],把那一扇区重读一遍取首簇和属性
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    mov esi, FAT_BUF
+    add esi, [fat_entry_off]
+    mov al, [esi + 11]
+    test al, 0x10                       ; attr bit4 = 目录
+    jz .fail
+    movzx eax, word [esi + 26]          ; 目录自己的首簇
+    test eax, eax
+    jz .fail
+    mov [fat_dir], eax
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    clc
+    ret
+.fail:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+;  fat_path:esi = "DOCS/NOTE.TXT"(也认反斜杠)→ 逐段进目录,
+;            返回 eax = 最后一段(文件名)的指针,CF=1 = 中间有一层进不去
+;  说明:进目录靠改 [fat_dir],所以调用前请先把 [fat_dir] 清 0(从根开始)
+; ---------------------------------------------------------------------------
+fat_path:
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+    mov [pp_cur], esi
+.next:
+    mov esi, [pp_cur]
+    xor ecx, ecx
+.scan:
+    mov al, [esi + ecx]
+    test al, al
+    jz .done                            ; 没有分隔符了 → 剩下这截就是文件名
+    cmp al, '/'
+    je .split
+    cmp al, 0x5C                        ; 反斜杠(NASM 里 '\\' 是两个字符,别那么写)
+    je .split
+    inc ecx
+    jmp .scan
+.split:
+    mov edi, esi
+    add edi, ecx                        ; edi → 分隔符
+    mov al, [edi]
+    mov [pp_sep], al
+    mov [pp_next], edi
+    mov byte [edi], 0                   ; 临时把"DIR/FILE"切成 "DIR"
+    mov esi, [pp_cur]
+    call fat_chdir
+    pushf
+    mov edi, [pp_next]
+    mov al, [pp_sep]
+    mov [edi], al                       ; 恢复原来的分隔符
+    popf
+    jc .fail
+    lea eax, [edi + 1]                  ; 下一段
+    mov [pp_cur], eax
+    jmp .next
+.done:
+    mov eax, [pp_cur]
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    clc
+    ret
+.fail:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    stc
     ret
 
 ; ---------------------------------------------------------------------------
@@ -670,6 +862,12 @@ fat_spc         dd 4
 fat_reserved    dd 1
 fat_nfats       dd 2
 fat_root_ents   dd 512
+fat_dir         dd 0                    ; 当前目录的首簇:0 = 根目录
+fat_scan_cluster dd 0
+fat_scan_sect   dd 0
+pp_cur          dd 0
+pp_next         dd 0
+pp_sep          db 0
 fat_size        dd 0
 fat_fat_lba     dd 0
 fat_root_lba    dd 0

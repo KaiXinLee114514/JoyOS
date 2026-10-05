@@ -221,6 +221,11 @@ cmd_cat:
     mov esi, [cmd_arg]
     call strip_name                    ; 去掉尾巴上的空格
     mov esi, [cmd_arg]
+    ; ---- 支持路径:DOCS/NOTE.TXT 这样先把前面的目录一层层进去 ----
+    mov dword [fat_dir], 0
+    call fat_path
+    jc .notfound
+    mov esi, eax                        ; 剩下的那截才是文件名
     call fat_stat                       ; 先看大小:缓冲区只到 PROG_ARG_ADDR 为止
     cmp eax, -1
     je .notfound
@@ -232,6 +237,7 @@ cmd_cat:
     cmp eax, -1
     je .notfound
     mov [file_size], eax
+    mov dword [fat_dir], 0
     mov esi, FILE_BUF
     call term_print                     ; 内容是 UTF-8,term_print 直接吃
     cmp byte [FILE_BUF + 0], 0          ; 空文件就算了
@@ -400,13 +406,18 @@ cmd_run:
     jmp .copied
 .no_ext:
     ; 先只看目录项里的大小:太大就别读了,免得把字库盖掉一半
+    mov dword [fat_dir], 0
     mov esi, name_buf
+    call fat_path                       ; 支持 run DOCS/PROG.BIN
+    jc .notfound
+    mov [prog_name_ptr], eax            ; 前面的目录已经进去了,这截才是文件名
+    mov esi, eax
     call fat_stat
     cmp eax, -1
     je .notfound
     cmp eax, PROG_MAX_SIZE
     ja .toobig
-    mov esi, name_buf
+    mov esi, [prog_name_ptr]
     mov edi, PROG_ADDR
     call fat_read_file
     cmp eax, -1
@@ -913,6 +924,7 @@ FILE_MAX       equ PROG_ARG_ADDR - FILE_BUF
                                         ; 0xF000 = 60 KB:再往上就是程序参数块(0x11F000)
 
 name_buf   times 16 db 0
+prog_name_ptr dd 0                      ; run 用的:去掉目录部分之后的程序名
 file_size  dd 0
 
 shell_buf  times SHELL_LINE_MAX db 0
