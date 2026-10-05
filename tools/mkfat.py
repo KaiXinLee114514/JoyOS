@@ -12,6 +12,9 @@
 
 用法:
     python3 tools/mkfat.py <镜像文件> <分区起始 LBA> <分区大小 MB> <名字=文件> ...
+
+名字以 / 结尾 = 建一个目录;名字里带 / = 放进子目录(父目录会自动建):
+    python3 tools/mkfat.py build/joyos-hd.img 6144 8 DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
 例:
     python3 tools/mkfat.py build/joyos-hd.img 6144 8 README.TXT=progs/README.TXT HELLO.BIN=build/HELLO.BIN
 
@@ -33,8 +36,17 @@ MEDIA = 0xF8
 
 
 def name83(name: str):
-    """'HELLO.BIN' → 11 字节的 8.3 目录项名字"""
+    """'HELLO.BIN' → 11 字节的 8.3 目录项名字
+
+    ★ "." 和 ".." 要特殊处理:按普通规则 partition('.') 会把它们拆成
+      base="" + ext="" → 结果 11 个空格,名字就丢了(目录自己指不回来,
+      任何工具走进去都会迷路)。FAT 里 "." 就是 ".          "、".." 是 "..         "。
+    """
     name = name.upper()
+    if name == ".":
+        return b"." + b" " * 10
+    if name == "..":
+        return b".." + b" " * 9
     base, _, ext = name.partition('.')
     return base[:8].ljust(8).encode() + ext[:3].ljust(3).encode()
 
@@ -49,7 +61,8 @@ def main() -> int:
     files = []
     for spec in sys.argv[4:]:
         name, _, path = spec.partition('=')
-        files.append((name, pathlib.Path(path).read_bytes()))
+        # 名字以 / 结尾 = 建目录(没有数据);否则读文件内容
+        files.append((name, b"" if name.endswith("/") else pathlib.Path(path).read_bytes()))
 
     total_sectors = (part_mb * 1024 * 1024) // SECTOR
     root_dir_sectors = (ROOT_ENTRIES * 32 + SECTOR - 1) // SECTOR
@@ -112,29 +125,100 @@ def main() -> int:
     struct.pack_into("<H", fat, 2, 0xFFFF)           # 簇 1 保留
 
     next_cluster = 2
-    root = bytearray(root_dir_sectors * SECTOR)
-    entry_index = 0
+
+    # ------------------------------------------------------------------
+    #  把参数拆成"目录"和"文件":名字以 / 结尾 = 建目录,
+    #  "A/B/C.TXT=..." = 放到子目录里(父目录自动建)。
+    #  每个目录占一个簇;簇里先写 "." 和 ".." 两个项,再写它自己的孩子。
+    # ------------------------------------------------------------------
+    dir_paths = []                      # 要建的目录(按父在前排序)
+    file_items = []                     # (路径, 数据)
     for name, data in files:
-        n_clusters = max(1, (len(data) + SECTORS_PER_CLUSTER * SECTOR - 1) // (SECTORS_PER_CLUSTER * SECTOR))
+        if name.endswith("/"):
+            dir_paths.append(name.rstrip("/"))
+        else:
+            file_items.append((name, data))
+    for name, _ in file_items:
+        parts = name.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            d = "/".join(parts[:i])
+            if d and d not in dir_paths:
+                dir_paths.append(d)
+    dir_paths.sort(key=lambda d: d.count("/"))      # 父目录先分配簇
+
+    dir_cluster = {}                    # 目录路径 → 它的首簇
+    dir_parent = {}                     # 目录路径 → 父目录路径("" = 根)
+    dir_contents = []                   # [(目录路径, [项...])]  项的写法见下面
+    for d in dir_paths:
+        parent = d.rsplit("/", 1)[0] if "/" in d else ""
+        dir_cluster[d] = next_cluster
+        dir_parent[d] = parent
+        struct.pack_into("<H", fat, next_cluster * 2, 0xFFFF)   # 一个簇的目录,链尾
+        next_cluster += 1
+
+    def entry(short, attr, cluster, size):
+        b = bytearray(32)
+        b[0:11] = short
+        b[11] = attr
+        struct.pack_into("<H", b, 26, cluster)
+        struct.pack_into("<I", b, 28, size)
+        return b
+
+    dir_entries = {d: [] for d in dir_paths}
+    root_entries = []
+
+    # 目录自己的项:". "(自己)和 ".."(父目录;根用 0,这是 FAT 的老规矩)
+    for d in dir_paths:
+        dir_entries[d].append(entry(name83("."), 0x10, dir_cluster[d], 0))
+        # ".." 指向父目录;父目录是根的话填 0(FAT16 的根没有簇号,0 就是"根")
+        up = dir_cluster[dir_parent[d]] if dir_parent[d] else 0
+        dir_entries[d].append(entry(name83(".."), 0x10, up, 0))
+
+    # 文件:按路径放进对应目录
+    for name, data in file_items:
+        parts = name.split("/")
+        fname, d = parts[-1], "/".join(parts[:-1])
+        n_clusters = max(1, (len(data) + SECTORS_PER_CLUSTER * SECTOR - 1)
+                         // (SECTORS_PER_CLUSTER * SECTOR))
         first = next_cluster
         for i in range(n_clusters):
             cur = next_cluster + i
             nxt = cur + 1 if i < n_clusters - 1 else 0xFFFF
             struct.pack_into("<H", fat, cur * 2, nxt)
-            # 写数据
             src = i * SECTORS_PER_CLUSTER * SECTOR
             chunk = data[src:src + SECTORS_PER_CLUSTER * SECTOR]
             dst = (data_start + (cur - 2) * SECTORS_PER_CLUSTER) * SECTOR
             volume[dst:dst + len(chunk)] = chunk
         next_cluster += n_clusters
 
-        e = entry_index * 32
-        root[e:e + 11] = name83(name)
-        root[e + 11] = 0x20                          # 普通文件
-        struct.pack_into("<H", root, e + 26, first)
-        struct.pack_into("<I", root, e + 28, len(data))
-        entry_index += 1
-        print(f"   {name:12s} {len(data):>8} 字节  首簇 {first}  共 {n_clusters} 簇")
+        target = root_entries if d == "" else dir_entries[d]
+        target.append(entry(name83(fname), 0x20, first, len(data)))
+        where = f"{d}/{fname}" if d else fname
+        print(f"   {where:24s} {len(data):>8} 字节  首簇 {first}  共 {n_clusters} 簇")
+
+    # 目录:在父目录里写一个 attr=0x10 的项
+    for d in dir_paths:
+        parent = dir_parent[d]
+        short = name83(d.rsplit("/", 1)[-1])
+        e = entry(short, 0x10, dir_cluster[d], 0)
+        if parent == "":
+            root_entries.append(e)
+        else:
+            dir_entries[parent].append(e)
+        print(f"   {(parent + '/') if parent else ''}{d.rsplit('/', 1)[-1] + '/':12s} "
+              f"{'目录':>8}      首簇 {dir_cluster[d]}")
+
+    # 目录的簇内容:".", "..", 然后自己的孩子
+    for d in dir_paths:
+        blk = bytearray(SECTORS_PER_CLUSTER * SECTOR)
+        for i, e in enumerate(dir_entries[d]):
+            blk[i * 32:(i + 1) * 32] = e
+        off = (data_start + (dir_cluster[d] - 2) * SECTORS_PER_CLUSTER) * SECTOR
+        volume[off:off + len(blk)] = blk
+
+    root = bytearray(root_dir_sectors * SECTOR)
+    for i, e in enumerate(root_entries):
+        root[i * 32:(i + 1) * 32] = e
 
     volume[fat_start * SECTOR: (fat_start + sectors_per_fat) * SECTOR] = fat
     for i in range(1, NUM_FATS):                     # 第二份 FAT 内容一样(备份)
