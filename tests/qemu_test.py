@@ -197,7 +197,7 @@ def find_text(img, text: str, glyphs: dict, ink_rows=None) -> bool:
 #  内核说自己"写成功了"不算数 —— 字节真的落在 FAT16 分区里才算数。
 # ---------------------------------------------------------------------------
 class Fat16:
-    """够用的只读 FAT16 解析器(根目录 + 8.3 短名 + 簇链),纯 Python"""
+    """够用的只读 FAT 解析器(FAT16 + FAT32,8.3 短名 + 子目录 + 簇链),纯 Python"""
 
     def __init__(self, path: str, part_lba: int = 6144):
         self.img = open(path, "rb").read()
@@ -210,13 +210,34 @@ class Fat16:
         self.nfats = self.img[base + 16]
         self.root_ents = u16(17)
         self.fat_sectors = u16(22)
+        # 每 FAT 扇区数为 0 → FAT32(和内核 fat_mount 的判法一致)
+        self.fat32 = self.fat_sectors == 0
+        if self.fat32:
+            self.fat_sectors = int.from_bytes(self.img[base + 36:base + 40], "little")
+            self.root_cluster = int.from_bytes(self.img[base + 44:base + 48], "little") & 0x0FFFFFFF
+            self.root_ents = 0
+            self.eoc = 0x0FFFFFF8
+        else:
+            self.root_cluster = 0
+            self.eoc = 0xFFF8
         self.root_lba = base + (self.reserved + self.nfats * self.fat_sectors) * 512
         self.data_lba = self.root_lba + (self.root_ents * 32 + 511) // 512 * 512
         self.fat_lba = base + self.reserved * 512
 
     def next_cluster(self, cl: int) -> int:
+        if self.fat32:
+            off = self.fat_lba + cl * 4
+            return int.from_bytes(self.img[off:off + 4], "little") & 0x0FFFFFFF
         off = self.fat_lba + cl * 2
         return int.from_bytes(self.img[off:off + 2], "little")
+
+    def entry_cluster(self, raw: bytes) -> int:
+        """目录项里的首簇:FAT32 的高 16 位在偏移 +20"""
+        lo = int.from_bytes(raw[26:28], "little")
+        if not self.fat32:
+            return lo
+        hi = int.from_bytes(raw[20:22], "little")
+        return ((hi << 16) | lo) & 0x0FFFFFFF
 
     def entries(self):
         for i in range(self.root_ents):
@@ -235,10 +256,10 @@ class Fat16:
         for name, raw in self.entries():
             if name != want:
                 continue
-            cl = int.from_bytes(raw[26:28], "little")
+            cl = self.entry_cluster(raw)
             size = int.from_bytes(raw[28:32], "little")
             out = bytearray()
-            while 2 <= cl < 0xFFF8 and len(out) < size:
+            while 2 <= cl < self.eoc and len(out) < size:
                 off = self.data_lba + (cl - 2) * self.spc * 512
                 out += self.img[off:off + self.spc * 512]
                 cl = self.next_cluster(cl)
@@ -247,6 +268,80 @@ class Fat16:
 
     def names(self) -> list:
         return [n for n, _ in self.entries()]
+
+    # ---- 子目录:0 = 根目录那块固定区域,否则是簇链 ----
+    def dir_entries(self, cluster: int = 0):
+        """列一个目录:cluster=0 → 根目录固定区域;否则跟着簇链走"""
+        if cluster == 0 and self.fat32:
+            cluster = self.root_cluster            # FAT32 的根目录也是一条簇链
+        if cluster == 0:
+            blobs = [
+                self.img[self.root_lba + i * 32:self.root_lba + i * 32 + 32]
+                for i in range(self.root_ents)
+            ]
+        else:
+            blobs, cl = [], cluster
+            while 2 <= cl < self.eoc:
+                off = self.data_lba + (cl - 2) * self.spc * 512
+                sec = self.img[off:off + self.spc * 512]
+                blobs += [sec[i:i + 32] for i in range(0, len(sec), 32)]
+                cl = self.next_cluster(cl)
+        for raw in blobs:
+            if len(raw) < 32:
+                return
+            if raw[0] == 0x00:
+                return
+            if raw[0] == 0xE5 or (raw[11] & 0x0F) == 0x0F:
+                continue
+            if raw[0] == 0x2E:                      # . / .. 不算文件
+                continue
+            name = raw[0:8].decode("ascii", "replace").rstrip()
+            ext = raw[8:11].decode("ascii", "replace").rstrip()
+            is_dir = bool(raw[11] & 0x10)
+            yield (f"{name}.{ext}" if ext else name), raw, is_dir
+
+    def resolve(self, path: str):
+        """"DOCS/NOTE.TXT" → 目录项(找不到返回 None);路径都相对根目录"""
+        parts = [x for x in path.replace("\\", "/").split("/") if x]
+        cluster = 0
+        for i, part in enumerate(parts):
+            last = i == len(parts) - 1
+            for name, raw, is_dir in self.dir_entries(cluster):
+                if name.upper() != part.upper():
+                    continue
+                if last:
+                    return raw
+                if not is_dir:
+                    return None
+                cluster = self.entry_cluster(raw)
+                break
+            else:
+                return None
+        return None
+
+    def listdir(self, path: str = "") -> list:
+        """列目录,返回 [(名字, 是不是目录)]"""
+        cluster = 0
+        if path.strip("./"):
+            raw = self.resolve(path)
+            if raw is None or not (raw[11] & 0x10):
+                raise KeyError(path)
+            cluster = self.entry_cluster(raw)
+        return [(n, d) for n, _, d in self.dir_entries(cluster)]
+
+    def read_path(self, path: str) -> bytes:
+        """按路径读文件内容(带簇链),比 read() 多支持子目录"""
+        raw = self.resolve(path)
+        if raw is None:
+            raise KeyError(path)
+        cl = self.entry_cluster(raw)
+        size = int.from_bytes(raw[28:32], "little")
+        out = bytearray()
+        while 2 <= cl < self.eoc and len(out) < size:
+            off = self.data_lba + (cl - 2) * self.spc * 512
+            out += self.img[off:off + self.spc * 512]
+            cl = self.next_cluster(cl)
+        return bytes(out[:size])
 
 
 def screen_text(img, glyphs: dict, rows: int = 40, cols: int = 100) -> list:
@@ -428,6 +523,36 @@ def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
     except KeyError:
         out.append(("离线:编辑器存的文件正确", False, "目录里没有 NEWFILE.TXT"))
 
+    # ---- 3d) 子目录:mkfat 造的 + guest 自己写进去的 ----
+    try:
+        names = {n.upper() for n, _ in fs.listdir("DOCS")}
+        out.append(("离线:DOCS 目录内容齐全",
+                    {"NOTE.TXT", "HELLO.BIN", "SUBFILE.TXT"} <= names,
+                    f"NOTE.TXT/HELLO.BIN/SUBFILE.TXT,实际 {sorted(names)}"))
+    except Exception as e:                                   # noqa: BLE001
+        out.append(("离线:DOCS 目录内容齐全", False, str(e)))
+
+    for name, want, label in [
+        ("DOCS/NOTE.TXT",    open("progs/NOTES.TXT", "rb").read(), "DOCS/NOTE.TXT 和源文件一致"),
+        ("DOCS/SUBFILE.TXT", b"subdir-write-test",                 "子目录里写的文件内容"),
+        ("TESTDIR/INNER.TXT", b"hello-in-subdir",                  "二级目录里写的文件内容"),
+        ("DOCS/EDITEST.TXT", b"sub dir edit",                      "编辑器存进子目录的内容"),
+    ]:
+        try:
+            got = fs.read_path(name)
+            out.append((f"离线:{label}", got == want,
+                        f"{want!r},实际 {got!r}"))
+        except Exception as e:                               # noqa: BLE001
+            out.append((f"离线:{label}", False, str(e)))
+
+    try:
+        names = {n.upper() for n, _ in fs.listdir("")}
+        out.append(("离线:空目录真的删掉了", "EMPTY" not in names,
+                    f"根目录里没有 EMPTY,实际 {sorted(names)}"))
+        out.append(("离线:非空目录还在", "TESTDIR" in names, "TESTDIR 还在(root)"))
+    except Exception as e:                                   # noqa: BLE001
+        out.append(("离线:空目录真的删掉了", False, str(e)))
+
     # ---- 3) 对照:镜像里本来就有的文件,字节应该和仓库里的源文件一致 ----
     for name, path in (("README.TXT", "progs/README.TXT"),
                        ("HELLO.BIN", "build/HELLO.BIN"),
@@ -444,14 +569,18 @@ def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
     try:
         idx = next(i for i, (n, _) in enumerate(fs.entries()) if n == "TEST.TXT")
         ent = fs.root_lba + idx * 32
-        cl = int.from_bytes(raw[ent + 26:ent + 28], "little")
+        cl = fs.entry_cluster(raw[ent:ent + 32])
         copies = []
         for i in range(fs.nfats):
-            off = fs.fat_lba + i * fs.fat_sectors * 512 + cl * 2
-            copies.append(int.from_bytes(raw[off:off + 2], "little"))
-        # 文件比一个簇小 → 它的簇项应该是"链尾"(0xFFF8~0xFFFF),而且两份 FAT 得一样
+            if fs.fat32:
+                off = fs.fat_lba + i * fs.fat_sectors * 512 + cl * 4
+                copies.append(int.from_bytes(raw[off:off + 4], "little") & 0x0FFFFFFF)
+            else:
+                off = fs.fat_lba + i * fs.fat_sectors * 512 + cl * 2
+                copies.append(int.from_bytes(raw[off:off + 2], "little"))
+        # 文件比一个簇小 → 它的簇项应该是"链尾",而且两份 FAT 得一样
         out.append(("离线:两份 FAT 都写了",
-                    len(set(copies)) == 1 and copies[0] >= 0xFFF8,
+                    len(set(copies)) == 1 and copies[0] >= fs.eoc,
                     f"簇 {cl} 在 {fs.nfats} 份 FAT 里都是链尾,实际 {copies}"))
     except Exception as e:                                   # noqa: BLE001
         out.append(("离线:两份 FAT 都写了", False, str(e)))
@@ -484,12 +613,13 @@ def main() -> int:
     kbd_mode = "--kbd" in argv              # 键盘测试:用 monitor 的 sendkey 打字,看回显
     shell_mode = "--shell" in argv          # shell 命令测试
     hd_mode = "--fontdisk" in argv          # 硬盘镜像:磁盘字库 + FAT16 + 跑程序
+    fat32_mode = "--fat32" in argv          # 同一个内核,但分区是 FAT32(镜像得开大)
     font_path = FONT_PATH                   # 比像素用的模板字库(硬盘模式换成完整字库)
     if "--font" in argv:
         font_path = argv[argv.index("--font") + 1]
     argv = [a for a in argv
             if a not in ("--dump", "--hda", "--fault", "--pgfault", "--kbd", "--shell",
-                         "--fontdisk")]
+                         "--fontdisk", "--fat32")]
     if "--font" in argv:
         i = argv.index("--font")
         del argv[i:i + 2]
@@ -593,8 +723,13 @@ def main() -> int:
                             "font: loaded from disk (ATA), ..."))
             results.append(("完整字库字数", has("40208 glyphs") and not has("416 glyphs"),
                             "40208 glyphs(内置子集是 416)"))
-            results.append(("FAT16 挂载", has("fat16: mounted at LBA 6144"),
-                            "fat16: mounted at LBA 6144"))
+            if fat32_mode:
+                results.append(("FAT32 自动识别(BPB 的 f16 每 FAT 扇区数 = 0)",
+                                has("fat32: mounted at LBA 6144"),
+                                "fat32: mounted at LBA 6144 ...(不用重新分区/换内核)"))
+            else:
+                results.append(("FAT16 挂载", has("fat16: mounted at LBA 6144"),
+                                "fat16: mounted at LBA 6144"))
 
             def wait_idle(max_wait=25.0):
                 """等屏幕不再变化。
@@ -780,6 +915,64 @@ def main() -> int:
             rescan()
             results.append(("Ctrl-Q 退出编辑器", has("editor closed."),
                             "editor closed. + 回到 shell"))
+
+            # ---- 子目录:路径解析 / cd / mkdir / rmdir / 子目录里读写 ----
+            run("ls docs")
+            results.append(("ls 列子目录", has("NOTE.TXT") and has("HELLO.BIN"),
+                            "DOCS 里的 NOTE.TXT / HELLO.BIN"))
+            results.append(("ls 不列 . 和 ..", ".  <DIR>" not in screen_lines(),
+                            "目录里不显示 . / .."))
+
+            run("cat docs/note.txt", wait=1.3)
+            results.append(("cat 带路径读子目录文件", has("看看存进去的样子"),
+                            "DOCS/NOTE.TXT 的内容"))
+
+            run("run docs/hello.bin", wait=1.1)
+            results.append(("run 带路径跑子目录里的程序",
+                            has("Hello from HELLO.BIN - I was loaded from the FAT16 disk!"),
+                            "HELLO.BIN 从 DOCS 里被读出来跑掉"))
+
+            run("cd docs")
+            results.append(("cd 进目录(提示符跟着变)", has("docs>"),
+                            "提示符变成 docs>"))
+            run("write subfile.txt subdir-write-test")
+            results.append(("子目录里写文件", has("wrote subfile.txt"), "wrote subfile.txt"))
+            run("cat subfile.txt")
+            results.append(("子目录里读回文件", has("subdir-write-test"), "文件内容"))
+            run("cd ..")
+            results.append(("cd .. 回上一层", has("> ls") or has("> cat") or has("> "),
+                            "回到根目录(提示符没有目录名)"))
+
+            run("mkdir testdir")
+            results.append(("mkdir 建目录", has("created directory testdir"),
+                            "created directory testdir"))
+            run("ls")
+            results.append(("新目录出现在列表里", has("TESTDIR"), "TESTDIR"))
+            run("cd testdir")
+            run("write inner.txt hello-in-subdir")
+            run("cd ..")
+            run("rmdir testdir")
+            results.append(("非空目录删不掉", has("directory not empty"),
+                            "rmdir failed (directory not empty)"))
+
+            run("mkdir empty")
+            run("rmdir empty")
+            results.append(("rmdir 删空目录", has("removed directory empty"),
+                            "removed directory empty"))
+            run("ls")
+            results.append(("空目录真的没了", "EMPTY" not in screen_lines(),
+                            "列表里没有 EMPTY"))
+
+            # int 0x30 的读/写也要认路径:编辑器存到 DOCS 里去
+            run("run edit docs/editest.txt", wait=1.5)
+            mon.type_text("sub dir edit")
+            time.sleep(0.6)
+            mon.sendkey("ctrl-s")
+            time.sleep(0.9)
+            mon.sendkey("ctrl-q")
+            time.sleep(1.0)
+            rescan()
+            results.append(("编辑器能存进子目录", has("editor closed."), "editor closed."))
 
             # ---- 第二信道:先把 QEMU 关掉(让它把缓存落盘),再自己解析镜像 ----
             qemu.terminate()

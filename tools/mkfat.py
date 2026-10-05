@@ -15,6 +15,9 @@
 
 名字以 / 结尾 = 建一个目录;名字里带 / = 放进子目录(父目录会自动建):
     python3 tools/mkfat.py build/joyos-hd.img 6144 8 DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
+
+FAT32(分区要 ≥ 32 MB,不然凑不够 65525 个簇):
+    python3 tools/mkfat.py build/joyos-hd32.img 6144 56 --fat32 README.TXT=progs/README.TXT
 例:
     python3 tools/mkfat.py build/joyos-hd.img 6144 8 README.TXT=progs/README.TXT HELLO.BIN=build/HELLO.BIN
 
@@ -52,28 +55,34 @@ def name83(name: str):
 
 
 def main() -> int:
-    if len(sys.argv) < 5:
+    argv = [a for a in sys.argv[1:] if a != "--fat32"]
+    fat32 = "--fat32" in sys.argv
+    if len(argv) < 4:
         print(__doc__)
         return 2
-    img_path = pathlib.Path(sys.argv[1])
-    part_lba = int(sys.argv[2])
-    part_mb = int(sys.argv[3])
+    img_path = pathlib.Path(argv[0])
+    part_lba = int(argv[1])
+    part_mb = int(argv[2])
     files = []
-    for spec in sys.argv[4:]:
+    for spec in argv[3:]:
         name, _, path = spec.partition('=')
         # 名字以 / 结尾 = 建目录(没有数据);否则读文件内容
         files.append((name, b"" if name.endswith("/") else pathlib.Path(path).read_bytes()))
 
     total_sectors = (part_mb * 1024 * 1024) // SECTOR
-    root_dir_sectors = (ROOT_ENTRIES * 32 + SECTOR - 1) // SECTOR
+    esize = 4 if fat32 else 2                  # FAT 表项字节数
+    eoc = 0x0FFFFFFF if fat32 else 0xFFFF      # 链尾(28 位 / 16 位)
+    reserved = 32 if fat32 else RESERVED_SECTORS
+    root_ents = 0 if fat32 else ROOT_ENTRIES
+    root_dir_sectors = (root_ents * 32 + SECTOR - 1) // SECTOR
 
     def try_spc(spc):
         """给定每簇扇区数,算 FAT 大小和簇数(经典的两步回代)"""
         sectors_per_fat = 1
         while True:
-            data = total_sectors - RESERVED_SECTORS - NUM_FATS * sectors_per_fat - root_dir_sectors
+            data = total_sectors - reserved - NUM_FATS * sectors_per_fat - root_dir_sectors
             cl = data // spc
-            need = ((cl + 2) * 2 + SECTOR - 1) // SECTOR
+            need = ((cl + 2) * esize + SECTOR - 1) // SECTOR
             if need <= sectors_per_fat:
                 return sectors_per_fat, cl
             sectors_per_fat = need
@@ -81,15 +90,19 @@ def main() -> int:
     sectors_per_cluster = 0
     for spc in (32, 16, 8, 4, 2, 1):
         spf, cl = try_spc(spc)
-        if cl < 65525 and cl >= 4085:
+        ok = (cl >= 65525) if fat32 else (4085 <= cl < 65525)
+        if ok:
             sectors_per_cluster, sectors_per_fat, clusters = spc, spf, cl
             break
     else:
-        print("❌ 这个分区大小凑不出 FAT16 的簇数范围(4085~65524),换个大点/小点的分区")
+        if fat32:
+            print(f"❌ FAT32 至少要 65525 个簇,这个分区只有 {cl} 个 —— 用 --disk-mb 把镜像开大点")
+        else:
+            print("❌ 这个分区大小凑不出 FAT16 的簇数范围(4085~65524),换个大点/小点的分区")
         return 1
     SECTORS_PER_CLUSTER = sectors_per_cluster
 
-    fat_start = RESERVED_SECTORS
+    fat_start = reserved                         # FAT32 要 32 个保留扇区,别拿 FAT16 的常量
     root_start = fat_start + NUM_FATS * sectors_per_fat
     data_start = root_start + root_dir_sectors
 
@@ -101,30 +114,59 @@ def main() -> int:
     bpb[3:11] = b"JOYOS   "
     struct.pack_into("<H", bpb, 11, SECTOR)          # 每扇区字节数
     bpb[13] = SECTORS_PER_CLUSTER
-    struct.pack_into("<H", bpb, 14, RESERVED_SECTORS)
+    struct.pack_into("<H", bpb, 14, reserved)
     bpb[16] = NUM_FATS
-    struct.pack_into("<H", bpb, 17, ROOT_ENTRIES)
+    struct.pack_into("<H", bpb, 17, root_ents)
     struct.pack_into("<H", bpb, 19, total_sectors if total_sectors < 65536 else 0)
     bpb[21] = MEDIA
-    struct.pack_into("<H", bpb, 22, sectors_per_fat)
+    struct.pack_into("<H", bpb, 22, 0 if fat32 else sectors_per_fat)   # 0 = FAT32 的标志
     struct.pack_into("<H", bpb, 24, 32)              # 每磁道扇区(软盘几何,这里无所谓)
     struct.pack_into("<H", bpb, 26, 64)              # 磁头数
     struct.pack_into("<I", bpb, 28, 0)               # 隐藏扇区
-    struct.pack_into("<I", bpb, 32, total_sectors if total_sectors >= 65536 else 0)
-    bpb[36] = 0x80                                   # 驱动器号
-    bpb[38] = 0x29                                   # 扩展引导签名
-    struct.pack_into("<I", bpb, 39, 0x4A4F594F)      # 卷序列号 'OYOJ'
-    bpb[43:54] = b"JOYOS FONT "                      # 卷标 11 字节
-    bpb[54:62] = b"FAT16   "
+    struct.pack_into("<I", bpb, 32, total_sectors if (total_sectors >= 65536 or fat32) else 0)
+    if fat32:
+        struct.pack_into("<I", bpb, 36, sectors_per_fat)   # 每 FAT 扇区数(32 位)
+        struct.pack_into("<H", bpb, 40, 0)                 # 扩展标志
+        struct.pack_into("<H", bpb, 42, 0)                 # 版本 0.0
+        struct.pack_into("<I", bpb, 44, 2)                 # 根目录首簇
+        struct.pack_into("<H", bpb, 48, 1)                 # FSInfo 扇区
+        struct.pack_into("<H", bpb, 50, 6)                 # 备份引导扇区
+        bpb[64] = 0x80                                     # 驱动器号
+        bpb[66] = 0x29                                     # 扩展引导签名
+        struct.pack_into("<I", bpb, 67, 0x4A4F594F)        # 卷序列号
+        bpb[71:82] = b"JOYOS FAT32"                        # 卷标
+        bpb[82:90] = b"FAT32   "
+    else:
+        bpb[36] = 0x80                                   # 驱动器号
+        bpb[38] = 0x29                                   # 扩展引导签名
+        struct.pack_into("<I", bpb, 39, 0x4A4F594F)      # 卷序列号 'OYOJ'
+        bpb[43:54] = b"JOYOS FONT "                      # 卷标 11 字节
+        bpb[54:62] = b"FAT16   "
     bpb[510:512] = b"\x55\xAA"
     volume[0:SECTOR] = bpb
+    if fat32:
+        # FSInfo(扇区 1):告诉别人"还有多少空闲簇",顺便留个下次从哪找的提示
+        fsinfo = bytearray(SECTOR)
+        struct.pack_into("<I", fsinfo, 0, 0x41615252)
+        struct.pack_into("<I", fsinfo, 484, 0x61417272)
+        struct.pack_into("<I", fsinfo, 488, 0xFFFFFFFF)
+        struct.pack_into("<I", fsinfo, 492, 0xFFFFFFFF)
+        struct.pack_into("<I", fsinfo, 508, 0xAA550000)
+        volume[SECTOR:2 * SECTOR] = fsinfo
+        volume[6 * SECTOR:7 * SECTOR] = bpb               # 备份引导扇区
 
     # ---- FAT ----
     fat = bytearray(sectors_per_fat * SECTOR)
-    struct.pack_into("<H", fat, 0, 0xFFF8)           # 介质描述 + 保留
-    struct.pack_into("<H", fat, 2, 0xFFFF)           # 簇 1 保留
 
-    next_cluster = 2
+    def fat_set(cl, val):
+        struct.pack_into("<I" if fat32 else "<H", fat, cl * esize, val)
+
+    fat_set(0, 0x0FFFFFF8 if fat32 else 0xFFF8)      # 介质描述 + 保留
+    fat_set(1, eoc)                                  # 簇 1 保留
+    if fat32:
+        fat_set(2, eoc)                              # FAT32:簇 2 就是根目录
+
+    next_cluster = 3 if fat32 else 2
 
     # ------------------------------------------------------------------
     #  把参数拆成"目录"和"文件":名字以 / 结尾 = 建目录,
@@ -153,14 +195,16 @@ def main() -> int:
         parent = d.rsplit("/", 1)[0] if "/" in d else ""
         dir_cluster[d] = next_cluster
         dir_parent[d] = parent
-        struct.pack_into("<H", fat, next_cluster * 2, 0xFFFF)   # 一个簇的目录,链尾
+        fat_set(next_cluster, eoc)                              # 一个簇的目录,链尾
         next_cluster += 1
 
     def entry(short, attr, cluster, size):
         b = bytearray(32)
         b[0:11] = short
         b[11] = attr
-        struct.pack_into("<H", b, 26, cluster)
+        if fat32:
+            struct.pack_into("<H", b, 20, (cluster >> 16) & 0xFFFF)   # 高 16 位
+        struct.pack_into("<H", b, 26, cluster & 0xFFFF)
         struct.pack_into("<I", b, 28, size)
         return b
 
@@ -183,8 +227,8 @@ def main() -> int:
         first = next_cluster
         for i in range(n_clusters):
             cur = next_cluster + i
-            nxt = cur + 1 if i < n_clusters - 1 else 0xFFFF
-            struct.pack_into("<H", fat, cur * 2, nxt)
+            nxt = cur + 1 if i < n_clusters - 1 else eoc
+            fat_set(cur, nxt)
             src = i * SECTORS_PER_CLUSTER * SECTOR
             chunk = data[src:src + SECTORS_PER_CLUSTER * SECTOR]
             dst = (data_start + (cur - 2) * SECTORS_PER_CLUSTER) * SECTOR
@@ -216,7 +260,7 @@ def main() -> int:
         off = (data_start + (dir_cluster[d] - 2) * SECTORS_PER_CLUSTER) * SECTOR
         volume[off:off + len(blk)] = blk
 
-    root = bytearray(root_dir_sectors * SECTOR)
+    root = bytearray((root_dir_sectors or SECTORS_PER_CLUSTER) * SECTOR)
     for i, e in enumerate(root_entries):
         root[i * 32:(i + 1) * 32] = e
 
@@ -224,7 +268,12 @@ def main() -> int:
     for i in range(1, NUM_FATS):                     # 第二份 FAT 内容一样(备份)
         off = (fat_start + i * sectors_per_fat) * SECTOR
         volume[off:off + sectors_per_fat * SECTOR] = fat
-    volume[root_start * SECTOR:(root_start + root_dir_sectors) * SECTOR] = root
+    if fat32:
+        # 根目录也住在普通数据簇里(簇 2)
+        off = (data_start + (2 - 2) * SECTORS_PER_CLUSTER) * SECTOR
+        volume[off:off + len(root)] = root
+    else:
+        volume[root_start * SECTOR:(root_start + root_dir_sectors) * SECTOR] = root
 
     # ---- 写进镜像(分区起始处的第 0 扇区 = 卷的引导扇区)----
     img = bytearray(img_path.read_bytes())
@@ -234,8 +283,12 @@ def main() -> int:
     img[part_lba * SECTOR: part_lba * SECTOR + len(volume)] = volume
     img_path.write_bytes(img)
 
-    print(f"✅ FAT16 分区: LBA {part_lba} 起, {part_mb} MB")
-    print(f"   每簇 {SECTORS_PER_CLUSTER} 扇区, FAT {sectors_per_fat} 扇区 × {NUM_FATS}, 根目录 {ROOT_ENTRIES} 项")
+    print(f"✅ {'FAT32' if fat32 else 'FAT16'} 分区: LBA {part_lba} 起, {part_mb} MB")
+    if fat32:
+        print(f"   每簇 {SECTORS_PER_CLUSTER} 扇区, FAT32 {sectors_per_fat} 扇区 × {NUM_FATS}, "
+              f"根目录 = 簇 2, 保留 {reserved} 扇区")
+    else:
+        print(f"   每簇 {SECTORS_PER_CLUSTER} 扇区, FAT {sectors_per_fat} 扇区 × {NUM_FATS}, 根目录 {root_ents} 项")
     print(f"   数据区起点 LBA {part_lba + data_start}, 簇数 {clusters}")
     return 0
 

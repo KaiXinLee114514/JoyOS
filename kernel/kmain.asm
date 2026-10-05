@@ -156,13 +156,23 @@ COL_ERR    equ 0x0C                    ; 亮红
     ; ---- 文件系统 + 程序接口 ----
     call fat_mount
     call api_install
+    cmp byte [fat_ok], 0
+    je .fs_none_print
+    cmp byte [fat_fat32], 0
+    je .fs16
+    mov esi, msg_fs32
+    call term_print
+    jmp .fs_done
+.fs16:
     mov esi, msg_fs
     call term_print
-    cmp byte [fat_ok], 0
-    je .fs_none
     mov esi, msg_fs_ok
     call term_print
     jmp .fs_done
+.fs_none_print:
+    mov esi, msg_fs
+    call term_print
+    jmp .fs_none
 .fs_none:
     mov esi, msg_fs_none
     call term_print
@@ -631,6 +641,7 @@ msg_font_glyphs  db ' glyphs', 10, 0
 msg_fs      db 'fat16: ', 0
 msg_fs_ok   db 'mounted at LBA 6144 (ls / cat / write / run)', 10, 0
 msg_fs_none db 'not available (floppy boot?)', 10, 0
+msg_fs32    db 'fat32: mounted at LBA 6144 (BPB 里的 f16 扇区数 = 0 → 32 位 FAT,根目录是簇链)', 10, 0
 msg_ok      db 'OK - stage 5: boot + protection + IDT + paging + keyboard + shell.', 10, 0
 
 vbe_ok       dd 0

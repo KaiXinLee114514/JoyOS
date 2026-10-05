@@ -44,7 +44,8 @@
 | 分页 | 页目录 + 页表,恒等映射前 4 MiB,另外把 `0x400000` 映到物理 `0x100000`,开 `CR0.PG` |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift),64 字节环形缓冲 |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
-| **FAT16 文件系统** | 挂载 / 按名字找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)、`ls` 列目录 |
+| **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
+| **子目录** | `ls DOCS`、`cat DOCS/NOTE.TXT`、`cd` / `mkdir` / `rmdir`、路径里 `/` 和 `\` 都认;子目录里的程序 `run DOCS/HELLO.BIN` 和 `int 0x30` 的读写接口都跟着当前目录走;子目录满了会自动往簇链上接新簇 |
 | **跑磁盘上的程序** | `run HELLO`:从磁盘读进 `0x120000` 然后执行(超 896 KB 直接拒绝),程序用 `int 0x30` 调用内核(见 [docs/programs.md](docs/programs.md)) |
 | **程序接口 14 个功能** | 打印/颜色/收键 + 清屏、读写文件、定位光标、读键事件(方向键)、屏幕尺寸、程序参数、定位画字 —— 够写全屏程序 |
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
@@ -95,6 +96,13 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 > run EDIT              ← 编辑器:改 NOTES.TXT,方向键移动,Ctrl-S 存盘,Ctrl-Q 退出
 > run EDIT MY.TXT       ← 也可以指定文件(不存在就是新文件)
 > run VI NOTES.TXT      ← vi(STEVIE 移植):i 进插入模式,ESC 回普通模式,:w 存盘,:q 退出
+> ls DOCS               ← 列子目录(目录显示成 <DIR>)
+> cat DOCS/NOTE.TXT     ← 路径里带目录也行(斜杠/反斜杠都认)
+> cd DOCS               ← 进目录,提示符变成 DOCS>
+> mkdir SUB              ← 建目录(自动写好 . 和 ..)
+> rmdir SUB              ← 删空目录(非空的会拒绝,不会把文件弄丢)
+> cd ..                  ← 回上一层;cd / 回根目录
+> run DOCS/HELLO.BIN    ← 子目录里的程序照样能跑
 ```
 
 QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` 切到 monitor 控制台(`Ctrl+Alt+1` 切回来)。
@@ -112,7 +120,7 @@ QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` �
 | `test-hd-font` | 硬盘镜像:字库从磁盘读、`ls`/`cat`/`write`/`run`、**计算器的八组算式**、**编辑器的敲字/存盘/退出**,最后**离线解析镜像**证明字节真落盘 |
 
 最后那一项有两套独立的验证手段:一套看屏幕像素(把期望的文字用字库渲染成图案再去截图里找),
-一套在 QEMU 关掉之后**直接解析镜像文件的 FAT16 分区**(不信内核自己打印的"写成功了")。
+一套在 QEMU 关掉之后**直接解析镜像文件的 FAT 分区**(FAT16/FAT32 都认,不信内核自己打印的"写成功了")。
 
 ```bash
 make test-hd-font  # 单独跑某一组
@@ -135,7 +143,7 @@ kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
 kernel/ata.asm         ATA(IDE)PIO 驱动:读扇区 + 写扇区 + FLUSH CACHE
 kernel/fontdisk.asm    启动时把完整字库从磁盘读进 0x200000(读不到就用内建子集)
-kernel/fat.asm         FAT16:挂载/找文件/读/写/列目录(根目录 + 8.3 名字)
+kernel/fat.asm         FAT16/FAT32:挂载(BPB 自动判)/找文件/读/写/列目录/子目录(cd/mkdir/rmdir)
 kernel/api.asm         int 0x30 程序接口(打印字符串/数字/码位、设颜色、等按键)
 kernel/shell.asm       shell:行编辑、命令解析、各命令实现
 progs/HELLO.asm        示例程序(最简)      —— 编译成 HELLO.BIN 放进镜像
@@ -151,7 +159,7 @@ lib/joyos.ld           链接脚本:0x120000 + 平铺二进制 + BSS 边界符�
 third_party/stevie/    公版 STEVIE(vi 克隆)的源码 + 我们写的 joyos.c 后端(替换 nt.c)
 progs/README.TXT       也放进镜像,shell 里 cat README.TXT 能看(UTF-8 中文)
 tools/mkimg.py         拼镜像:boot(第 0 扇区)+ stub + kernel + 磁盘字库
-tools/mkfat.py         在镜像里造 FAT16 分区,并把文件放进去
+tools/mkfat.py         在镜像里造 FAT16 或 FAT32 分区(--fat32),并把文件/目录放进去
 tools/unifont2bin.py   Unifont .hex → JOYF 二进制字库 / VGA 字模 / 中文文案
 tools/mkfontsubset.py  从完整 .hex 里抽出要用的字形(生成入库的小子集)
 tools/run.sh           QEMU 启动脚本(软盘/硬盘/完整硬盘/panic 演示/gdb/monitor/dry-run)

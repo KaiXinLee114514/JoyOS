@@ -12,6 +12,8 @@
 #    make test-shell  真键盘输入一串命令,验证 shell 的命令/滚屏/清屏
 #    make test-hd-font 硬盘镜像:字库从磁盘读、FAT16 读/写、run 跑磁盘上的程序
 #                     (测完还会把镜像当块设备离线解析一遍,证明字节真落盘了)
+#    make test-hd32   同一个内核 + FAT32 分区(88 MB),验证 BPB 自动认 32 位 FAT
+#    make hd32        自己开窗口跑 FAT32 镜像玩
 #    make div         构建"开机就除零"的镜像,自己 qemu 跑着看
 #    make clean      清干净
 #
@@ -63,7 +65,7 @@ VI_OBJS     := $(addprefix $(BUILD)/vi/,$(notdir $(patsubst %.c,%.o,$(wildcard t
 
 PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS) $(C_PROGS))
 
-.PHONY: all run run-font hd subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font div font clean lst cc-check
+.PHONY: all run run-font hd hd32 subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check
 
 all: $(IMG) $(HDIMG)
 
@@ -140,6 +142,29 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
 hd: $(HDIMG)
 	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c
 
+# ---------------------------------------------------------------------------
+#  FAT32 版镜像:同一个内核(BPB 自动认 FAT16/FAT32),只是分区格式不一样。
+#  FAT32 要求 ≥ 65525 个簇,8 MB 的分区凑不出来,所以镜像开到 96 MB、分区 88 MB。
+# ---------------------------------------------------------------------------
+HD32IMG := $(BUILD)/joyos-hd32.img
+
+$(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
+            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py
+	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \
+	    font/full-joyf.bin --disk-mb 96
+	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
+	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
+	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN \
+	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
+
+hd32: $(HD32IMG)
+	$(QEMU) -drive file=$(HD32IMG),format=raw,if=ide,index=0 -boot c
+
+test-hd32: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
+	@echo "── FAT32 镜像:同一套内核,BPB 自动认 32 位 FAT ──"
+	$(MAKE) -s -B $(HD32IMG)
+	python3 tests/qemu_test.py $(HD32IMG) --hda --fontdisk --fat32 --font font/full-joyf.bin
+
 # 先强制重建镜像:上一轮测试往盘里写的 TEST.TXT / NEWFILE.TXT 会留在这儿,
 # 第二次跑就变成"编辑器把内容追加了一遍",测试自己就不干净了
 test-hd-font: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
@@ -181,7 +206,7 @@ font: tools/unifont2bin.py font/charset.txt font/strings.txt
 	    --vga-font font/vga-font.bin --vga-map font/vga-zh-map.asm --vga-chars-file font/charset.txt \
 	    --zh-strings-in font/strings.txt --zh-strings-out font/vga-zh-strings.asm
 
-test: test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font
+test: test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32
 
 test-fda: $(IMG)
 	@echo "── 作为软盘启动(BIOS 无 LBA,应走 CHS 退回)──"

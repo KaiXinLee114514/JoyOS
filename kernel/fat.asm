@@ -53,6 +53,22 @@ fat_mount:
     mov [fat_root_ents], eax
     movzx eax, word [esi + 22]
     mov [fat_size], eax
+    mov dword [fat_eoc], 0xFFF8          ; FAT16 的链尾门槛
+    mov byte [fat_fat32], 0
+    ; ---- FAT16 还是 FAT32?规范:f16 里的"每 FAT 扇区数"(偏移 22)为 0 → FAT32 ----
+    test eax, eax
+    jnz .fat16_done
+    mov byte [fat_fat32], 1
+    mov eax, [esi + 36]                 ; FAT32:每张 FAT 的扇区数(32 位)
+    mov [fat_size], eax
+    mov eax, [esi + 44]                 ; FAT32:根目录首簇(根也是簇链)
+    and eax, 0x0FFFFFFF
+    mov [fat_root_cluster], eax
+    movzx eax, word [esi + 48]          ; FSInfo 扇区(先记下来备用)
+    mov [fat_fsinfo], eax
+    mov dword [fat_root_ents], 0        ; FAT32 没有固定根目录区
+    mov dword [fat_eoc], 0x0FFFFFF8     ; 28 位的链尾门槛
+.fat16_done:
 
     ; FAT 表起始 = 分区起点 + 保留扇区
     mov eax, FAT_PART_LBA
@@ -140,6 +156,21 @@ fat_name83:
     ret
 
 ; ---------------------------------------------------------------------------
+;  fat_ent_cluster:esi = 目录项地址 → eax = 它指向的首簇(兼容 FAT16/FAT32)
+;                  FAT32 的簇号高 16 位藏在偏移 +20 里(其实只有低 4 位有效)
+; ---------------------------------------------------------------------------
+fat_ent_cluster:
+    movzx eax, word [esi + 26]
+    cmp byte [fat_fat32], 0
+    je .done
+    movzx edx, word [esi + 20]
+    shl edx, 16
+    or eax, edx
+    and eax, 0x0FFFFFFF
+.done:
+    ret
+
+; ---------------------------------------------------------------------------
 ;  fat_find:在 [fat_dir] 指向的目录里找 fat_name(11 字节 8.3 名)
 ;            [fat_dir] = 0 → 根目录(固定区域);否则是子目录(沿簇链找)
 ;            找到了返回 eax = 目录项所在的扇区 LBA,
@@ -150,7 +181,11 @@ fat_find:
     pushad
     mov eax, [fat_dir]
     test eax, eax
-    jz .root                            ; 0 = 根目录(固定区域)
+    jnz .have_dir
+    cmp byte [fat_fat32], 0
+    je .root                            ; FAT16:根目录是固定区域
+    mov eax, [fat_root_cluster]         ; FAT32:根目录也是一条簇链
+.have_dir:
     ; ------------------------------------------------------------------
     ;  子目录:目录本身是一条簇链,一簇一簇地读
     ;  (FAT32 的根目录也走这条路 —— 它的"根"就是一条从 root_cluster 起的簇链)
@@ -320,7 +355,7 @@ fat_chdir:
     mov al, [esi + 11]
     test al, 0x10                       ; attr bit4 = 目录
     jz .fail
-    movzx eax, word [esi + 26]          ; 目录自己的首簇
+    call fat_ent_cluster                ; 目录自己的首簇(FAT16/32 通用)
     test eax, eax
     jz .fail
     mov [fat_dir], eax
@@ -427,7 +462,13 @@ fat_next_cluster:
     push ecx
     push edx
     mov eax, [fat_cluster]
-    shl eax, 1                          ; 每簇在 FAT 里占 2 字节
+    cmp byte [fat_fat32], 0
+    je .m16
+    shl eax, 2                          ; FAT32:每簇 4 字节
+    jmp .div
+.m16:
+    shl eax, 1                          ; FAT16:每簇 2 字节
+.div:
     xor edx, edx
     mov ecx, 512
     div ecx                             ; eax = 扇区偏移,edx = 扇区内偏移
@@ -444,13 +485,22 @@ fat_next_cluster:
 .cached:
     mov esi, FAT_BUF
     add esi, [fat_off]
+    cmp byte [fat_fat32], 0
+    je .get16
+    mov eax, [esi]
+    and eax, 0x0FFFFFFF                 ; 高 4 位是保留位
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+.get16:
     movzx eax, word [esi]
     pop edx
     pop ecx
     pop ebx
     ret
 .fail:
-    mov eax, 0xFFFF
+    mov eax, [fat_eoc]
     pop edx
     pop ecx
     pop ebx
@@ -475,7 +525,7 @@ fat_read_file:
     mov dword [fat_cache_lba], -1
     mov esi, FAT_BUF
     add esi, [fat_entry_off]
-    movzx eax, word [esi + 26]
+    call fat_ent_cluster
     mov [fat_cluster], eax
     mov eax, [esi + 28]
     mov [fat_size_bytes], eax
@@ -544,8 +594,15 @@ fat_stat:
 fat_set_entry:
     pushad
     mov [fat_new_val], ax
+    mov [fat_new_val32], eax            ; FAT32 用整个 32 位
     mov eax, [fat_cluster]
+    cmp byte [fat_fat32], 0
+    je .se16
+    shl eax, 2
+    jmp .sediv
+.se16:
     shl eax, 1
+.sediv:
     xor edx, edx
     mov ecx, 512
     div ecx
@@ -559,8 +616,16 @@ fat_set_entry:
     call ata_read_sectors
     mov esi, FAT_BUF
     add esi, [fat_off]
+    cmp byte [fat_fat32], 0
+    je .put16
+    mov eax, [fat_new_val32]
+    and eax, 0x0FFFFFFF
+    mov [esi], eax                      ; 整 32 位覆盖(高 4 位保留位清掉没关系)
+    jmp .put_done
+.put16:
     mov ax, [fat_new_val]
     mov [esi], ax
+.put_done:
 
     ; 写回所有 FAT 副本
     xor ebx, ebx
@@ -600,7 +665,13 @@ fat_alloc_cluster:
 .scan:
     mov [fat_cluster], eax
     mov eax, [fat_cluster]
+    cmp byte [fat_fat32], 0
+    je .al16
+    shl eax, 2
+    jmp .aldiv
+.al16:
     shl eax, 1
+.aldiv:
     xor edx, edx
     mov ecx, 512
     div ecx
@@ -610,26 +681,51 @@ fat_alloc_cluster:
     mov edi, FAT_BUF
     call ata_read_sectors
     mov esi, FAT_BUF
-.look:
+    ; edx = 扇区内的字节偏移;每扇区能装 512/size 个表项
+    cmp byte [fat_fat32], 0
+    je .look16
+.look32:
+    cmp edx, 512
+    jae .next_sector
+    mov eax, [esi + edx]
+    and eax, 0x0FFFFFFF
+    test eax, eax
+    jz .found32
+    add edx, 4
+    jmp .look32
+.found32:
+    shr edx, 2                          ; 表项序号 = 字节偏移 / 4
+    jmp .found
+.look16:
     movzx eax, word [esi + edx]
     test eax, eax
-    jz .found
+    jz .found16
     add edx, 2
     cmp edx, 512
-    jb .look
-    ; 这一扇区里没有空闲簇:下一扇区
+    jb .look16
+    jmp .next_sector
+.found16:
+    shr edx, 1                          ; 表项序号 = 偏移 / 2
+    jmp .found
+.next_sector:
+    ; 这一扇区里没有空闲簇:跳到下一扇区
     mov eax, [fat_cluster]
+    cmp byte [fat_fat32], 0
+    je .ns16
+    add eax, 128                        ; 一扇区 128 个 32 位表项
+    jmp .ns_done
+.ns16:
     add eax, 256                        ; 一扇区 256 个 16 位表项
+.ns_done:
     mov [fat_cluster], eax
     jmp .scan
 .found:
     mov eax, [fat_cluster]
     add eax, edx
-    shr edx, 1                          ; 表项序号 = 偏移 / 2
     mov [fat_cluster], eax
     mov [fat_next_free], eax
     inc dword [fat_next_free]
-    mov eax, 0xFFFF                     ; 先当链尾,链的时候再改
+    mov eax, [fat_eoc]                  ; 先当链尾,链的时候再改
     call fat_set_entry
     mov eax, [fat_cluster]
     pop edi
@@ -730,9 +826,14 @@ fat_write_file:
     add edi, [fat_entry_off]
     mov dword [edi + 12], 0
     mov dword [edi + 16], 0
-    mov dword [edi + 20], 0
-    mov ax, [fat_first_cluster]
+    mov dword [edi + 20], 0             ; 顺便清掉 FAT32 的高位簇号
+    mov eax, [fat_first_cluster]
     mov [edi + 26], ax
+    cmp byte [fat_fat32], 0
+    je .nc_done
+    shr eax, 16
+    mov [edi + 20], ax                  ; FAT32:高 16 位
+.nc_done:
     mov eax, [fat_want]
     mov [edi + 28], eax
     mov eax, [fat_dir_lba]
@@ -756,13 +857,18 @@ fat_list:
     mov eax, [fat_dir]
     test eax, eax
     jnz .cluster_init
-    ; ---- 根目录:固定区域 ----
+    cmp byte [fat_fat32], 0
+    jne .list32_root
+    ; ---- 根目录:固定区域(FAT16) ----
     mov eax, [fat_root_lba]
     mov [fl_lba], eax
     mov eax, [fat_root_ents]
     mov [fl_ents], eax
     mov dword [fl_spc], 0               ; 0 = 固定区域,没有"下一簇"
     jmp .sector
+.list32_root:
+    mov eax, [fat_root_cluster]
+    jmp .cluster_init
 .cluster_init:
     mov [fl_clus], eax
 .cluster:
@@ -895,12 +1001,17 @@ fat_free_slot:
     mov eax, [fat_dir]
     test eax, eax
     jnz .sub
+    cmp byte [fat_fat32], 0
+    jne .fs32_root
     mov eax, [fat_root_lba]
     mov [fs_lba], eax
     mov eax, [fat_root_ents]
     mov [fs_ents], eax
     mov dword [fs_spc], 0               ; 0 = 根目录,扩不了
     jmp .sect
+.fs32_root:
+    mov eax, [fat_root_cluster]         ; FAT32 的根也是簇链
+    jmp .sub
 .sub:
     mov [fs_clus], eax
 .cluster:
@@ -1005,6 +1116,9 @@ fat_mkdir:
     mov [fat_name_ptr], esi
     mov esi, [fat_name_ptr]
     call fat_name83
+    call fat_find                       ; 0) 同名(文件或目录)就别建了,不然目录里两个同名项
+    cmp eax, -1
+    jne .fail
     call fat_free_slot                  ; 1) 先在父目录里占个位子
     jc .fail
     mov [fat_dir_lba], eax
@@ -1022,11 +1136,21 @@ fat_mkdir:
     mov byte [dir_make + 11], 0x10
     mov eax, [mk_cluster]
     mov [dir_make + 26], ax
+    cmp byte [fat_fat32], 0
+    je .dot_done
+    shr eax, 16
+    mov [dir_make + 20], ax
+.dot_done:
     mov byte [dir_make + 32], '.'       ; .. → 父目录(根目录是 0)
     mov byte [dir_make + 33], '.'
     mov byte [dir_make + 43], 0x10
     mov eax, [fat_dir]
     mov [dir_make + 58], ax
+    cmp byte [fat_fat32], 0
+    je .dotdot_done
+    shr eax, 16
+    mov [dir_make + 52], ax             ; FAT32:.. 的高位簇号
+.dotdot_done:
     mov eax, [mk_lba]
     mov ecx, 1
     mov esi, dir_make
@@ -1043,9 +1167,15 @@ fat_mkdir:
     cld
     rep movsb
     mov byte [FAT_BUF + ebx + 11], 0x10
+    mov dword [FAT_BUF + ebx + 20], 0
+    mov dword [FAT_BUF + ebx + 28], 0
     mov eax, [mk_cluster]
     mov [FAT_BUF + ebx + 26], ax
-    mov dword [FAT_BUF + ebx + 28], 0
+    cmp byte [fat_fat32], 0
+    je .mk_nc
+    shr eax, 16
+    mov [FAT_BUF + ebx + 20], ax
+.mk_nc:
     mov eax, [fat_dir_lba]
     mov ecx, 1
     mov esi, FAT_BUF
@@ -1077,7 +1207,7 @@ fat_rmdir:
     mov al, [esi + 11]
     test al, 0x10
     jz .fail                            ; 不是目录
-    movzx eax, word [esi + 26]
+    call fat_ent_cluster
     mov [rm_clus], eax
     test eax, eax
     jz .fail                            ; 首簇 0 = 根,删不了
@@ -1186,7 +1316,8 @@ fat_dotdot:
     mov dword [fat_cache_lba], -1
     cmp byte [FAT_BUF + 32], '.'        ; 第二项应该就是 ..
     jne .root
-    movzx eax, word [FAT_BUF + 58]
+    mov esi, FAT_BUF + 32
+    call fat_ent_cluster
     pop esi
     pop edi
     pop ecx
@@ -1224,6 +1355,11 @@ fat_next_free   dd 2
 fat_off         dd 0
 fat_new_val     dw 0
 fat_sector      dd 0
+fat_fat32       db 0                    ; 1 = FAT32(BPB 里 f16 的每 FAT 扇区数为 0)
+fat_root_cluster dd 0                   ; FAT32 根目录首簇
+fat_fsinfo      dd 0                    ; FAT32 的 FSInfo 扇区号
+fat_eoc         dd 0xFFF8               ; 链尾门槛(FAT16 0xFFF8 / FAT32 0x0FFFFFF8)
+fat_new_val32   dd 0
 fat_scan        dd 0
 fat_scan_lba    dd 0
 fat_entry_off   dd 0

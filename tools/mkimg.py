@@ -34,16 +34,23 @@ KERNEL_SECTS = 256                     # 必须和 boot/boot.asm 里的常量一
 
 
 def main() -> int:
-    if len(sys.argv) not in (5, 6):
+    argv = list(sys.argv)
+    disk_mb = None
+    if "--disk-mb" in argv:
+        i = argv.index("--disk-mb")
+        disk_mb = int(argv[i + 1])
+        del argv[i:i + 2]
+    if len(argv) not in (5, 6):
         print(__doc__)
-        print("用法: mkimg.py <boot.bin> <stub.bin> <kernel.bin> <out.img> [font.bin]")
+        print("用法: mkimg.py <boot.bin> <stub.bin> <kernel.bin> <out.img> [font.bin]"
+              " [--disk-mb N]")
         return 2
 
-    boot = pathlib.Path(sys.argv[1]).read_bytes()
-    stub = pathlib.Path(sys.argv[2]).read_bytes()
-    kern = pathlib.Path(sys.argv[3]).read_bytes()
-    out = pathlib.Path(sys.argv[4])
-    font = pathlib.Path(sys.argv[5]).read_bytes() if len(sys.argv) > 5 else None
+    boot = pathlib.Path(argv[1]).read_bytes()
+    stub = pathlib.Path(argv[2]).read_bytes()
+    kern = pathlib.Path(argv[3]).read_bytes()
+    out = pathlib.Path(argv[4])
+    font = pathlib.Path(argv[5]).read_bytes() if len(argv) > 5 else None
 
     if font and font[:4] != b"JOYF":
         print("❌ 字库文件不是 JOYF 格式")
@@ -67,7 +74,7 @@ def main() -> int:
         return 1
 
     if font:
-        total = HD_SIZE
+        total = (disk_mb * 1024 * 1024) if disk_mb else HD_SIZE
         font_sectors = (len(font) + SECTOR - 1) // SECTOR
         need = (FONT_LBA + font_sectors) * SECTOR
         if need > total:

@@ -147,9 +147,14 @@ api_dispatch:
     ret
 ; ---- 读文件:esi = 名字,edi = 缓冲区,ecx = 上限 ----
 .read_file:
-    mov [api_name], esi                 ; fat_stat / fat_read_file 都要用 esi,先存起来
+    mov [api_name], esi                 ; 先存原始名字(可能带目录)
     mov [api_buf], edi
     mov [api_max], ecx
+    mov esi, [api_name]                 ; 支持 DOCS/NOTE.TXT(相对当前目录)
+    call fat_path
+    jc .read_fail
+    mov [api_name], eax                 ; 剩下这截才是文件名
+    mov esi, eax
     call fat_stat                       ; 先问大小:超了就不读(免得盖掉后面的内存)
     cmp eax, -1
     je .read_fail
@@ -166,7 +171,19 @@ api_dispatch:
     ret
 ; ---- 写文件:esi = 名字,edi = 数据,ecx = 字节数 ----
 .write_file:
+    mov [api_name], esi                 ; 同样支持带目录的名字
+    mov [api_buf], edi
+    mov [api_max], ecx
+    mov esi, [api_name]
+    call fat_path
+    jc .write_fail
+    mov esi, eax
+    mov edi, [api_buf]
+    mov ecx, [api_max]
     call fat_write_file
+    ret
+.write_fail:
+    mov eax, -1
     ret
 .set_cursor:
     call term_set_cursor
