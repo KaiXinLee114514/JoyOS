@@ -49,8 +49,9 @@ void windinit(void)
         Columns = 80;
     if (Rows < 5)
         Rows = 25;
-    /* 留一行给底部的 : 命令行(vi 的经典布局) */
-    Rows--;
+    /* ★ 不要自己再减 1:stevie 的 Rows 就是"整屏行数",最后一行它自己拿来显示
+       状态/: 命令行(NT 版也是照 Console 的行数原样设的)。我第一版多减了一行,
+       于是屏幕底部空一行、状态行上移一格。 */
     j_clrscr();
     p_row = p_col = 0;
     linelen = 0;
@@ -282,7 +283,11 @@ void Scroll(int t, int l, int b, int r, int Row, int Col)
     (void)t; (void)l; (void)b; (void)r; (void)Row; (void)Col;
     flush_line();
     if (Realscreen)
-        memset(Realscreen, 0x01, (size_t)Rows * (size_t)(Columns + 1));
+        memset(Realscreen, 0x01, (size_t)Rows * (size_t)Columns);
+    /* ★ 缓冲区大小是 alloc.c 里 malloc(Rows*Columns) —— **没有 +1**。
+       第一版我按 Rows*(Columns+1) 填的,多写了 1 个字节,正好砸在堆里下一块的
+       头几个字节上;等它再被当指针用时就是 page fault(CR2=0x01010109,
+       一眼能看出是 0x01 填充值 + 偏移)。越界一个字节也一样是越界。 */
 }
 
 void HighlightLine(int row, int col, int len)

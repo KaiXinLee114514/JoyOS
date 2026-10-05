@@ -613,6 +613,30 @@ def main() -> int:
                     last = blob
                     time.sleep(0.3)
 
+            def screen_lines(retries=4):
+                """抓一屏并读成文字(全屏程序的断言都走它)。
+
+                为什么要重试:QEMU 抓屏和内核重画是并行的,可能抓到"正在滚屏"那一瞬间的
+                撕裂帧 —— 整屏的字都错半个像素,screen_text 一个都认不出来。
+                所以这里不只看"有没有非空行",还要数"认得出多少个字",不够就再抓一次。
+                """
+                best = ""
+                # 先等屏幕稳定下来:全屏程序(vi/计算器/编辑器)清屏重画一次
+                # 要往 VBE 里画几千个字符,在 QEMU 里是好几秒 —— 不等就会读到
+                # 画到一半的屏幕(半屏有字半屏空,一个都认不出来)。
+                wait_idle(20.0)
+                for _ in range(retries):
+                    rescan()
+                    raw = screen_text(shot, glyphs)
+                    good = sum(1 for l in raw for ch in l if ch not in " ?")
+                    text = "\n".join(l for l in raw if l.strip())
+                    if good >= 30:
+                        return text
+                    if len(text) > len(best):
+                        best = text
+                    time.sleep(0.4)
+                return best
+
             def run(line, wait=0.9, idle=False):
                 mon.type_text(line)
                 mon.sendkey("ret")
@@ -672,7 +696,7 @@ def main() -> int:
 
             # ---- vi(STEVIE 移植):打开 → 插入模式打字 → :w 存盘 → :q 退出 ----
             run("run vi vitest.txt", wait=3.0)
-            text_now = "\n".join(screen_text(shot, glyphs))
+            text_now = screen_lines()
             results.append(("vi 起来了", "vitest.txt" in text_now and "~" in text_now,
                             "vi 的 ~ 空行和 \"vitest.txt\" 状态行"))
 
@@ -682,16 +706,14 @@ def main() -> int:
             time.sleep(1.0)
             mon.sendkey("esc")                  # 回普通模式
             time.sleep(0.5)
-            rescan()
-            text_now = "\n".join(screen_text(shot, glyphs))
+            text_now = screen_lines()
             results.append(("vi 能打字", "hello from stevie" in text_now,
                             "插入模式下打的字出现在屏幕上"))
 
             mon.type_text(":w")                 # 存盘
             mon.sendkey("ret")
             time.sleep(2.0)
-            rescan()
-            text_now = "\n".join(screen_text(shot, glyphs))
+            text_now = screen_lines()
             results.append(("vi :w 存盘", "vitest.txt" in text_now,
                             "状态行报出文件名(存过盘)"))
 
@@ -705,11 +727,10 @@ def main() -> int:
                 """敲一串键,把屏幕读成文字返回(全屏程序没法用 find_text 逐句找)"""
                 mon.type_text(keys)
                 time.sleep(0.8)
-                rescan()
-                return "\n".join(screen_text(shot, glyphs))
+                return screen_lines()
 
             run("run calc", wait=1.2)
-            screen_now = "\n".join(screen_text(shot, glyphs))
+            screen_now = screen_lines()
             results.append(("计算器起来了", "JoyOS calculator" in screen_now,
                             "标题行 JoyOS calculator"))
 
@@ -732,7 +753,7 @@ def main() -> int:
 
             # ---- 文本编辑器(EDIT.BIN)----
             run("run edit newfile.txt", wait=1.5)
-            screen_now = "\n".join(screen_text(shot, glyphs))
+            screen_now = screen_lines()
             results.append(("编辑器打开新文件", "JoyOS editor" in screen_now
                             and "newfile.txt" in screen_now,
                             "标题栏显示 JoyOS editor --- newfile.txt"))
@@ -745,15 +766,13 @@ def main() -> int:
             time.sleep(0.3)
             mon.type_text("second line")
             time.sleep(0.5)
-            rescan()
-            screen_now = "\n".join(screen_text(shot, glyphs))
+            screen_now = screen_lines()
             results.append(("编辑器能打字", "hello editor" in screen_now,
                             "打进去的字出现在正文里"))
 
             mon.sendkey("ctrl-s")               # 存盘
             time.sleep(0.9)
-            rescan()
-            screen_now = "\n".join(screen_text(shot, glyphs))
+            screen_now = screen_lines()
             results.append(("Ctrl-S 存盘", "saved to disk" in screen_now, "状态行 saved to disk"))
 
             mon.sendkey("ctrl-q")               # 退出

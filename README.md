@@ -11,6 +11,10 @@
 ![计算器](docs/screenshot-calc.png)
 ![文本编辑器](docs/screenshot-edit.png)
 
+**vi 也搬进来了** —— 不是从头写的,是公有领域的 STEVIE(vim 的前身):
+
+![vi 跑在 JoyOS 上](docs/screenshot-vi.png)
+
 还有图形模式(800×600 VBE)里敲 `info` 和 `zh` 的样子:
 
 ![JoyOS shell](docs/screenshot.png) ![中文显示](docs/screenshot-zh.png)
@@ -46,7 +50,7 @@
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
 | **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-Q` 退出 |
 | **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q) |
-| **vi(STEVIE 移植)** | `run VI NOTES.TXT`:公有领域的 vi 克隆(STEVIE 3.68,vim 的前身),约 10 900 行 C 一行没改,只把平台层换成 `int 0x30` —— 插入模式、方向键、`:w` 存盘、`:q` 退出 |
+| **vi(STEVIE 移植)** | `run VI NOTES.TXT`:公有领域的 vi 克隆(STEVIE 3.68,vim 的前身),约 10 900 行 C 一行没改,只把平台层换成 `int 0x30` —— 插入模式、方向键、`:w` 存盘、`:q` 退出(移植记在 [docs/vi.md](docs/vi.md)) |
 | **C 语言支持** | 普通 `gcc -m32` 就能编(`make cc-check`);自带 crt0 + 迷你 libc(malloc/printf/stdio)+ `joyos.h`,程序照样是平铺二进制丢进 FAT16 跑(见 [docs/c-programs.md](docs/c-programs.md)) |
 | **图形模式** | 实模式 stub 里用 VBE 问出 **800×600×32 线性帧缓冲**模式,页表把帧缓冲映射进来,终端直接往显存画像素 |
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
