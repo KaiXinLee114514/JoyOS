@@ -5,7 +5,13 @@
 上图是完整硬盘镜像的实拍:字库从磁盘读进来(40 208 个字形)、FAT16 挂上了,
 `ls` 列目录、`run HELLO` 跑磁盘上的程序、`write` / `cat` 读写文件。
 
-下面是图形模式(800×600 VBE)里敲 `info` 和 `zh` 的样子,以及中文那几行的 2 倍放大:
+两个"用 int 0x30 写出来的组件":**计算器**(`run CALC`,定点小数、加减乘除、平方)
+和**全屏文本编辑器**(`run EDIT`,方向键、存盘、打开):
+
+![计算器](docs/screenshot-calc.png)
+![文本编辑器](docs/screenshot-edit.png)
+
+还有图形模式(800×600 VBE)里敲 `info` 和 `zh` 的样子:
 
 ![JoyOS shell](docs/screenshot.png) ![中文显示](docs/screenshot-zh.png)
 
@@ -36,6 +42,10 @@
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 文件系统** | 挂载 / 按名字找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)、`ls` 列目录 |
 | **跑磁盘上的程序** | `run HELLO`:从磁盘读进 `0x120000` 然后执行(超 896 KB 直接拒绝),程序用 `int 0x30` 调用内核(见 [docs/programs.md](docs/programs.md)) |
+| **程序接口 14 个功能** | 打印/颜色/收键 + 清屏、读写文件、定位光标、读键事件(方向键)、屏幕尺寸、程序参数、定位画字 —— 够写全屏程序 |
+| **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
+| **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-Q` 退出 |
+| **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q) |
 | **图形模式** | 实模式 stub 里用 VBE 问出 **800×600×32 线性帧缓冲**模式,页表把帧缓冲映射进来,终端直接往显存画像素 |
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
 | 中文显示 | ✅ 一个汉字 16×16 直接画在帧缓冲上;文本是标准 **UTF-8**(四字节 emoji、坏字节替换符都处理了) |
@@ -75,6 +85,9 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 > write MY.TXT hello    ← 写文件(真的落到磁盘上)
 > cat MY.TXT            ← 再读回来
 > run                   ← 裸敲 run 会打印程序接口说明书
+> run CALC              ← 计算器:12.5*4=  7s(平方)  c(清零)  q(退出)
+> run EDIT              ← 编辑器:改 NOTES.TXT,方向键移动,Ctrl-S 存盘,Ctrl-Q 退出
+> run EDIT MY.TXT       ← 也可以指定文件(不存在就是新文件)
 ```
 
 QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` 切到 monitor 控制台(`Ctrl+Alt+1` 切回来)。
@@ -89,7 +102,7 @@ QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` �
 | `test-pgfault` | shell 里敲 `fault` → 14 号页错误,CR2 要等于出错地址 |
 | `test-kbd` | 用 QEMU monitor 的 `sendkey` **真按键**,验证回显、Shift、回车、退格 |
 | `test-shell` | 敲 `help`/`info`/`page`/`echo`/`clear`,验证命令、滚屏、清屏、中文、UTF-8 边界 |
-| `test-hd-font` | 硬盘镜像:字库从磁盘读、`ls`/`cat`/`write`/`run`,**再离线解析镜像**证明字节真落盘 |
+| `test-hd-font` | 硬盘镜像:字库从磁盘读、`ls`/`cat`/`write`/`run`、**计算器的八组算式**、**编辑器的敲字/存盘/退出**,最后**离线解析镜像**证明字节真落盘 |
 
 最后那一项有两套独立的验证手段:一套看屏幕像素(把期望的文字用字库渲染成图案再去截图里找),
 一套在 QEMU 关掉之后**直接解析镜像文件的 FAT16 分区**(不信内核自己打印的"写成功了")。
@@ -120,6 +133,9 @@ kernel/api.asm         int 0x30 程序接口(打印字符串/数字/码位、设
 kernel/shell.asm       shell:行编辑、命令解析、各命令实现
 progs/HELLO.asm        示例程序(最简)      —— 编译成 HELLO.BIN 放进镜像
 progs/COUNT.asm        示例程序(打印/颜色/码位)
+progs/CALC.asm         组件:计算器(定点小数,自己算 ±2147.483647)
+progs/EDIT.asm         组件:全屏文本编辑器(方向键 + 存盘 + 打开)
+progs/NOTES.TXT        放进镜像的示例文本(编辑器默认打开它)
 progs/README.TXT       也放进镜像,shell 里 cat README.TXT 能看(UTF-8 中文)
 tools/mkimg.py         拼镜像:boot(第 0 扇区)+ stub + kernel + 磁盘字库
 tools/mkfat.py         在镜像里造 FAT16 分区,并把文件放进去
@@ -328,7 +344,14 @@ make hd                                 # 或者在 Makefile 的 PROGS 里加一
 
 接口、约定、例子都在 **[docs/programs.md](docs/programs.md)**。
 
-### 8.2 改开机那句话
+### 8.2 写个全屏程序(计算器/编辑器就是这么来的)
+
+想要"自己清屏、自己排版"的程序,用第 6/9/10/11/12/13 号功能:
+清屏、定位、读键事件(方向键)、问屏幕尺寸、取参数、在指定位置画字。
+`progs/CALC.asm`(300 行)和 `progs/EDIT.asm`(400 行)就是照这个套路写的,
+三条踩过的经验写在 [docs/programs.md 第 6 节](docs/programs.md)。
+
+### 8.3 改开机那句话
 
 `kernel/kmain.asm` 最下面的数据区,`msg_title` 就是第一行:
 
@@ -338,7 +361,7 @@ msg_title   db 'JoyOS - stage 5', 10, 0     ; 10 = 换行,0 = 字符串结束
 
 中文也直接写(字符串是 UTF-8,图形模式下能显示;文本模式会成乱码,见 6.8)。
 
-### 8.3 加一条 shell 命令
+### 8.4 加一条 shell 命令
 
 三处,都在 `kernel/shell.asm`:
 
@@ -360,7 +383,7 @@ cmd_table:
 
 命令名匹配是**整词**比较(`str_eq`),所以 `page` 不会被 `pa` 之类误命中。
 
-### 8.4 往镜像里放个文件
+### 8.5 往镜像里放个文件
 
 ```bash
 python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
@@ -372,7 +395,7 @@ make hd
 参数含义、为什么是 6144、每簇几个扇区怎么选的,见
 [docs/filesystem.md 第 6 节](docs/filesystem.md)。
 
-### 8.5 改分页怎么映射
+### 8.6 改分页怎么映射
 
 `kernel/paging.asm` 顶部:
 
@@ -384,7 +407,7 @@ DEMO_PADDR  equ 0x00100000      ; 映到哪块物理内存
 改完在 shell 里 `page 0x400000` 就能看到 PDE/PTE 变了。想让它"映了但不许写",
 把那项的 `PAGE_RW` 去掉(变成只读),写它就会吃 13 号通用保护异常。
 
-### 8.6 让 panic 屏显示更多
+### 8.7 让 panic 屏显示更多
 
 `kernel/idt.asm` 里 `isr_common` 就是那个"红屏 + 停机"。异常帧里的东西都在栈上:
 
@@ -394,7 +417,7 @@ DEMO_PADDR  equ 0x00100000      ; 映到哪块物理内存
 
 想再打 `CR3`、`DS`、或者页表项,照着 `mov eax, cr2 / call term_print_hex` 那样加一行就行。
 
-### 8.7 想看汇编到底编成了什么
+### 8.8 想看汇编到底编成了什么
 
 ```bash
 make lst        # 生成 build/boot.lst 和 build/kernel.lst(带机器码的反汇编)
