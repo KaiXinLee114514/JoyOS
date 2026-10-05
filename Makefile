@@ -131,12 +131,21 @@ $(BUILD)/VI.BIN: $(VI_OBJS) $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
 
 # 注意 progs/README.TXT、progs/NOTES.TXT 也要当依赖:改了它们镜像就得重做,
 # 不然测试会拿"旧内容"去比新文件,报个莫名其妙的字节数不一致(踩过)
+# 造一批小文件,用来测试"目录装满一簇之后自动扩一簇"(每簇 16 项 → 40 个就必须链了)
+$(BUILD)/bigdir/.stamp: | $(BUILD)
+	@mkdir -p $(BUILD)/bigdir
+	@for i in $$(seq -w 0 39); do printf 'file %s\n' "$$i" > $(BUILD)/bigdir/f$$i.txt; done
+	@touch $@
+
+BIGDIR_SPECS = $$(for i in $$(seq -w 0 39); do printf 'BIGDIR/F%s.TXT=%s/bigdir/f%s.txt ' "$$i" "$(BUILD)" "$$i"; done)
+
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py
+          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py \
+          $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
-	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN \
+	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
@@ -149,12 +158,13 @@ hd: $(HDIMG)
 HD32IMG := $(BUILD)/joyos-hd32.img
 
 $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py
+            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py \
+            $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \
 	    font/full-joyf.bin --disk-mb 96
 	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
-	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN \
+	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd32: $(HD32IMG)

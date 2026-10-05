@@ -252,13 +252,26 @@ def main() -> int:
         print(f"   {(parent + '/') if parent else ''}{d.rsplit('/', 1)[-1] + '/':12s} "
               f"{'目录':>8}      首簇 {dir_cluster[d]}")
 
-    # 目录的簇内容:".", "..", 然后自己的孩子
+    # 目录的簇内容:".", "..", 然后自己的孩子;装不下就往簇链上再接一簇
+    # (每簇装 SECTORS_PER_CLUSTER*16 个 32 字节目录项,超了必须链新簇 ——
+    #  内核 fat_free_slot 的"扩一簇"逻辑就是为这种情况写的)
+    per_cluster = SECTORS_PER_CLUSTER * 16
     for d in dir_paths:
-        blk = bytearray(SECTORS_PER_CLUSTER * SECTOR)
-        for i, e in enumerate(dir_entries[d]):
-            blk[i * 32:(i + 1) * 32] = e
-        off = (data_start + (dir_cluster[d] - 2) * SECTORS_PER_CLUSTER) * SECTOR
-        volume[off:off + len(blk)] = blk
+        ents = dir_entries[d]
+        cl = dir_cluster[d]
+        for start in range(0, max(1, len(ents)), per_cluster):
+            chunk = ents[start:start + per_cluster]
+            blk = bytearray(SECTORS_PER_CLUSTER * SECTOR)
+            for i, e in enumerate(chunk):
+                blk[i * 32:(i + 1) * 32] = e
+            off = (data_start + (cl - 2) * SECTORS_PER_CLUSTER) * SECTOR
+            volume[off:off + len(blk)] = blk
+            if start + per_cluster < len(ents):
+                nxt = next_cluster                    # 还有下一批 → 接一簇
+                next_cluster += 1
+                fat_set(cl, nxt)
+                fat_set(nxt, eoc)
+                cl = nxt
 
     root = bytearray((root_dir_sectors or SECTORS_PER_CLUSTER) * SECTOR)
     for i, e in enumerate(root_entries):

@@ -534,6 +534,8 @@ def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
 
     for name, want, label in [
         ("DOCS/NOTE.TXT",    open("progs/NOTES.TXT", "rb").read(), "DOCS/NOTE.TXT 和源文件一致"),
+        ("BIGDIR/F39.TXT",   b"file 39\n",                        "跨簇目录里的最后一个文件"),
+        ("BIGDIR/F40.TXT",   b"chain-extension",                  "自动扩出来的那一簇里的文件"),
         ("DOCS/SUBFILE.TXT", b"subdir-write-test",                 "子目录里写的文件内容"),
         ("TESTDIR/INNER.TXT", b"hello-in-subdir",                  "二级目录里写的文件内容"),
         ("DOCS/EDITEST.TXT", b"sub dir edit",                      "编辑器存进子目录的内容"),
@@ -544,6 +546,14 @@ def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
                         f"{want!r},实际 {got!r}"))
         except Exception as e:                               # noqa: BLE001
             out.append((f"离线:{label}", False, str(e)))
+
+    try:
+        names = {n.upper() for n, _ in fs.listdir("BIGDIR")}
+        out.append(("离线:装满的目录跨了两簇(41 个文件都在)",
+                    len([n for n in names if n.startswith("F")]) == 41,
+                    f"41 个 F??.TXT,实际 {len([n for n in names if n.startswith('F')])}"))
+    except Exception as e:                                   # noqa: BLE001
+        out.append(("离线:装满的目录跨了两簇(41 个文件都在)", False, str(e)))
 
     try:
         names = {n.upper() for n, _ in fs.listdir("")}
@@ -962,6 +972,20 @@ def main() -> int:
             run("ls")
             results.append(("空目录真的没了", "EMPTY" not in screen_lines(),
                             "列表里没有 EMPTY"))
+
+            # ---- 目录满一簇:内核要能往簇链上再挂一簇(不能只会看第一簇)----
+            run("ls bigdir", wait=1.0)
+            results.append(("列出一整个装满的目录(要跟着簇链走)",
+                            has("F00.TXT") and has("F39.TXT"),
+                            "F00.TXT 和 F39.TXT 都列得出来(它们在第 2 簇里)"))
+            run("cat bigdir/f39.txt", wait=1.0)
+            results.append(("读得到第 2 簇里的文件", has("file 39"), "'file 39'"))
+            run("write bigdir/f40.txt chain-extension")
+            results.append(("目录满了能自动扩一簇", has("wrote bigdir/f40.txt"),
+                            "wrote bigdir/f40.txt"))
+            run("cat bigdir/f40.txt")
+            results.append(("新扩的簇里的文件读得回来", has("chain-extension"),
+                            "chain-extension"))
 
             # int 0x30 的读/写也要认路径:编辑器存到 DOCS 里去
             run("run edit docs/editest.txt", wait=1.5)
