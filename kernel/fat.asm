@@ -659,37 +659,10 @@ fat_write_file:
     mov [fat_dir_lba], eax
     jmp .have_entry
 .new_entry:
-    ; 找第一个空表项(0x00 或 0xE5)
-    mov dword [fat_scan], 0
-    mov eax, [fat_root_lba]
-    mov [fat_scan_lba], eax
-.scan_sector:
-    mov eax, [fat_scan]
-    cmp eax, [fat_root_ents]
-    jae .fail
-    mov eax, [fat_scan_lba]
-    mov ecx, 1
-    mov edi, FAT_BUF
-    call ata_read_sectors
-    xor ebx, ebx
-.scan_entry:
-    cmp ebx, 512
-    jae .scan_next
-    mov esi, FAT_BUF
-    add esi, ebx
-    movzx eax, byte [esi]
-    test al, al
-    jz .free_slot
-    cmp al, 0xE5
-    je .free_slot
-    add ebx, 32
-    jmp .scan_entry
-.scan_next:
-    inc dword [fat_scan_lba]
-    jmp .scan_sector
-.free_slot:
-    mov [fat_entry_off], ebx
-    mov eax, [fat_scan_lba]
+    ; 空表项要在"当前目录"里找 —— 子目录是一根簇链,不能只看根目录那块固定区域
+    ; (以前这里只扫根目录,所以在子目录里写文件会写到根里去,回头 cat 就找不到)
+    call fat_free_slot
+    jc .fail
     mov [fat_dir_lba], eax
 .have_entry:
     ; ---- 分配簇链并把数据写进去 ----
@@ -912,6 +885,321 @@ fat_list:
     popad
     ret
 
+; ---------------------------------------------------------------------------
+;  fat_free_slot:在当前目录里找一个空目录项(0x00 或 0xE5)
+;    成功:CF=0,eax = 目录项所在扇区的 LBA,[fat_entry_off] = 扇区里的偏移
+;    失败:CF=1(根目录满了,或者子目录扩不出新簇)
+; ---------------------------------------------------------------------------
+fat_free_slot:
+    pushad
+    mov eax, [fat_dir]
+    test eax, eax
+    jnz .sub
+    mov eax, [fat_root_lba]
+    mov [fs_lba], eax
+    mov eax, [fat_root_ents]
+    mov [fs_ents], eax
+    mov dword [fs_spc], 0               ; 0 = 根目录,扩不了
+    jmp .sect
+.sub:
+    mov [fs_clus], eax
+.cluster:
+    mov eax, [fs_clus]
+    cmp eax, 0xFFF8                     ; 链尾 → 试试扩一簇
+    jae .extend
+    test eax, eax
+    jz .extend
+    sub eax, 2
+    imul eax, [fat_spc]
+    add eax, [fat_data_lba]
+    mov [fs_lba], eax
+    mov eax, [fat_spc]
+    mov [fs_ents], eax
+    shl dword [fs_ents], 4              ; 每扇区 16 项
+    mov [fs_spc], eax
+.sect:
+    mov eax, [fs_ents]
+    test eax, eax
+    jz .extend
+    mov eax, [fs_lba]
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    xor ebx, ebx
+.entry:
+    cmp ebx, 512
+    jae .next
+    movzx eax, byte [FAT_BUF + ebx]
+    test al, al
+    jz .found                           ; 0x00 = 后面全空
+    cmp al, 0xE5
+    je .found                           ; 0xE5 = 删掉过的
+    add ebx, 32
+    jmp .entry
+.next:
+    inc dword [fs_lba]
+    sub dword [fs_ents], 16
+    jmp .sect
+.extend:
+    cmp dword [fs_spc], 0
+    je .full                            ; 根目录没有链可扩
+    call fat_alloc_cluster
+    test eax, eax
+    jz .full
+    mov [fs_new], eax
+    call fat_zero_cluster               ; 新簇清零 → 第一项就是空位
+    mov eax, [fs_clus]
+    mov [fat_cluster], eax
+    mov eax, [fs_new]
+    call fat_set_entry                  ; 旧链尾 → 新簇
+    mov eax, [fs_new]
+    mov [fs_clus], eax
+    jmp .cluster
+.found:
+    mov [fat_entry_off], ebx
+    mov eax, [fs_lba]
+    mov [fs_result], eax
+    popad
+    mov eax, [fs_result]
+    clc
+    ret
+.full:
+    popad
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+;  fat_zero_cluster:eax = 簇号 → 整簇写成 0
+; ---------------------------------------------------------------------------
+fat_zero_cluster:
+    push eax
+    push ecx
+    push esi
+    sub eax, 2
+    imul eax, [fat_spc]
+    add eax, [fat_data_lba]
+    mov [zs_lba], eax
+    mov ecx, [fat_spc]
+.loop:
+    mov eax, [zs_lba]
+    mov esi, dir_zero
+    push ecx
+    mov ecx, 1
+    call ata_write_sectors
+    pop ecx
+    inc dword [zs_lba]
+    dec ecx
+    jnz .loop
+    pop esi
+    pop ecx
+    pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+;  fat_mkdir:esi = 目录名(最后一段)→ eax = 0 成功 / -1 失败
+;            在当前目录里建一个子目录,里面自动写好 . 和 ..
+; ---------------------------------------------------------------------------
+fat_mkdir:
+    pushad
+    mov [fat_name_ptr], esi
+    mov esi, [fat_name_ptr]
+    call fat_name83
+    call fat_free_slot                  ; 1) 先在父目录里占个位子
+    jc .fail
+    mov [fat_dir_lba], eax
+    call fat_alloc_cluster              ; 2) 给新目录分一簇
+    test eax, eax
+    jz .fail
+    mov [mk_cluster], eax
+    call fat_zero_cluster               ; 3) 清零
+    mov eax, [mk_cluster]               ; 4) 算这一簇的第一扇区
+    sub eax, 2
+    imul eax, [fat_spc]
+    add eax, [fat_data_lba]
+    mov [mk_lba], eax
+    mov byte [dir_make + 0], '.'        ; .  → 自己
+    mov byte [dir_make + 11], 0x10
+    mov eax, [mk_cluster]
+    mov [dir_make + 26], ax
+    mov byte [dir_make + 32], '.'       ; .. → 父目录(根目录是 0)
+    mov byte [dir_make + 33], '.'
+    mov byte [dir_make + 43], 0x10
+    mov eax, [fat_dir]
+    mov [dir_make + 58], ax
+    mov eax, [mk_lba]
+    mov ecx, 1
+    mov esi, dir_make
+    call ata_write_sectors
+    mov eax, [fat_dir_lba]              ; 5) 目录项写进父目录
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    mov ebx, [fat_entry_off]
+    lea edi, [FAT_BUF + ebx]
+    mov esi, fat_name
+    mov ecx, 11
+    cld
+    rep movsb
+    mov byte [FAT_BUF + ebx + 11], 0x10
+    mov eax, [mk_cluster]
+    mov [FAT_BUF + ebx + 26], ax
+    mov dword [FAT_BUF + ebx + 28], 0
+    mov eax, [fat_dir_lba]
+    mov ecx, 1
+    mov esi, FAT_BUF
+    call ata_write_sectors
+    popad
+    xor eax, eax
+    ret
+.fail:
+    popad
+    mov eax, -1
+    ret
+
+; ---------------------------------------------------------------------------
+;  fat_rmdir:esi = 目录名 → eax = 0 成功 / -1 不是目录 / -2 目录不空
+; ---------------------------------------------------------------------------
+fat_rmdir:
+    pushad
+    call fat_name83
+    call fat_find
+    cmp eax, -1
+    je .fail
+    mov [rm_lba], eax
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    mov esi, FAT_BUF
+    add esi, [fat_entry_off]
+    mov al, [esi + 11]
+    test al, 0x10
+    jz .fail                            ; 不是目录
+    movzx eax, word [esi + 26]
+    mov [rm_clus], eax
+    test eax, eax
+    jz .fail                            ; 首簇 0 = 根,删不了
+    mov [rm_scan], eax
+.rs_cluster:
+    mov eax, [rm_scan]
+    cmp eax, 0xFFF8
+    jae .empty
+    test eax, eax
+    jz .empty
+    sub eax, 2
+    imul eax, [fat_spc]
+    add eax, [fat_data_lba]
+    mov [rm_lba2], eax
+    mov ecx, [fat_spc]
+    mov [rm_count], ecx
+.rs_sect:
+    mov eax, [rm_lba2]
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    xor ebx, ebx
+.rs_entry:
+    cmp ebx, 512
+    jae .rs_next
+    movzx eax, byte [FAT_BUF + ebx]
+    test al, al
+    jz .empty                           ; 0x00 = 后面全空 → 目录是空的
+    cmp al, 0xE5
+    je .rs_skip
+    cmp al, '.'
+    je .rs_skip                         ; "." 和 ".."
+    jmp .notempty
+.rs_skip:
+    add ebx, 32
+    jmp .rs_entry
+.rs_next:
+    inc dword [rm_lba2]
+    dec dword [rm_count]
+    jnz .rs_sect
+    mov eax, [rm_scan]                  ; 这一簇看完了,下一簇
+    mov [fat_cluster], eax
+    call fat_next_cluster
+    mov [rm_scan], eax
+    jmp .rs_cluster
+.empty:
+    mov eax, [rm_clus]                  ; 释放整条簇链
+.free_loop:
+    test eax, eax
+    jz .mark
+    cmp eax, 0xFFF8
+    jae .mark
+    mov [fat_cluster], eax
+    push eax
+    call fat_next_cluster
+    mov [rm_next], eax
+    pop eax
+    mov [fat_cluster], eax
+    xor eax, eax                        ; 值 0 = 空闲
+    call fat_set_entry
+    mov eax, [rm_next]
+    jmp .free_loop
+.mark:
+    mov eax, [rm_lba]                   ; 父目录里那一项标成 0xE5
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    mov ebx, [fat_entry_off]
+    mov byte [FAT_BUF + ebx], 0xE5
+    mov eax, [rm_lba]
+    mov ecx, 1
+    mov esi, FAT_BUF
+    call ata_write_sectors
+    popad
+    xor eax, eax
+    ret
+.notempty:
+    popad
+    mov eax, -2
+    ret
+.fail:
+    popad
+    mov eax, -1
+    ret
+
+; ---------------------------------------------------------------------------
+;  fat_dotdot:当前目录的父目录 → eax = 父目录首簇(0 = 根目录)
+;             从当前目录第一簇里的 ".." 项读
+; ---------------------------------------------------------------------------
+fat_dotdot:
+    push ebx
+    push ecx
+    push edi
+    push esi
+    mov eax, [fat_dir]
+    test eax, eax
+    jz .root
+    sub eax, 2
+    imul eax, [fat_spc]
+    add eax, [fat_data_lba]
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    cmp byte [FAT_BUF + 32], '.'        ; 第二项应该就是 ..
+    jne .root
+    movzx eax, word [FAT_BUF + 58]
+    pop esi
+    pop edi
+    pop ecx
+    pop ebx
+    ret
+.root:
+    xor eax, eax
+    pop esi
+    pop edi
+    pop ecx
+    pop ebx
+    ret
+
 ; ---------------------------------------------------------------- 数据
 fat_ok          db 0
 fat_bps         dd 512
@@ -949,6 +1237,23 @@ fat_stat_size   dd 0
 fat_first_cluster dd 0
 fat_prev_cluster  dd 0
 fat_chunk_bytes   dd 0
+fs_lba          dd 0
+fs_ents         dd 0
+fs_clus         dd 0
+fs_spc          dd 0
+fs_new          dd 0
+fs_result       dd 0
+zs_lba          dd 0
+mk_cluster      dd 0
+mk_lba          dd 0
+rm_lba          dd 0
+rm_lba2         dd 0
+rm_clus         dd 0
+rm_scan         dd 0
+rm_count        dd 0
+rm_next         dd 0
+dir_make        times 512 db 0         ; 造新目录第一扇区用
+dir_zero        times 512 db 0         ; 清零整簇用
 fl_lba          dd 0
 fl_ents         dd 0
 fl_clus         dd 0

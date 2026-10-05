@@ -38,6 +38,11 @@ shell_main:
 .prompt:
     mov al, COL_HEADER
     call term_set_color
+    cmp byte [cwd_str], 0
+    je .prompt_arrow
+    mov esi, cwd_str
+    call term_print
+.prompt_arrow:
     mov esi, msg_prompt
     call term_print
     call shell_readline
@@ -135,8 +140,12 @@ shell_execute:
     add ebx, 8                            ; 下一项:名字 + 处理函数
     jmp .try
 .run:
+    mov eax, [fat_dir]                    ; 命令把 cwd 借去用(fat_path 会一层层进去)
+    mov [saved_dir], eax
     mov eax, [ebx + 4]
     call eax
+    mov eax, [saved_dir]                  ; 用完还回来;cd 会改写 saved_dir
+    mov [fat_dir], eax
     jmp .ret
 .unknown:
     mov al, COL_ERR
@@ -200,6 +209,215 @@ cmd_help:
 ; ---------------------------------------------------------------------------
 ;  ls:列根目录
 ; ---------------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+;  cd <目录>:换当前目录(不带参数或 / = 回根目录,.. = 上一层)
+;  命令跑完后 shell 会把 fat_dir 还原成 saved_dir,所以 cd 要把新目录写进 saved_dir
+; ---------------------------------------------------------------------------
+cmd_cd:
+    cmp byte [fat_ok], 0
+    je cmd_ls.nomount
+    mov esi, [cmd_arg]
+    call strip_name
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .root
+    cmp byte [esi], '/'
+    je .abs
+    ; ---- ".." → 父目录 ----
+    cmp byte [esi], '.'
+    jne .rel
+    cmp byte [esi + 1], '.'
+    jne .rel
+    cmp byte [esi + 2], 0
+    jne .rel
+    call fat_dotdot
+    mov [saved_dir], eax
+    call cwd_pop
+    ret
+.abs:
+    inc esi
+    cmp byte [esi], 0
+    je .root
+    mov [cmd_arg], esi                    ; "/DOCS" → 从根开始找 "DOCS"
+    mov dword [saved_dir], 0
+    mov dword [fat_dir], 0
+    mov byte [cwd_str], 0
+    jmp .rel
+.root:
+    mov dword [saved_dir], 0
+    mov dword [fat_dir], 0
+    mov byte [cwd_str], 0
+    ret
+.rel:
+    mov esi, [cmd_arg]
+    call fat_path                         ; 中间几层先进去
+    jc .nofound
+    cmp byte [eax], 0
+    je .joined                            ; 路径以 / 收尾:已经站在里面了
+    mov esi, eax
+    call fat_chdir                        ; 最后一层
+    jc .nofound
+.joined:
+    mov esi, [cmd_arg]
+    call cwd_push
+    mov eax, [fat_dir]
+    mov [saved_dir], eax
+    ret
+.nofound:
+    mov dword [saved_dir], 0
+    mov dword [fat_dir], 0
+    mov byte [cwd_str], 0
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_no_dir
+    call term_print
+    ret
+
+; --- cwd_str 末尾接上一段(esi 指向那段名字) ---
+cwd_push:
+    push esi
+    push edi
+    push ecx
+    mov edi, cwd_str
+.cp_end:
+    cmp byte [edi], 0
+    je .cp_at_end
+    inc edi
+    jmp .cp_end
+.cp_at_end:
+    cmp edi, cwd_str
+    je .cp_copy
+    mov byte [edi], '/'
+    inc edi
+.cp_copy:
+    mov ecx, 48
+.cp_loop:
+    lodsb
+    test al, al
+    jz .cp_done
+    cmp al, ' '
+    je .cp_done
+    cmp al, '/'
+    je .cp_done                           ; 尾巴上的斜杠不要
+    mov [edi], al
+    inc edi
+    dec ecx
+    jnz .cp_loop
+.cp_done:
+    mov byte [edi], 0
+    pop ecx
+    pop edi
+    pop esi
+    ret
+
+; --- cwd_str 去掉最后一节(cd .. 用) ---
+cwd_pop:
+    push eax
+    push ebx
+    mov ebx, cwd_str
+    mov eax, ebx
+.cpop_scan:
+    cmp byte [eax], 0
+    je .cpop_cut
+    cmp byte [eax], '/'
+    jne .cpop_next
+    mov ebx, eax                          ; 记住最后一个斜杠
+.cpop_next:
+    inc eax
+    jmp .cpop_scan
+.cpop_cut:
+    mov byte [ebx], 0
+    pop ebx
+    pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+;  mkdir <目录>:建目录
+; ---------------------------------------------------------------------------
+cmd_mkdir:
+    cmp byte [fat_ok], 0
+    je cmd_ls.nomount
+    mov esi, [cmd_arg]
+    call strip_name
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .usage
+    call fat_path                         ; 支持 mkdir A/B
+    jc .fail
+    cmp byte [eax], 0
+    je .fail
+    mov esi, eax
+    call fat_mkdir
+    test eax, eax
+    jnz .fail
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_mkdir_ok
+    call term_print
+    mov esi, [cmd_arg]
+    call term_print
+    mov al, 10
+    call term_putc
+    ret
+.usage:
+    mov esi, msg_mkdir_use
+    call term_print
+    ret
+.fail:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_mkdir_bad
+    call term_print
+    ret
+
+; ---------------------------------------------------------------------------
+;  rmdir <目录>:删空目录
+; ---------------------------------------------------------------------------
+cmd_rmdir:
+    cmp byte [fat_ok], 0
+    je cmd_ls.nomount
+    mov esi, [cmd_arg]
+    call strip_name
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .usage
+    call fat_path
+    jc .fail
+    cmp byte [eax], 0
+    je .fail
+    mov esi, eax
+    call fat_rmdir
+    test eax, eax
+    jz .ok
+    cmp eax, -2
+    je .notempty
+.fail:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_rmdir_bad
+    call term_print
+    ret
+.notempty:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_rmdir_notempty
+    call term_print
+    ret
+.ok:
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_rmdir_ok
+    call term_print
+    mov esi, [cmd_arg]
+    call term_print
+    mov al, 10
+    call term_putc
+    ret
+.usage:
+    mov esi, msg_rmdir_use
+    call term_print
+    ret
+
 cmd_ls:
     cmp byte [fat_ok], 0
     je .nomount
@@ -208,7 +426,6 @@ cmd_ls:
     mov esi, [cmd_arg]
     cmp byte [esi], 0
     je .list                            ; 没参数:列当前目录
-    mov dword [fat_dir], 0
     call fat_path                       ; 前面的目录先进去,剩最后一截
     jc .nofound
     cmp byte [eax], 0
@@ -218,10 +435,8 @@ cmd_ls:
     jc .nofound
 .list:
     call fat_list
-    mov dword [fat_dir], 0
     ret
 .nofound:
-    mov dword [fat_dir], 0
     mov al, COL_ERR
     call term_set_color
     mov esi, msg_no_dir
@@ -244,7 +459,6 @@ cmd_cat:
     call strip_name                    ; 去掉尾巴上的空格
     mov esi, [cmd_arg]
     ; ---- 支持路径:DOCS/NOTE.TXT 这样先把前面的目录一层层进去 ----
-    mov dword [fat_dir], 0
     call fat_path
     jc .notfound
     mov esi, eax                        ; 剩下的那截才是文件名
@@ -260,7 +474,6 @@ cmd_cat:
     cmp eax, -1
     je .notfound
     mov [file_size], eax
-    mov dword [fat_dir], 0
     mov esi, FILE_BUF
     call term_print                     ; 内容是 UTF-8,term_print 直接吃
     cmp byte [FILE_BUF + 0], 0          ; 空文件就算了
@@ -429,7 +642,6 @@ cmd_run:
     jmp .copied
 .no_ext:
     ; 先只看目录项里的大小:太大就别读了,免得把字库盖掉一半
-    mov dword [fat_dir], 0
     mov esi, name_buf
     call fat_path                       ; 支持 run DOCS/PROG.BIN
     jc .notfound
@@ -852,6 +1064,9 @@ n_run    db 'run', 0
 n_clear  db 'clear', 0
 n_info   db 'info', 0
 n_page   db 'page', 0
+n_cd     db 'cd', 0
+n_mkdir  db 'mkdir', 0
+n_rmdir  db 'rmdir', 0
 n_fault  db 'fault', 0
 n_reboot db 'reboot', 0
 
@@ -860,6 +1075,9 @@ cmd_table:
     dd n_echo,   cmd_echo
     dd n_zh,     cmd_zh
     dd n_ls,     cmd_ls
+    dd n_cd,     cmd_cd
+    dd n_mkdir,  cmd_mkdir
+    dd n_rmdir,  cmd_rmdir
     dd n_cat,    cmd_cat
     dd n_write,  cmd_write
     dd n_run,    cmd_run
@@ -875,6 +1093,15 @@ cmd_table:
 ; ---------------------------------------------------------------------------
 msg_shell_hello db 'type "help" for commands.', 10, 0
 msg_prompt      db '> ', 0
+cwd_str         times 64 db 0          ; 当前目录(cd 用,空 = 根)
+saved_dir       dd 0                   ; 命令借用目录时的"还回去"的值
+msg_mkdir_ok    db 'created directory ', 0
+msg_mkdir_bad   db 'mkdir failed (already exists or disk full)', 10, 0
+msg_mkdir_use   db 'usage: mkdir <dir>', 10, 0
+msg_rmdir_ok    db 'removed directory ', 0
+msg_rmdir_bad   db 'rmdir failed (not found or not a directory)', 10, 0
+msg_rmdir_notempty db 'rmdir failed (directory not empty)', 10, 0
+msg_rmdir_use   db 'usage: rmdir <dir>', 10, 0
 msg_shell_unknown db 'unknown command: ', 0
 msg_zh_note     db 'zh: glyphs from GNU Unifont, blitted straight into the VBE framebuffer', 10, 0
 msg_zh_emoji    db 'emoji (4-byte UTF-8): 😀', 10, 0

@@ -30,7 +30,7 @@ HD_SIZE = 16 * 1024 * 1024              # 硬盘镜像默认 16 MB
 STUB_LBA = 1
 STUB_SECTS = 4                         # 2 KB 够实模式 stub 用了
 KERNEL_LBA = 5
-KERNEL_SECTS = 128                     # 必须和 boot/boot.asm 里的常量一致
+KERNEL_SECTS = 256                     # 必须和 boot/boot.asm 里的常量一致(128 KiB,给 FAT32 留余量)
 
 
 def main() -> int:

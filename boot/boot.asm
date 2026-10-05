@@ -27,7 +27,7 @@ STUB_SECTS   equ 4                  ; 最多 2 KB
 STUB_ADDR    equ 0x0500             ; 搬到 0x500,用 CS=0 的近跳进去
 
 KERNEL_LBA   equ 5                  ; 32 位内核从第 5 扇区开始
-KERNEL_SECTS equ 128                ; 64 KiB 内核区(图形模式 + 字库要地方)
+KERNEL_SECTS equ 256                ; 128 KiB 内核区(图形模式 + 字库 + C 程序 + 目录代码都要地方)
 KERNEL_SEG   equ 0x1000             ; 内核加载在 0x1000:0000 = 0x10000
 CHUNK        equ 8
 BOOTINFO     equ 0x8000             ; 启动参数块(内核读它)
