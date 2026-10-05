@@ -38,12 +38,40 @@ KERNEL_SRCS := $(wildcard kernel/*.asm)
 # 内核 incbin 了字模、%include 了映射表 —— 它们变了也必须重编内核,
 # 不然 make 会说"无事可做",你改了字库却看到的还是老字模(这个坑踩过一次)
 FONT_DEPS   := font/vga-font.bin font/vga-zh-map.asm font/vga-zh-strings.asm
+# asm 写的程序(progs/*.asm → nasm → 平铺二进制)
 PROGS       := HELLO.BIN COUNT.BIN CALC.BIN EDIT.BIN
-PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS))
 
-.PHONY: all run run-font hd subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font div font clean lst
+# ---- C 写的程序(progs/*.c):有 gcc 的多架构支持就编,没有就跳过 ----
+# 为什么单独探测:gcc -m32 需要 gcc-multilib,没装的话不该让整个 make 挂掉 ——
+# 汇编那部分是自足的,别人 clone 下来照样能玩。
+CC          := gcc
+CC_OK       := $(shell $(CC) -m32 -ffreestanding -c -x c /dev/null -o /dev/null 2>/dev/null && echo yes)
+C_CFLAGS    := -m32 -std=gnu89 -ffreestanding -fno-pic -fno-stack-protector \
+               -fno-asynchronous-unwind-tables -fno-builtin -nostdlib -O2 -Wall \
+               -Iinclude -Ilib -Wno-unused-parameter -Wno-comment
+C_LD        := ld -m elf_i386 -T lib/joyos.ld
+CRT0_OBJ    := $(BUILD)/crt0.o
+MINIC_OBJ   := $(BUILD)/minic.o
+ifeq ($(CC_OK),yes)
+C_PROGS     := CHELLO.BIN
+else
+C_PROGS     :=
+endif
+
+PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS) $(C_PROGS))
+
+.PHONY: all run run-font hd subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font div font clean lst cc-check
 
 all: $(IMG) $(HDIMG)
+
+# 看一眼 C 工具链在不在(不在就给一句人话,而不是一堆 ld 报错)
+cc-check:
+	@if [ "$(CC_OK)" = "yes" ]; then \
+	    echo "C 工具链: OK ($(CC) -m32),C 程序: $(if $(C_PROGS),$(C_PROGS),无)"; \
+	else \
+	    echo "C 工具链: 缺 32 位支持 —— C 程序会被跳过(汇编那部分不受影响)。"; \
+	    echo "  Debian/Ubuntu:  sudo apt install gcc-multilib"; \
+	fi
 
 $(BUILD):
 	@mkdir -p $(BUILD)
@@ -72,13 +100,27 @@ $(BUILD)/%.BIN: progs/%.asm | $(BUILD)
 	$(NASM) -f bin $< -o $@
 	@printf '   程序: %s %s 字节\n' "$@" "$$(stat -c %s $@)"
 
+# ---- C 程序的构建链:crt0.asm(elf32)→ 程序 → 迷你 libc → ld 出平铺二进制 ----
+$(CRT0_OBJ): lib/crt0.asm | $(BUILD)
+	$(NASM) -f elf32 $< -o $@
+
+$(MINIC_OBJ): lib/minic.c lib/minic.h include/joyos.h | $(BUILD)
+	$(CC) $(C_CFLAGS) -c $< -o $@
+
+$(BUILD)/%.o: progs/%.c include/joyos.h lib/minic.h | $(BUILD)
+	$(CC) $(C_CFLAGS) -c $< -o $@
+
+$(BUILD)/%.BIN: $(BUILD)/%.o $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
+	$(C_LD) $(CRT0_OBJ) $< $(MINIC_OBJ) -o $@ 2>/dev/null
+	@printf '   C 程序: %s %s 字节(链接地址 0x120000)\n' "$@" "$$(stat -c %s $@)"
+
 # 注意 progs/README.TXT、progs/NOTES.TXT 也要当依赖:改了它们镜像就得重做,
 # 不然测试会拿"旧内容"去比新文件,报个莫名其妙的字节数不一致(踩过)
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
           $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
-	    NOTES.TXT=progs/NOTES.TXT $(foreach p,$(PROGS),$(p)=$(BUILD)/$(p))
+	    NOTES.TXT=progs/NOTES.TXT $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
 	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c

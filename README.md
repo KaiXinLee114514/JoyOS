@@ -46,6 +46,7 @@
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
 | **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-Q` 退出 |
 | **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q) |
+| **C 语言支持** | 普通 `gcc -m32` 就能编(`make cc-check`);自带 crt0 + 迷你 libc(malloc/printf/stdio)+ `joyos.h`,程序照样是平铺二进制丢进 FAT16 跑(见 [docs/c-programs.md](docs/c-programs.md)) |
 | **图形模式** | 实模式 stub 里用 VBE 问出 **800×600×32 线性帧缓冲**模式,页表把帧缓冲映射进来,终端直接往显存画像素 |
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
 | 中文显示 | ✅ 一个汉字 16×16 直接画在帧缓冲上;文本是标准 **UTF-8**(四字节 emoji、坏字节替换符都处理了) |
@@ -136,6 +137,11 @@ progs/COUNT.asm        示例程序(打印/颜色/码位)
 progs/CALC.asm         组件:计算器(定点小数,自己算 ±2147.483647)
 progs/EDIT.asm         组件:全屏文本编辑器(方向键 + 存盘 + 打开)
 progs/NOTES.TXT        放进镜像的示例文本(编辑器默认打开它)
+progs/CHELLO.c         C 写的示例程序(printf / malloc / 参数 / 读文件)
+include/joyos.h        C 程序用的头:14 个 int 0x30 包装 + 颜色/键值常量
+lib/minic.c            迷你 libc(约 600 行:字符串/内存/printf/一点点 stdio)
+lib/crt0.asm           C 程序入口:清 BSS → main() → ret 回 shell
+lib/joyos.ld           链接脚本:0x120000 + 平铺二进制 + BSS 边界符号
 progs/README.TXT       也放进镜像,shell 里 cat README.TXT 能看(UTF-8 中文)
 tools/mkimg.py         拼镜像:boot(第 0 扇区)+ stub + kernel + 磁盘字库
 tools/mkfat.py         在镜像里造 FAT16 分区,并把文件放进去
@@ -417,7 +423,13 @@ DEMO_PADDR  equ 0x00100000      ; 映到哪块物理内存
 
 想再打 `CR3`、`DS`、或者页表项,照着 `mov eax, cr2 / call term_print_hex` 那样加一行就行。
 
-### 8.8 想看汇编到底编成了什么
+### 8.8 用 C 写程序
+
+`make cc-check` 看看工具链在不在,然后往 `progs/` 里丢一个 `.c`,把名字加进
+`Makefile` 的 `C_PROGS`,再 `make hd`。接口、内存布局、迷你 libc 有什么没有什么,
+都在 [docs/c-programs.md](docs/c-programs.md);`progs/CHELLO.c` 是现成例子。
+
+### 8.9 想看汇编到底编成了什么
 
 ```bash
 make lst        # 生成 build/boot.lst 和 build/kernel.lst(带机器码的反汇编)

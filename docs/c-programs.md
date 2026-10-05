@@ -1,0 +1,120 @@
+# 用 C 写 JoyOS 程序
+
+**不用交叉编译器,普通 `gcc` 就行。** 程序编成平铺二进制,放进 FAT16 分区,
+shell 里 `run XXX` 跑起来 —— 和 `progs/*.asm` 那套完全一样,只是语言换了。
+
+```c
+#include <stdio.h>
+#include <joyos.h>
+
+int main(void)
+{
+    j_color(JOY_LCYAN);
+    printf("hello from C, screen is %d cols\n", j_screensize(NULL));
+    return 0;
+}
+```
+
+```bash
+make                 # 自动编译 progs/*.c(需要 gcc 的 32 位支持)
+make cc-check        # 看一眼 C 工具链在不在
+make hd              # 起来之后: run CHELLO
+```
+
+`make` 在**没有 32 位支持**的机器上会**跳过** C 程序并提示 `sudo apt install gcc-multilib`,
+汇编那部分照常构建 —— clone 下来的人不会被卡住。
+
+---
+
+## 1. 这一套是怎么拼起来的
+
+| 文件 | 干什么 |
+|---|---|
+| `include/joyos.h` | 14 个 `int 0x30` 功能的 C 包装(static inline 内联汇编)+ 颜色/键值常量 |
+| `lib/crt0.asm` | 入口:`_start` → 清 BSS → `main()` → `ret` 回 shell;还有 `exit()` 用的跳板 |
+| `lib/minic.c` | 迷你 libc:string / ctype / malloc / printf / 一点点 stdio(约 600 行) |
+| `lib/minic.h` | 上面那些的声明(也是我们自己的 `<stdio.h>` 等的真正内容) |
+| `include/*.h` | 薄壳:让 `#include <stdio.h>` 这种老写法命中我们的实现 |
+| `lib/joyos.ld` | 链接脚本:摆到 0x120000,输出平铺二进制,顺手给出 BSS 边界符号 |
+| `progs/*.c` | 你的 C 程序 |
+
+编译命令(Makefile 里已经写好了,这里只是让人看懂):
+
+```bash
+gcc -m32 -std=gnu89 -ffreestanding -fno-pic -fno-stack-protector \
+    -fno-asynchronous-unwind-tables -fno-builtin -nostdlib -O2 \
+    -Iinclude -Ilib -c progs/Foo.c -o build/Foo.o
+ld -m elf_i386 -T lib/joyos.ld build/crt0.o build/Foo.o build/minic.o -o build/Foo.BIN
+```
+
+每个参数都有理由:
+
+* `-m32`:JoyOS 是 32 位 x86,程序必须是 32 位代码;
+* `-ffreestanding -nostdlib`:裸机上没有 libc,别去链接 glibc(链了也起不来);
+* `-fno-pic`:`int 0x30` 要用 `ebx` 传参数,而位置无关代码拿 `ebx` 当 GOT 指针;
+* `-fno-stack-protector -fno-asynchronous-unwind-tables`:`__stack_chk_*` 和 `.eh_frame`
+  都是 libc/运行时才有的东西,带上就链接不过;
+* `-fno-builtin`:别把 `memcpy` 之类换成编译器内联版本(我们自己实现的更简单);
+* `-std=gnu89`:老 C 代码(STEVIE 那种)默认 gcc 14 编不过,gnu89 最省事。
+
+## 2. 程序的约定
+
+```
+0x120000            程序被 shell 读到这里(链接地址就是它)
+0x120000..0x19FFFF  程序镜像(代码 + 只读数据 + 已初始化数据)
+0x1A0000..0x1EFFFF  堆(malloc 从这儿切,320 KB)
+0x1F0000            内核临时用(读字库描述块)
+0x200000 起         完整字库 —— 谁都不许碰
+```
+
+* **入口**:`lib/crt0.asm` 里的 `_start`(由链接脚本 `ENTRY(_start)` 指定)。
+  它清完 BSS 就调 `main()`,所以程序里写 `int main(void)` 就行,**不要**自己写 `_start`;
+* **返回**:`main` 返回(或 `exit()`)就回到 shell。没有进程、没有返回值语义,
+  退出码只有调试意义;
+* **参数**:`int main(int argc, char **argv)` **不行** —— 没有 argv。
+  用 `const char *arg = j_arg();` 取(`run FOO 参数` 里那串);
+* **BSS**:平铺二进制不存"全是 0 的段",所以 crt0 必须清 —— 这件事已经替你做了,
+  但要知道"全局数组默认是 0"是靠这段代码,不是靠加载器。
+
+## 3. 迷你 libc 有什么、没有什么
+
+**有**:`strlen/strcpy/strncpy/strcat/strcmp/strncmp/strchr/strrchr/strcspn/memcpy/memmove/memset`、
+`is*/to*`、`malloc/calloc/realloc/free`(首次适配 + 相邻合并)、
+`printf/fprintf/sprintf/snprintf`(`%d %i %u %x %X %o %c %s %p %%`,带宽度/精度/`-`/`0`/`+`/`#`)、
+`fopen/fclose/fgets/fgetc/fputc/fputs/puts/fflush`、`remove/rename/access`、`atoi/abs/exit/system/getenv`。
+
+**没有**:浮点格式化(`%f`)、`scanf`、目录遍历、`time`、信号、线程、
+`qsort`、locale/宽字符。
+
+**和 POSIX 不一样的地方**(重要):
+
+* 文件的模型是"**整读整写**":`fopen("r")` 会把整个文件读进内存(最多 64 KB),
+  `fopen("w")` 先在内存里攒着,`fclose` 时才一次写盘。没有 seek 回写、没有追加;
+* `remove()` 永远返回 -1:内核的接口里**没有删除文件**(见 [known-issues.md](known-issues.md));
+* `rename()` 是"读出来 + 写到新名字",旧文件还在;
+* `system()` 只打印一句"没有 shell escape" —— 这个系统里没有进程;
+* `getenv()` 永远返回 NULL(老代码得自己有默认值)。
+
+## 4. 例子:`progs/CHELLO.c`
+
+它把能用的都试了一遍:printf 各种格式、malloc/free 看堆还剩多少、16 种颜色、
+取参数、用参数当文件名打开并统计行数/字节数。跑:
+
+```
+> run CHELLO
+> run CHELLO README.TXT
+```
+
+`ls` 里能看到它:`CHELLO.BIN` 8888 字节 —— 其中大约 6 KB 是迷你 libc 和 crt0,
+所以"每个 C 程序自己带一份 libc"也不算浪费(反正是从磁盘读的)。
+
+## 5. 下一步(和 vite/vim 的关系)
+
+这个系统里**跑不了真的 vim**:vim 要 libc、要 `fork`/`waitpid`/`ioctl`/`termios`、
+要目录树和交换文件 —— 那是"POSIX 用户态"那一层的东西,不是编译器能变出来的。
+(实测那份 vim 源码:`src/*.c` 有 557,683 行,`os_unix.c` 里光 `close()` 79 次、
+`ioctl()` 24 次、`kill()` 17 次、`fork()`/`waitpid()`/`select()`/`sigaction()` 各若干。)
+
+但 C 一上线,**公有领域**的实现就能移植了:STEVIE 3.68(vi 的克隆、vim 的前身)
+只依赖一个很小的平台层 —— 画字符、定位光标、收键、读写文件,大约 20 个函数,
+把这层换成 `int 0x30`,就能有自己的一份 vi。这是下一阶段的目标(见 README 的待办)。
