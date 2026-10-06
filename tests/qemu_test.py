@@ -813,6 +813,10 @@ def main() -> int:
                 return best
 
             def run(line, wait=0.9, idle=False):
+                # ★ 发下一条命令之前,先等屏幕"静下来":上一条命令的重画(vim/计算器
+                #   整屏、中文 cat 几百个字形)在 QEMU 里要好几秒,这时候敲键盘会被
+                #   挤掉/串位 —— 表现成"vi 起不来、之后全线连崩"(踩过一整轮)。
+                wait_idle(15.0)
                 mon.type_text(line)
                 mon.sendkey("ret")
                 time.sleep(wait)
@@ -872,6 +876,8 @@ def main() -> int:
             # ---- vi(STEVIE 移植):打开 → 插入模式打字 → :w 存盘 → :q 退出 ----
             run("run vi vitest.txt", wait=3.0)
             text_now = screen_lines()
+            if "vitest.txt" not in text_now or "~" not in text_now:
+                print("  [调试] vi 这一步读到的屏幕:\n    " + text_now.replace("\n", "\n    ")[:800])
             results.append(("vi 起来了", "vitest.txt" in text_now and "~" in text_now,
                             "vi 的 ~ 空行和 \"vitest.txt\" 状态行"))
 
