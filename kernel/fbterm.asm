@@ -125,16 +125,16 @@ fb_blit:
     lea edi, [edi + eax * 4]
     mov ecx, [blit_w]
     xor eax, eax
-.bg_px:
-    mov [edi], eax
-    add edi, 4
-    dec ecx
-    jnz .bg_px
+    rep stosd                           ; ★ 整行一次写完(逐像素写会把 QEMU/VBox 压死)
     inc ebp
     cmp ebp, FB_CELL_H
     jb .bg_row
 
-    ; ---- 再画有点的像素 ----
+    ; ---- 再画有点的像素:一行一行拼(RAM),一行一行写(显存)----
+    ;   ★ 为什么不能一个像素一个 mov [edi], eax:帧缓冲是 MMIO,每个像素都是一次
+    ;     虚拟机退出。画一屏中文就是几百万次 —— QEMU/VBox 都被压到连 monitor
+    ;     都不回话(测试里表现成"卡住、无输出")。改成:在普通内存里拼好一整行,
+    ;     再用 rep movsd 一发写过去,MMIO 次数少一个数量级。
     xor ebp, ebp                        ; 行号
 .row:
     mov esi, [blit_data]
@@ -152,31 +152,38 @@ fb_blit:
     mov ecx, 16
 .draw:
     ; eax = 该行的位图,ecx = 位数,从最高位开始画
-    mov edx, ecx                        ; edx 当位计数
+    mov ebx, [blit_color]               ; 笔画颜色(下面要腾出 edx/ecx)
+    push eax
+    push ecx
+    mov edi, fb_rowbuf                  ; 先在 RAM 里铺 16 格黑底
+    xor eax, eax
+    mov ecx, 16
+    rep stosd
+    pop ecx
+    pop eax
+    mov edx, ecx                        ; edx = 剩余位数
+    mov edi, fb_rowbuf
 .bit:
     test eax, 0x8000                    ; 用 16 位判断,8 宽时高位自然是 0
     jz .next_bit
-    ; 画一个像素:位置 = (blit_x + (位数 - 剩余位), blit_y + 行号)
-    push eax
-    mov edi, [fb_phys]
-    mov eax, [fb_pitch]
-    mov ecx, [blit_y]
-    add ecx, ebp
-    imul eax, ecx
-    add edi, eax
-    mov eax, [blit_w]
-    mov ecx, edx                        ; 剩余位数 → 当前列 = 总列数 - 剩余
-    mov ecx, [blit_w]
+    mov ecx, [blit_w]                   ; 当前列 = 总列数 - 剩余位数
     sub ecx, edx
-    add ecx, [blit_x]
-    lea edi, [edi + ecx * 4]
-    mov eax, [blit_color]
-    mov [edi], eax
-    pop eax
+    mov [edi + ecx * 4], ebx            ; 普通内存写,不是 MMIO
 .next_bit:
     shl eax, 1
     dec edx
     jnz .bit
+    ; ---- 这一行整发写进显存 ----
+    mov edi, [fb_phys]
+    mov ecx, [blit_y]
+    add ecx, ebp
+    imul ecx, [fb_pitch]
+    add edi, ecx
+    mov ecx, [blit_x]
+    lea edi, [edi + ecx * 4]
+    mov esi, fb_rowbuf
+    mov ecx, [blit_w]
+    rep movsd
     inc ebp
     cmp ebp, FB_CELL_H
     jb .row
@@ -413,6 +420,8 @@ fb_palette:
 
 blank_glyph: times 16 db 0
 ; 字库缺字时画的占位框(8×16 空心框)
+fb_rowbuf   times 16 dd 0            ; 画字用的一行像素缓冲(16 格,8 宽也够)
+
 missing_glyph:
     db 0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81
     db 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF
