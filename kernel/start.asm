@@ -25,6 +25,7 @@ kmain:                                  ; 32 位内核入口(stub 里 jmp 0x1000
 %include "fontdisk.asm"                  ; 从磁盘加载完整字库
 %include "fat.asm"                       ; FAT16 文件系统
 %include "api.asm"                       ; 程序接口 int 0x30                  ; 从磁盘加载完整字库                      ; UTF-8 解码
+%include "speaker.asm"                   ; PC 蜂鸣器(beep,忙等标定见文件开头)
 %include "idt.asm"                       ; IDT / 异常 / panic 屏
 %include "paging.asm"                    ; 页目录 / 页表
 %include "fbterm.asm"                   ; 帧缓冲终端(图形模式)

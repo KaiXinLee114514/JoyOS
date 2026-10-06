@@ -184,6 +184,12 @@ static inline int j_puts_at(const char *s, int row, int col, int maxcells)
     return r;
 }
 
+/* 14:蜂鸣器:响 freq_hz 赫兹、持续 ms 毫秒(freq_hz <= 0 = 静音等 ms,当 sleep 用) */
+static inline void j_beep(int freq_hz, int ms)
+{
+    __asm__ volatile("int $0x30" : : "a"(14), "b"(freq_hz), "c"(ms) : "memory");
+}
+
 /* ---- 小小工具 ---- */
 static inline void j_newline(void)
 {

@@ -823,6 +823,17 @@ def main() -> int:
             results.append(("十进制/十六进制 API", has("hex demo: 0xDEADBEEF"),
                             "hex demo: 0xDEADBEEF"))
 
+            # ---- 蜂鸣器 + 文本谱(PLAY.BIN):--list 只解析不打铃,屏幕上能看见谱子 ----
+            #   声音本身没法自动断言(测试里没声卡,更没法"听"),所以这条只钉
+            #   "FAT 上的谱子被解析、音名打到屏幕上";要听就自己开窗口,命令见
+            #   docs/quickstart.md(QEMU 7+ 得给 -machine pcspk-audiodev= 才响)。
+            #   ★ 放在这里而不是最后:后面编辑器那步要靠 Ctrl-S/Ctrl-Q 的时序,
+            #     一旦它卡住,后面敲的东西会打进编辑器里 —— 这条断言不该被它连累。
+            run("run play --list rick.txt", wait=1.2, idle=True)
+            results.append(("play --list 解析文本谱(至少两个音名)",
+                            has("A4") and has("C#5"),
+                            "rick.txt 里至少两个音名(A4 / C#5)出现在屏幕上"))
+
             # ---- vi(STEVIE 移植):打开 → 插入模式打字 → :w 存盘 → :q 退出 ----
             # (vi/STEVIE 已经降级成 extensions/vi 里的可选扩展,默认镜像里没有它,
             #  它的断言也就撤了 —— 想测就 make ext-img 再手动跑。)

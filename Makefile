@@ -55,7 +55,7 @@ C_LD        := ld -m elf_i386 -T lib/joyos.ld
 CRT0_OBJ    := $(BUILD)/crt0.o
 MINIC_OBJ   := $(BUILD)/minic.o
 ifeq ($(CC_OK),yes)
-C_PROGS     := CHELLO.BIN
+C_PROGS     := CHELLO.BIN PLAY.BIN
 else
 C_PROGS     :=
 endif
@@ -121,6 +121,12 @@ $(BUILD)/vi/%.o: extensions/vi/%.c lib/minic.h include/joyos.h | $(BUILD)
 $(BUILD)/%.o: progs/%.c include/joyos.h lib/minic.h | $(BUILD)
 	$(CC) $(C_CFLAGS) -c $< -o $@
 
+# ★ PLAY.C 是**大写**后缀(和 progs/ 里那几个 .asm 一个命名习惯),而 gcc 看见 .C
+#   会当成 C++ 编 —— 那样 -std=gnu89、隐式 void* 转换这些立刻全是错。所以这条规则
+#   显式写 -x c:语言由规则定,不由后缀名说了算。
+$(BUILD)/PLAY.o: progs/PLAY.C include/joyos.h lib/minic.h | $(BUILD)
+	$(CC) $(C_CFLAGS) -x c -c $< -o $@
+
 $(BUILD)/%.BIN: $(BUILD)/%.o $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
 	$(C_LD) $(CRT0_OBJ) $< $(MINIC_OBJ) -o $@ 2>/dev/null
 	@printf '   C 程序: %s %s 字节(链接地址 0x120000)\n' "$@" "$$(stat -c %s $@)"
@@ -144,12 +150,14 @@ $(BUILD)/bigdir/.stamp: | $(BUILD)
 BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 39),BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
 
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py \
+          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/songs/rick.txt \
+          progs/songs/scale.txt tools/mkimg.py tools/mkfat.py \
           $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
+	    RICK.TXT=progs/songs/rick.txt SCALE.TXT=progs/songs/scale.txt \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
@@ -162,13 +170,15 @@ hd: $(HDIMG)
 HD32IMG := $(BUILD)/joyos-hd32.img
 
 $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py \
+            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/songs/rick.txt \
+            progs/songs/scale.txt tools/mkimg.py tools/mkfat.py \
             $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \
 	    font/full-joyf.bin --disk-mb 96
 	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
+	    RICK.TXT=progs/songs/rick.txt SCALE.TXT=progs/songs/scale.txt \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd32: $(HD32IMG)

@@ -24,6 +24,8 @@
 ;      12 取程序参数        → esi = 参数字符串(`run PROG 参数` 里那截,没有就是 "")
 ;      13 在指定位置画字    esi = 字符串,ebx = 行,ecx = 列,edx = 最多几格
 ;                           → eax = 实际占几格(不滚屏,编辑器重画一行用)
+;      14 蜂鸣器(嘀)       ebx = 频率 Hz,ecx = 持续毫秒(频率 <= 0 = 静音等这么久,
+;                           谱子里的休止符就靠它);音高准、时值是估的,见 speaker.asm
 ;
 ;  别的功能号会被忽略。程序直接 ret 就回到 shell,不用专门"返回"。
 ;
@@ -119,6 +121,8 @@ api_dispatch:
     je .get_arg
     cmp eax, 13
     je .puts_at
+    cmp eax, 14
+    je .beep
     ret
 .print_str:
     call term_print
@@ -204,6 +208,12 @@ api_dispatch:
 .puts_at:
     call term_puts_at
     ret
+; ---- 蜂鸣器:ebx = 频率 Hz,ecx = 持续毫秒 ----
+;  参数本来就是按 beep 要的顺序放的,直接转给驱动;ecx 是"输入"不是返回值,
+;  而且 speaker_beep 会把它原样还回来,所以不影响上面那条寄存器约定。
+.beep:
+    call speaker_beep
+    ret
 
 api_install:
     mov eax, API_VECTOR
@@ -225,6 +235,7 @@ api_usage:
     db ' 11 screen size    -> eax cols, ebx rows', 10
     db ' 12 program arg    -> esi (run MYPROG hello 里的 hello)', 10
     db ' 13 puts at        esi str, ebx row, ecx col, edx max cells', 10
+    db ' 14 beep           ebx freq hz, ecx ms (freq<=0: silent wait)', 10
     db 10, 'Build:  nasm -f bin prog.asm -o PROG.BIN   ([BITS 32] [ORG 0x120000])', 10
     db 'Install: tools/mkfat.py build/joyos-hd.img 6144 8 PROG.BIN=PROG.BIN', 10
     db 'Run:    run PROG          (more in progs/, docs/programs.md)', 10, 0

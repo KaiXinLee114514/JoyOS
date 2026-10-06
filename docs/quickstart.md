@@ -42,7 +42,7 @@ bin/joyos-run MYPROG.BIN                # 造镜像 + 开 QEMU
 
 | 头文件 | 里面有什么 |
 |---|---|
-| `<joyos.h>` | 屏幕/键盘/文件/参数的包装:`j_print` `j_color` `j_clear` `j_goto` `j_key` `j_event` `j_read_file` `j_write_file` `j_screensize` `j_arg` `j_puts_at`,调色板 `JOY_RED` 这类,方向键码 `JOY_KEY_UP` 这类 |
+| `<joyos.h>` | 屏幕/键盘/文件/参数的包装:`j_print` `j_color` `j_clear` `j_goto` `j_key` `j_event` `j_read_file` `j_write_file` `j_screensize` `j_arg` `j_puts_at` `j_beep`,调色板 `JOY_RED` 这类,方向键码 `JOY_KEY_UP` 这类 |
 | `<stdio.h>` | `printf` `puts` `putchar` `getchar`(迷你实现,支持 `%d %x %s %c %u`,**没有** `%f`) |
 | `<string.h>` `<stdlib.h>` `<ctype.h>` | `memcpy` `strlen` `strcmp` `malloc` `free` `atoi` … |
 | `<malloc.h>` | `malloc/free`(堆在 0x1A0000–0x1EFFFF) |
@@ -64,6 +64,8 @@ bin/joyos-run MYPROG.BIN                # 造镜像 + 开 QEMU
 | 编译报 `-m32` 相关错 | 没装 `gcc-multilib` |
 | 屏幕上中文是 `?` | 你按 Alt 看的是 ASCII 区;中文能显示(得字库在盘上,`make hd` 的镜像里有) |
 | 想跑扩展(比如 vi) | `make ext-img && make run-ext`,那是可选玩具,不在默认镜像里 |
+| `run PLAY` 一点声音都没有 | QEMU 7+ 要给 PC 蜂鸣器接音频后端:`-machine pcspk-audiodev=snd0 -audiodev pa,id=snd0`(见下面第 8 节);VirtualBox 不仿真 PC 扬声器,那边听不见 |
+| 音高对、节奏偏快/偏慢 | 音高是 PIT 硬件定的(准),**时值是忙等估的**:`kernel/speaker.asm` 里的 `SPKR_LOOPS_PER_MS`,换台机器/开 KVM 会差几倍,改那一个数就行 |
 
 ## 6. 别人怎么加"扩展"
 
@@ -86,3 +88,67 @@ bin/joyos-run MYPROG.BIN                # 造镜像 + 开 QEMU
 * Alt 期间的数字**不会**回显,松开就出字;
 * 前提是字库在盘上(`make hd` 的镜像有,4 万个字形)—— 不然只能显示内置的 ASCII
   子集,中文会变成方块。
+
+## 8. 让 JoyOS 唱歌:蜂鸣器 + 文本谱
+
+内核多了 **14 号功能 `beep`**(C 里就是 `j_beep(freq_hz, ms)`),`progs/PLAY.C` 拿它当播放器:
+谱子是 FAT 上的**纯文本**,不用重新编译任何东西,`run EDIT RICK.TXT` 改两行就能换一首。
+
+### 8.1 先让它响
+
+```bash
+make hd          # 或者只做镜像:make -s build/joyos-hd.img
+# ★ QEMU 7 以后,PC 蜂鸣器必须显式接一个音频后端,不然一点声音都没有:
+qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0 \
+    -drive file=build/joyos-hd.img,format=raw,if=ide,index=0 -boot c
+```
+
+窗口里敲:
+
+```
+> run PLAY SCALE.TXT        ← 上行音阶(先验音准)
+> run PLAY RICK.TXT         ← 一段短 riff
+> run PLAY --list RICK.TXT  ← 只解析、把谱子打到屏幕上(不出声,改谱时拿它对答案)
+```
+
+* `-audiodev pa,id=snd0` 是 PipeWire/PulseAudio 宿主上的写法(老 QEMU 的 `pa` 后端同名);
+  没声音先看 QEMU 有没有报 audio 的错,或者先试 `-audiodev none,id=snd0`(至少不报错);
+* **VirtualBox 不仿真 PC 扬声器**,在那边是听不见的(记在 [known-issues.md](known-issues.md));
+* 声音是宿主音频后端发出来的 —— 虚拟机里没有真喇叭,响的是你的声卡。
+
+### 8.2 谱子格式(一共就三样东西)
+
+```
+# 一个词的第一个字符是 # → 从这里到行尾都是注释
+tempo 140          # 每分钟多少拍(默认 120);四分音符 = 60000/tempo 毫秒
+A4  8              # 音名 + 时值:1 全音符 / 2 二分 / 4 四分 / 8 八分 / 16 十六分
+C#5 8              # 升号写 #(注意:音名里的 # 不是注释,只有"词首"的 # 才是)
+R   4              # R = 休止(不出声,只等这么久)
+```
+
+* **音名** = 字母 `C D E F G A B`(大小写都认)+ 可选 `#` + 八度数字(1~9)。
+  播放器里只有 C4~B4 一个八度的频率表,别的八度靠 ×2 / ÷2 搬(十二平均律里
+  高八度正好是两倍频),所以 `C4`~`B5` 当然行,再宽两个八度也能写;
+* 一行可以放多个音:`A4 4 C5 8 D5 16` 等价于三行(音名 时值 音名 时值 …);
+* `tempo` 可以中途改,写在哪儿就影响它后面的音;
+* 时值不只是 2 的幂:`3` 也能写(三连音那意思),但 `1/2/4/8/16` 最好读;
+* 写错了会告诉你**第几行**、错在哪(音名不认识、时值没写、超出蜂鸣器范围…)。
+
+### 8.3 音准对照表(写死在播放器里,十二平均律 A4 = 440 Hz)
+
+| 音 | C4 | C#4 | D4 | D#4 | E4 | F4 | F#4 | G4 | G#4 | A4 | A#4 | B4 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Hz | 262 | 277 | 294 | 311 | 330 | 349 | 370 | 392 | 415 | 440 | 466 | 494 |
+
+高一个八度就把表里的数 ×2(C5 = 524),低一个八度 ÷2(C3 = 131)。
+表是四舍五入到整数 Hz 的:蜂鸣器只有方波,差零点几赫兹没人听得出来。
+
+### 8.4 写自己的歌
+
+1. `run EDIT MYSONG.TXT` → 按上面的格式敲几行 → `Ctrl-S` 存盘、`Ctrl-Q` 退出
+   (或者在自己电脑上写好,用 `python3 tools/mkfat.py build/joyos-hd.img 6144 8 MYSONG.TXT=my.txt` 塞进镜像);
+2. `run PLAY --list MYSONG.TXT` 对着屏幕检查音名/频率(打错了这里就会报行号);
+3. `run PLAY MYSONG.TXT` 听。想换 tempo 就改 `tempo` 那一行,不用动别的。
+
+现成的两个谱都在 `progs/songs/`:`rick.txt`(16 个音的短 riff,**示意用途**,不是官方谱,
+自己改着玩)、`scale.txt`(上行音阶,验证音准)。
