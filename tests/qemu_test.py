@@ -390,6 +390,10 @@ def screen_text(img, glyphs: dict, rows: int = 40, cols: int = 100) -> list:
         if w != 8 or h != 16 or cp < 32 or cp > 126:
             continue
         table.setdefault(bytes(raw[:16]), chr(cp))
+    # ★ vi 的状态行、计算器的标题栏是**反白**的(白底黑字):黑底找亮点的方
+    #   式对它们完全认不出来(整行变成 '?')。所以再做一张"整格取反"的表,
+    #   正常认不出就翻过来试。
+    inv_table = {bytes(b ^ 0xFF for b in k): v for k, v in table.items()}
 
     def read_row(r, dy):
         """读第 r 行(按 dy 纵向偏移切 16 像素高的格子)→(认出多少格, 文本)"""
@@ -409,7 +413,7 @@ def screen_text(img, glyphs: dict, rows: int = 40, cols: int = 100) -> list:
             if not any(cell):
                 line.append(" ")
                 continue
-            ch = table.get(cell)
+            ch = table.get(cell) or inv_table.get(cell)
             if ch:
                 hit += 1
                 line.append(ch)
