@@ -64,6 +64,12 @@ start:
     int 0x10
 
     ; ---- 问 BIOS 支不支持 LBA ----
+    ; ★ 软盘(dl < 0x80)不许走这条路:BIOS 对软盘也常报"支持 EDD",但软盘的
+    ;   EDD 读**跨磁道就失败**(1.44 MB 每磁道 18 扇区,一次读 8 扇区很容易跨),
+    ;   结果是引导扇区读盘失败 → 停机,屏幕全黑(踩过)。
+    ;   软盘老老实实走 CHS:下面的 CHS 分支会自动把一次读的量卡在磁道边界上。
+    cmp byte [boot_drive], 0x80
+    jb .no_edd
     mov ah, 0x41
     mov bx, 0x55AA
     mov dl, [boot_drive]
