@@ -147,6 +147,30 @@ keyboard_irq:
     je .shift_on
     cmp bl, 0x1D                       ; 左 Ctrl
     je .ctrl_on
+    cmp bl, 0x38                       ; 左 Alt:开始"码位输入"
+    je .alt_on
+    ; ---- Alt 按着的时候:数字键是在敲码位,不进正常缓冲 ----
+    cmp byte [alt_down], 0
+    je .not_alt_digit
+    movzx ecx, bl
+    cmp ecx, 0x02                      ; 主键盘 1..9
+    jb .alt_cancel
+    cmp ecx, 0x0A                      ; 9
+    jbe .alt_digit
+    cmp ecx, 0x0B                      ; 0
+    je .alt_digit
+.alt_cancel:                           ; Alt 期间按了别的键 → 当取消,正常处理这个键
+    mov byte [alt_len], 0
+    jmp .not_alt_digit
+.alt_digit:
+    mov al, [sc_lo + ecx]              ; 数字字符('0'..'9')
+    movzx ecx, byte [alt_len]
+    cmp ecx, 6                         ; 最多 6 位(0x10FFFF 也就 7 位,留余量)
+    jae .done
+    mov [alt_buf + ecx], al
+    inc byte [alt_len]
+    jmp .done                          ; 数字被吃掉,不回显(松开 Alt 时直接出字)
+.not_alt_digit:
     cmp bl, 0x3A                       ; Caps Lock(先只当"按了没用")
     je .done
 
@@ -203,6 +227,8 @@ keyboard_irq:
     je .shift_off
     cmp bl, 0x1D
     je .ctrl_off
+    cmp bl, 0x38                       ; 松开 Alt → 把攒的数字变成一个字符
+    je .alt_off
     jmp .done
 
 .shift_on:
@@ -213,6 +239,93 @@ keyboard_irq:
     jmp .done
 .ctrl_on:
     mov byte [ctrl_down], 1
+    jmp .done
+
+; ---------------------------------------------------------------------------
+;  Alt 输入:按住 Alt 敲十进制码位,松开 Alt 就把它变成一个 UTF-8 字符塞进
+;  按键缓冲(编辑器/shell 收到的就是普通字节,和输入法无关)。
+;      例:Alt 按着打 20013,松开 → 屏幕上出现 "中"
+;  为什么用十进制:和 Windows 的 Alt+小键盘一样,而且不用记十六进制字母。
+; ---------------------------------------------------------------------------
+.alt_off:
+    mov byte [alt_down], 0
+    movzx ecx, byte [alt_len]
+    mov byte [alt_len], 0
+    test ecx, ecx
+    jz .done                           ; 没敲数字 = 只是按了一下 Alt,忽略
+    ; ---- 把十进制字符串转成码位(eax)----
+    xor eax, eax
+    xor edx, edx
+    mov esi, alt_buf
+.alt_parse:
+    movzx ebx, byte [esi]
+    inc esi
+    sub bl, '0'
+    imul eax, eax, 10
+    add eax, ebx
+    dec ecx
+    jnz .alt_parse
+    cmp eax, 0x10FFFF                  ; 超过 Unicode 上限就当没敲
+    ja .done
+    test eax, eax
+    jz .done
+    ; ---- 码位 → UTF-8(1~4 字节)----
+    cmp eax, 0x7F
+    ja .u2
+    call kbd_push
+    jmp .done
+.u2:
+    cmp eax, 0x7FF
+    ja .u3
+    mov ecx, eax
+    shr eax, 6
+    or al, 0xC0
+    call kbd_push
+    mov eax, ecx
+    and al, 0x3F
+    or al, 0x80
+    call kbd_push
+    jmp .done
+.u3:
+    cmp eax, 0xFFFF
+    ja .u4
+    mov ecx, eax
+    shr eax, 12
+    or al, 0xE0
+    call kbd_push
+    mov eax, ecx
+    shr eax, 6
+    and al, 0x3F
+    or al, 0x80
+    call kbd_push
+    mov eax, ecx
+    and al, 0x3F
+    or al, 0x80
+    call kbd_push
+    jmp .done
+.u4:
+    mov ecx, eax
+    shr eax, 18
+    or al, 0xF0
+    call kbd_push
+    mov eax, ecx
+    shr eax, 12
+    and al, 0x3F
+    or al, 0x80
+    call kbd_push
+    mov eax, ecx
+    shr eax, 6
+    and al, 0x3F
+    or al, 0x80
+    call kbd_push
+    mov eax, ecx
+    and al, 0x3F
+    or al, 0x80
+    call kbd_push
+    jmp .done
+.alt_on:
+    mov byte [alt_down], 1
+    mov byte [alt_len], 0              ; 重新开始数
     jmp .done
 .ctrl_off:
     mov byte [ctrl_down], 0
@@ -418,6 +531,11 @@ shift_down db 0
 ctrl_down  db 0
 ext_pending db 0
 ext_code   db 0
+; ---- Alt 码位输入(按住 Alt 敲十进制码,松开变成那个字符)----
+alt_down   db 0
+alt_len    db 0
+alt_buf    times 8 db 0
+
 kbd_buf    times KBD_BUF_SIZE db 0
 kbd_head   dd 0
 kbd_tail   dd 0

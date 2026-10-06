@@ -33,6 +33,12 @@
 
 ---
 
+## 键盘打中文:Alt 码位输入
+
+键盘只认 ASCII?**按住左 Alt,敲十进制码位,松开 Alt** —— 就打出那个字符:
+`Alt+20013` = 中、`Alt+22909` = 好、`Alt+128512` = 😀。
+原理见 [docs/quickstart.md](docs/quickstart.md) 第 7 节(内核里把码位编成 UTF-8 塞进按键缓冲)。
+
 ## 用纯 C 写程序(SDK)
 
 不想碰汇编?`bin/joyos-cc` 一条命令把你的 `.c` 编成 JoyOS 能跑的 `.BIN`,
