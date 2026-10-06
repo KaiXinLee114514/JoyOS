@@ -49,4 +49,4 @@ fi
 $CC $CFLAGS -c "$SRC" -o "$TMP/prog.o"
 $LD -m elf_i386 -T "$SDK/lib/joyos.ld" "$CRT0" "$TMP/prog.o" "$MINIC" -o "$OUT"
 echo "✅ $SRC → $OUT ($(stat -c %s "$OUT") 字节)"
-echo "   放进镜像:  make hd-img PROG=$OUT   (或在系统里: run $(basename "$OUT" .BIN))"
+echo "   直接开机跑:  bin/joyos-run $(basename "$OUT")"

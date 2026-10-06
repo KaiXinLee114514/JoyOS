@@ -33,6 +33,14 @@
 
 ---
 
+## 用纯 C 写程序(SDK)
+
+不想碰汇编?`bin/joyos-cc` 一条命令把你的 `.c` 编成 JoyOS 能跑的 `.BIN`,
+`bin/joyos-run` 直接造镜像开机看结果 —— 见 [docs/quickstart.md](docs/quickstart.md)。
+
+**vi 已经不是主线了**:STEVIE 移植搬去了 `extensions/vi/`,默认镜像里没有它,
+`make ext-img` / `make run-ext` 才构建和启动(规矩见 [extensions/README.md](extensions/README.md))。
+
 ## 1. 现在能干什么
 
 | 功能 | 说明 |
