@@ -55,17 +55,18 @@ C_LD        := ld -m elf_i386 -T lib/joyos.ld
 CRT0_OBJ    := $(BUILD)/crt0.o
 MINIC_OBJ   := $(BUILD)/minic.o
 ifeq ($(CC_OK),yes)
-C_PROGS     := CHELLO.BIN VI.BIN
+C_PROGS     := CHELLO.BIN
 else
 C_PROGS     :=
 endif
 
-# STEVIE(公版 vi 克隆,third_party/stevie)的构建:核心 + 我们写的 joyos.c 后端
-VI_OBJS     := $(addprefix $(BUILD)/vi/,$(notdir $(patsubst %.c,%.o,$(wildcard third_party/stevie/*.c))))
+# 扩展:vi(STEVIE 公版 vi 克隆,现在住在 extensions/vi)。
+# 默认构建**不含**它 —— 扩展是可选玩具,main 线不该被它拖住;`make ext` 才构建。
+VI_OBJS     := $(addprefix $(BUILD)/vi/,$(notdir $(patsubst %.c,%.o,$(wildcard extensions/vi/*.c))))
 
 PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS) $(C_PROGS))
 
-.PHONY: all run run-font hd hd32 subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check
+.PHONY: all run run-font hd hd32 ext ext-img run-ext subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check
 
 all: $(IMG) $(HDIMG)
 
@@ -113,9 +114,9 @@ $(MINIC_OBJ): lib/minic.c lib/minic.h include/joyos.h | $(BUILD)
 	$(CC) $(C_CFLAGS) -c $< -o $@
 
 # STEVIE 的每个源文件(注意这条要写在通用 progs/%.c 规则前面)
-$(BUILD)/vi/%.o: third_party/stevie/%.c lib/minic.h include/joyos.h | $(BUILD)
+$(BUILD)/vi/%.o: extensions/vi/%.c lib/minic.h include/joyos.h | $(BUILD)
 	@mkdir -p $(BUILD)/vi
-	$(CC) $(C_CFLAGS) -Ithird_party/stevie -c $< -o $@
+	$(CC) $(C_CFLAGS) -Iextensions/vi -c $< -o $@
 
 $(BUILD)/%.o: progs/%.c include/joyos.h lib/minic.h | $(BUILD)
 	$(CC) $(C_CFLAGS) -c $< -o $@
@@ -124,7 +125,7 @@ $(BUILD)/%.BIN: $(BUILD)/%.o $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
 	$(C_LD) $(CRT0_OBJ) $< $(MINIC_OBJ) -o $@ 2>/dev/null
 	@printf '   C 程序: %s %s 字节(链接地址 0x120000)\n' "$@" "$$(stat -c %s $@)"
 
-# vi:STEVIE 核心 + 迷你 libc + crt0
+# vi 扩展:STEVIE 核心 + 迷你 libc + crt0(只有 `make ext` 才会构建)
 $(BUILD)/VI.BIN: $(VI_OBJS) $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
 	$(C_LD) $(CRT0_OBJ) $(MINIC_OBJ) $(VI_OBJS) -o $@
 	@printf '   C 程序: %s %s 字节(STEVIE 移植,链接地址 0x120000)\n' "$@" "$$(stat -c %s $@)"
@@ -169,6 +170,27 @@ $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-jo
 
 hd32: $(HD32IMG)
 	$(QEMU) -drive file=$(HD32IMG),format=raw,if=ide,index=0 -boot c
+
+# ---------------------------------------------------------------------------
+#  扩展:不进默认构建/默认镜像的东西(现在就一个 vi)
+#    make ext        构建所有扩展 → $(BUILD)/ext/*.BIN
+#    make ext-img    做一张"默认镜像 + 扩展"的镜像
+#    make run-ext    构建 + 启动那张镜像
+#  加新扩展:把源码放 extensions/<名字>/,在 EXT_BINS 里加一行就行。
+# ---------------------------------------------------------------------------
+EXT_BINS    := $(BUILD)/VI.BIN
+EXT_IMG     := $(BUILD)/joyos-hd-ext.img
+
+ext: $(EXT_BINS)
+
+$(EXT_IMG): $(EXT_BINS) $(HDIMG)
+	cp $(HDIMG) $@
+	python3 tools/mkfat.py $@ 6144 8 $(foreach b,$(notdir $(EXT_BINS)),$(b)=$(BUILD)/$(b))
+
+ext-img: $(EXT_IMG)
+
+run-ext: $(EXT_IMG)
+	$(QEMU) -drive file=$(EXT_IMG),format=raw,if=ide,index=0 -boot c
 
 test-hd32: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
 	@echo "── FAT32 镜像:同一套内核,BPB 自动认 32 位 FAT ──"
