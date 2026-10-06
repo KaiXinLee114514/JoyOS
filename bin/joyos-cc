@@ -1,0 +1,52 @@
+#!/bin/sh
+# ============================================================================
+#  joyos-cc —— 一条命令把纯 C 编成 JoyOS 能跑的 .BIN
+#
+#  用法:
+#      bin/joyos-cc hello.c -o HELLO.BIN
+#      bin/joyos-cc hello.c                 # 不给 -o 就叫 HELLO.BIN(大写)
+#
+#  参数全都藏在里面了(-m32 -ffreestanding -nostdlib、crt0、迷你 libc、
+#  链接脚本 ORG 0x120000)—— 写程序的人**一行汇编都不用碰**。
+# ============================================================================
+set -e
+SDK=$(cd "$(dirname "$0")/.." && pwd)
+SRC=""
+OUT=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) OUT="$2"; shift 2 ;;
+        *)  SRC="$1"; shift ;;
+    esac
+done
+[ -n "$SRC" ] || { echo "用法: joyos-cc <源文件.c> [-o 输出.BIN]"; exit 2; }
+if [ -z "$OUT" ]; then
+    base=$(basename "$SRC" .c | tr 'a-z' 'A-Z')
+    OUT="$base.BIN"
+fi
+CC=${CC:-gcc}
+LD=${LD:-ld}
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+CFLAGS="-m32 -std=gnu89 -ffreestanding -fno-pic -fno-stack-protector \
+ -fno-asynchronous-unwind-tables -fno-builtin -nostdlib -O2 -Wall \
+ -I$SDK/include -I$SDK/lib"
+
+# crt0:优先用 SDK 里预编译好的(省得别人还得装 nasm);没有就现场编
+if [ -f "$SDK/lib/crt0.o" ]; then
+    CRT0="$SDK/lib/crt0.o"
+else
+    nasm -f elf32 -I"$SDK/lib" "$SDK/lib/crt0.asm" -o "$TMP/crt0.o"
+    CRT0="$TMP/crt0.o"
+fi
+# 迷你 libc:有预编译的就用,没有就现编
+if [ -f "$SDK/lib/minic.o" ]; then
+    MINIC="$SDK/lib/minic.o"
+else
+    $CC $CFLAGS -c "$SDK/lib/minic.c" -o "$TMP/minic.o"
+    MINIC="$TMP/minic.o"
+fi
+$CC $CFLAGS -c "$SRC" -o "$TMP/prog.o"
+$LD -m elf_i386 -T "$SDK/lib/joyos.ld" "$CRT0" "$TMP/prog.o" "$MINIC" -o "$OUT"
+echo "✅ $SRC → $OUT ($(stat -c %s "$OUT") 字节)"
+echo "   放进镜像:  make hd-img PROG=$OUT   (或在系统里: run $(basename "$OUT" .BIN))"
