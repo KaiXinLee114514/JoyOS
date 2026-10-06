@@ -173,14 +173,14 @@ hd32: $(HD32IMG)
 test-hd32: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
 	@echo "── FAT32 镜像:同一套内核,BPB 自动认 32 位 FAT ──"
 	$(MAKE) -s -B $(HD32IMG)
-	python3 tests/qemu_test.py $(HD32IMG) --hda --fontdisk --fat32 --font font/full-joyf.bin
+	python3 -u tests/qemu_test.py $(HD32IMG) --hda --fontdisk --fat32 --font font/full-joyf.bin
 
 # 先强制重建镜像:上一轮测试往盘里写的 TEST.TXT / NEWFILE.TXT 会留在这儿,
 # 第二次跑就变成"编辑器把内容追加了一遍",测试自己就不干净了
 test-hd-font: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
 	@echo "── 硬盘镜像:磁盘字库 + FAT16 读写 + 计算器 + 编辑器 ──"
 	$(MAKE) -s -B $(HDIMG)
-	python3 tests/qemu_test.py $(HDIMG) --hda --fontdisk --font font/full-joyf.bin
+	python3 -u tests/qemu_test.py $(HDIMG) --hda --fontdisk --font font/full-joyf.bin
 
 # 两个"开机就炸"的镜像:自测代码用 -D 开关才编进去,正常镜像里没有
 $(BUILD)/kernel-div.bin: $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
@@ -220,27 +220,27 @@ test: test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font t
 
 test-fda: $(IMG)
 	@echo "── 作为软盘启动(BIOS 无 LBA,应走 CHS 退回)──"
-	python3 tests/qemu_test.py $(IMG)
+	python3 -u tests/qemu_test.py $(IMG)
 
 test-hda: $(IMG)
 	@echo "── 作为硬盘启动(BIOS 有 LBA,应走 EDD)──"
-	python3 tests/qemu_test.py $(IMG) --hda
+	python3 -u tests/qemu_test.py $(IMG) --hda
 
 test-div: $(DIV_IMG)
 	@echo "── 故意除零(应打出 KERNEL PANIC + divide error)──"
-	python3 tests/qemu_test.py $(DIV_IMG) --fault
+	python3 -u tests/qemu_test.py $(DIV_IMG) --fault
 
 test-pgfault: $(IMG)
 	@echo "── shell 里敲 fault(应打出 page fault + CR2)──"
-	python3 tests/qemu_test.py $(IMG) --pgfault
+	python3 -u tests/qemu_test.py $(IMG) --pgfault
 
 test-kbd: $(IMG)
 	@echo "── 键盘:sendkey 打字,看屏幕回显 ──"
-	python3 tests/qemu_test.py $(IMG) --kbd
+	python3 -u tests/qemu_test.py $(IMG) --kbd
 
 test-shell: $(IMG)
 	@echo "── shell:敲 help/info/page/echo/clear,还有滚屏 ──"
-	python3 tests/qemu_test.py $(IMG) --shell
+	python3 -u tests/qemu_test.py $(IMG) --shell
 
 # 看反汇编: make lst 之后翻 build/*.lst
 lst: $(BOOT_SRCS) $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)
