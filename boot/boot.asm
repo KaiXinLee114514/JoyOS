@@ -107,11 +107,9 @@ start:
     ; ---- 再多扇区读盘:把 64 KiB 内核搬到 0x10000 ----
     mov dword [dap_lba], KERNEL_LBA
     mov word [dap_seg], KERNEL_SEG
-    mov cx, KERNEL_SECTS / CHUNK
+    mov word [io_count], CHUNK
 
 .read_loop:
-    push cx
-    mov word [io_count], CHUNK
     mov di, 3
 .retry:
     call read_chunk
@@ -121,6 +119,9 @@ start:
     int 0x13
     dec di
     jnz .retry
+    ; 读不动了:把失败的 LBA 留在 0x7B00(引导扇区里的空闲字节),方便事后排查
+    mov eax, [dap_lba]
+    mov [0x7B00], eax
     jmp halt16                          ; 读不动就只能停这儿了
 
 .ok:
@@ -129,8 +130,10 @@ start:
     shl eax, 9
     shr eax, 4
     add [dap_seg], ax
-    pop cx
-    loop .read_loop
+    ; 每次实际读了多少扇区由 BIOS 决定(会被夹在磁道/DMA 边界上),
+    ; 所以不能按固定次数循环 —— 得看 LBA 有没有走到头
+    cmp dword [dap_lba], KERNEL_LBA + KERNEL_SECTS
+    jb .read_loop
 
     ; ---- 交给内核镜像开头的实模式 stub ----
     mov dl, [boot_drive]
@@ -140,6 +143,27 @@ start:
 ;  底层读一次(两条路都在这里分)
 ; ---------------------------------------------------------------------------
 read_chunk:
+    ; ★ ISA DMA 的传输**不能跨 64 KiB 物理边界**(地址是"16 位偏移 + 页寄存器"),
+    ;   软盘/BIOS 遇到跨界的读会直接报错。把这次读的扇区数夹到"当前 64 KiB 页里还剩多少"。
+    ;   (踩过:引导扇区读内核读到 LBA 126,目的地址 0x1F200,再读 4 KiB 就跨 0x20000 →
+    ;    读盘失败 → 停机 → 全黑屏,而 QEMU 里硬盘的 EDD 路径不走 DMA 所以看不出来。)
+    push eax
+    push ebx
+    movzx eax, word [dap_seg]
+    shl eax, 4
+    and eax, 0xFFFF
+    mov ebx, 0x10000
+    sub ebx, eax
+    shr ebx, 9                          ; 还剩几个扇区
+    mov ax, [io_count]
+    cmp ax, bx
+    jbe .dma_ok
+    mov ax, bx
+.dma_ok:
+    mov [io_count], ax
+    pop ebx
+    pop eax
+
     cmp byte [use_lba], 0
     je .chs
 
@@ -187,6 +211,7 @@ read_chunk:
 halt16:
     hlt
     jmp halt16
+
 
 ; ---------------------------------------------------------------- 数据
 boot_drive db 0

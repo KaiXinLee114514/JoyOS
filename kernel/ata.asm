@@ -32,8 +32,8 @@ ATA_SR_ERR  equ 0x01                    ; 出错
 ATA_TIMEOUT equ 0x000FFFFF
 ; 一次命令最多读多少扇区:255 是硬件上限,但实测 QEMU 一次 255 扇区会有部分传输
 ; (ATA 规范允许驱动器只传一部分),于是后面的数据变成 0。16 扇区=8 KB 很稳。
-ATA_MAX_CHUNK equ 1
-; ★ 暂定 1:VirtualBox 的 PIO 实现下,一次命令读多个扇区会在某个扇区上等不到 DRQ,
+ATA_MAX_CHUNK equ 16
+; ★ VirtualBox 的 PIO 实现下,一次命令读多个扇区会在某个扇区上等不到 DRQ,
 ;   超时返回失败 —— 但**驱动器那边还挂着没传完的数据**,下一次读就把旧数据当新数据收,
 ;   目录项/簇链全读花,最后拿着野簇号去读盘、把内存写穿(实测:整个内核被写成一个
 ;   重复值 → 三连异常 → VirtualBox 报 Guru Meditation)。
