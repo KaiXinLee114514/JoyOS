@@ -160,7 +160,7 @@ R   4              # R = 休止(不出声,只等这么久)
 
 ### 8.4 写自己的歌
 
-1. `run EDIT MYSONG.TXT` → 按上面的格式敲几行 → `Ctrl-S` 存盘、`Ctrl-Q` 退出
+1. `run EDIT MYSONG.TXT` → 按上面的格式敲几行 → `Ctrl-S` 存盘、`Ctrl-Q` 退出(`Ctrl-F` 找词)
    (或者在自己电脑上写好,用 `python3 tools/mkfat.py build/joyos-hd.img 6144 8 MYSONG.TXT=my.txt` 塞进镜像);
 2. `run PLAY --list MYSONG.TXT` 对着屏幕检查音名/频率(打错了这里就会报行号);
 3. `run PLAY MYSONG.TXT` 听。想换 tempo 就改 `tempo` 那一行,不用动别的。

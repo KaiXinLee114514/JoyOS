@@ -63,9 +63,9 @@
 | **跑磁盘上的程序** | `run HELLO`:从磁盘读进 `0x120000` 然后执行(超 896 KB 直接拒绝),程序用 `int 0x30` 调用内核(见 [docs/programs.md](docs/programs.md)) |
 | **程序接口 15 个功能** | 打印/颜色/收键 + 清屏、读写文件、定位光标、读键事件(方向键)、屏幕尺寸、程序参数、定位画字、**蜂鸣器(14 号 `beep`)** —— 够写全屏程序,还够唱一首 |
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
-| **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-Q` 退出 |
+| **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,可见光标(亮绿 `_`)、方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-F` 查找(大小写不敏感、找完自动绕回开头,再按一次找下一个)、`Ctrl-Q` 退出 |
 | **组件:蜂鸣器 + 文本谱播放器(不含示例谱,自备谱文件)** | `run PLAY MYSONG.TXT`:PC 喇叭按 FAT 上的**纯文本谱**唱歌(注释、音名 `C4`~`B5` 带 `#`、时值、tempo 都能改);`run PLAY --list` 只解析不出声、把谱子打到屏幕上(可测);内核那头就是 14 号 `beep`,忙等标定见 [kernel/speaker.asm](kernel/speaker.asm)(见 [docs/quickstart.md](docs/quickstart.md)) |
-| **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q) |
+| **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q / Ctrl-F) |
 | **vi(STEVIE 移植)** | `run VI NOTES.TXT`:公有领域的 vi 克隆(STEVIE 3.68,vim 的前身),约 10 900 行 C 一行没改,只把平台层换成 `int 0x30` —— 插入模式、方向键、`:w` 存盘、`:q` 退出(移植记在 [docs/vi.md](docs/vi.md)) |
 | **C 语言支持** | 普通 `gcc -m32` 就能编(`make cc-check`);自带 crt0 + 迷你 libc(malloc/printf/stdio)+ `joyos.h`,程序照样是平铺二进制丢进 FAT16 跑(见 [docs/c-programs.md](docs/c-programs.md)) |
 | **图形模式** | 实模式 stub 里用 VBE 问出 **800×600×32 线性帧缓冲**模式,页表把帧缓冲映射进来,终端直接往显存画像素 |
@@ -108,7 +108,7 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 > cat MY.TXT            ← 再读回来
 > run                   ← 裸敲 run 会打印程序接口说明书
 > run CALC              ← 计算器:12.5*4=  7s(平方)  c(清零)  q(退出)
-> run EDIT              ← 编辑器:改 NOTES.TXT,方向键移动,Ctrl-S 存盘,Ctrl-Q 退出
+> run EDIT              ← 编辑器:改 NOTES.TXT,方向键移动,Ctrl-S 存盘,Ctrl-F 查找,Ctrl-Q 退出
 > run EDIT MY.TXT       ← 也可以指定文件(不存在就是新文件)
 > run VI NOTES.TXT      ← vi(STEVIE 移植):i 进插入模式,ESC 回普通模式,:w 存盘,:q 退出
 > run PLAY MYSONG.TXT   ← 蜂鸣器按文本谱唱歌(谱子自己写,音名/时值/tempo 都在 txt 里)

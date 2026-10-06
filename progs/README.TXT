@@ -45,7 +45,8 @@ JoyOS 磁盘说明(UTF-8 文本,用 cat README.TXT 看)
   HELLO.BIN  最简(英文 + 中文 + 一个汉字)
   COUNT.BIN  循环、十进制/十六进制、按码位连打汉字
   CALC.BIN   计算器:12.5*4= 的小数点、加减乘除、7s 平方、c 清零、q 退出
-  EDIT.BIN   全屏文本编辑器:run EDIT [文件名],方向键移动,Ctrl-S 存盘,Ctrl-Q 退出
+  EDIT.BIN   全屏文本编辑器:run EDIT [文件名],方向键移动,光标是个亮绿的 _,
+             Ctrl-S 存盘,Ctrl-F 查找(大小写不敏感、找不到会绕回开头),Ctrl-Q 退出
 
 更详细的一页(中文):docs/programs.md —— 接口约定、内存布局、
 以及『加载地址选在字库中间』那个坑。

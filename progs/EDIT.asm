@@ -9,6 +9,9 @@
 ;          方向键 / Home / End / Delete / PgUp / PgDn     移动光标
 ;          字母数字符号 / 回车 / 退格                       编辑
 ;          Ctrl-S                                          存盘
+;          Ctrl-F                                          查找(大小写不敏感,找不到绕回开头再找;
+;                                                          提示里预填上次的词,回车 = 找下一个,
+;                                                          退格删 / Ctrl-U 清空 / Esc 取消)
 ;          Ctrl-Q                                          退出(有改动会再问一次)
 ;
 ;  ── 文本怎么存 ──────────────────────────────────────────────────────────
@@ -39,6 +42,9 @@ TEXT_MAX    equ 8192                    ; 8 KB:够写几千字
 NAME        equ 0x17F000                ; 文件名(从程序参数抄过来)
 NAME_MAX    equ 24
 ROW_FIRST   equ 1                       ; 正文第一行
+CURSOR_CHAR equ '_'                     ; 可见光标画什么字符(想换成 '|' 就改这一行)
+CURSOR_ATTR equ 0x0A                    ; 光标颜色:亮绿(正文是 0x07 浅灰,一眼分得清)
+FIND_MAX    equ 32                      ; 查找关键词最长几个字节(超了截断)
 
 ; ---------------------------------------------------------------------------
 ;  start:读参数 → 读文件 → 循环(取键 → 处理 → 重画)
@@ -141,6 +147,8 @@ handle_key:
     je .backspace
     cmp al, 0x13                        ; Ctrl-S 存盘
     je .save
+    cmp al, 0x06                        ; Ctrl-F 查找
+    je .find
     cmp al, 0x11                        ; Ctrl-Q 退出(= 'q' - 'a' + 1 = 0x11,
     je .quit                            ;  ★ 不是 0x19 —— Ctrl-Q 和 Ctrl-Y 差一个字母)
     cmp al, 0x20
@@ -162,6 +170,21 @@ handle_key:
     jmp .dirty
 .save:
     call save_file
+    ret
+.find:
+    call find_prompt                    ; 状态行上问关键词(上次的预先填好)
+    cmp dword [find_go], 0
+    je .out                             ; 取消 / 空关键词
+    mov eax, [cursor]
+    cmp dword [find_same], 0
+    je .find_start
+    inc eax                             ; 还是上次那个词 → 从下一个字节接着找
+    cmp eax, [text_len]
+    jbe .find_start
+    xor eax, eax                        ; 光标已经在尾巴上 → 从头绕
+.find_start:
+    mov [find_start], eax
+    call do_find
     ret
 .quit:
     cmp dword [dirty], 0
@@ -521,6 +544,260 @@ ensure_visible:
     ret
 
 ; ---------------------------------------------------------------------------
+;  查找(Ctrl-F)——
+;  这里用"最笨但一看就懂"的做法:关键词就存在 find_buf 里(最长 FIND_MAX 字节),
+;  从头到尾一个字节一个字节地对,大小写不敏感(字母都先转成大写再比)。
+;  不做正则、不跳词、不关心边界 —— 教科书上的朴素匹配,8 KB 文本扫一遍不要 1 毫秒。
+; ---------------------------------------------------------------------------
+
+; ---------------------------------------------------------------------------
+;  find_prompt:状态行显示 'find: ',让用户敲关键词
+;              → [find_go]   = 1 有词可查 / 0 = 取消(空词或 Esc)
+;              → [find_same] = 1 和上次的关键词一样(那就找下一个)
+;  上次的词预先填在提示里:直接回车 = 沿用旧词找下一个。
+; ---------------------------------------------------------------------------
+find_prompt:
+    pushad
+    mov dword [find_go], 0
+    mov dword [find_same], 0
+    mov esi, find_buf                   ; 上次的词先摆出来
+    mov edi, find_edit
+    call str_copy
+    mov edi, find_edit
+    call str_len
+    mov [find_len], eax
+.loop:
+    call draw_findline
+    call api_key                        ; eax = 键事件
+    cmp eax, 0x100
+    jae .loop                           ; 方向键那一家在提示里不认
+    cmp al, 13                          ; 回车 = 就用这个词
+    je .enter
+    cmp al, 27                          ; ESC = 取消(第 10 号把 ESC 当 27 送上来)
+    je .done
+    cmp al, 8                           ; 退格
+    je .back
+    cmp al, 0x15                        ; Ctrl-U:把预填的旧词清掉重打
+    je .clear
+    cmp al, 0x20
+    jb .loop                            ; 别的控制键(Ctrl-S/Ctrl-Q…)不抢
+    cmp al, 0x7E
+    ja .loop
+    mov ecx, [find_len]
+    cmp ecx, FIND_MAX
+    jae .loop                           ; 到上限了:多敲的字符丢掉(截断)
+    mov edi, find_edit
+    add edi, ecx
+    mov [edi], al
+    inc edi
+    mov byte [edi], 0
+    inc dword [find_len]
+    jmp .loop
+.back:
+    cmp dword [find_len], 0
+    je .loop
+    dec dword [find_len]
+    mov ecx, [find_len]
+    mov byte [find_edit + ecx], 0
+    jmp .loop
+.clear:
+    mov dword [find_len], 0
+    mov byte [find_edit], 0
+    jmp .loop
+.enter:
+    cmp dword [find_len], 0
+    je .done                            ; 空关键词 = 取消
+    mov esi, find_edit
+    mov edi, find_buf
+    call str_eq                         ; 和上次是同一个词吗?
+    mov [find_same], eax
+    mov esi, find_edit                  ; 记住这次的关键词,下次好预填
+    mov edi, find_buf
+    call str_copy
+    mov dword [find_go], 1
+.done:
+    mov dword [status], 0               ; 提示行交回 redraw 去画
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  draw_findline:状态行画 'find: ' + 已输入的关键词 + 一个光标
+; ---------------------------------------------------------------------------
+draw_findline:
+    pushad
+    mov edi, row_buf
+    mov esi, msg_find
+    call str_copy
+    mov esi, find_edit
+    call str_copy
+    call fill_row
+    mov bl, 0x0B                        ; 亮青(和状态行的亮黄分开)
+    call api_color
+    mov esi, row_buf
+    mov ebx, [cr_rows]
+    dec ebx                             ; 最后一行
+    xor ecx, ecx
+    mov edx, [cr_width]
+    call api_put_at
+
+    mov edi, msg_find                   ; 关键词从第几格开始:'find: ' 的长度
+    call str_len
+    add eax, [find_len]
+    mov [find_col], eax
+    mov bl, CURSOR_ATTR
+    call api_color
+    mov esi, cursor_str
+    mov ebx, [cr_rows]
+    dec ebx
+    mov ecx, [find_col]
+    mov edx, [cr_width]
+    call api_put_at
+
+    mov ebx, [cr_rows]                  ; 硬件光标也跟过去
+    dec ebx
+    mov ecx, [find_col]
+    mov eax, 9
+    int 0x30
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  do_find:从 [find_start] 往后找 find_buf,找不到就**绕回开头再找一轮**
+;          (两轮扫完才算 not found)。找到 → 光标跳过去、那一行滚到可见区。
+; ---------------------------------------------------------------------------
+do_find:
+    pushad
+    mov eax, [find_start]
+    mov ecx, [text_len]
+    call find_scan
+    cmp eax, -1
+    jne .hit
+    xor eax, eax                        ; 绕回开头:再扫一遍 [0, find_start)
+    mov ecx, [find_start]
+    call find_scan
+    cmp eax, -1
+    jne .hit
+    mov dword [status], msg_notfound    ; 两轮都没有 → 人话提示
+    popad
+    ret
+.hit:
+    mov [cursor], eax
+    call ensure_visible                 ; 匹配那一行要在屏幕上(光标才看得见)
+    mov dword [status], 0
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  find_scan:eax = 起始偏移,ecx = 扫到哪儿为止(不含)→ eax = 匹配偏移,-1 = 没有
+;            大小写不敏感:字母两边都先转大写再比
+; ---------------------------------------------------------------------------
+find_scan:
+    push ebx
+    push ecx
+    push edx
+    push esi
+    push edi
+    mov edi, eax                        ; edi = 现在对到哪个字节
+    mov esi, ecx                        ; esi = 扫到哪儿为止
+.next_pos:
+    mov ecx, [find_len]
+    test ecx, ecx
+    jz .miss                            ; 空词:永远不匹配
+    lea eax, [edi + ecx]
+    cmp eax, esi
+    ja .miss                            ; 剩下的地方已经放不下整个词
+    xor edx, edx
+.cmp:
+    mov al, [TEXT + edi + edx]
+    mov bl, [find_buf + edx]
+    call up_al
+    call up_bl
+    cmp al, bl
+    jne .no
+    inc edx
+    cmp edx, ecx
+    jb .cmp
+    mov eax, edi                        ; 命中
+    jmp .out
+.no:
+    inc edi
+    jmp .next_pos
+.miss:
+    mov eax, -1
+.out:
+    pop edi
+    pop esi
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+
+; ---------------------------------------------------------------------------
+;  up_al / up_bl:al / bl 里的小写字母转成大写(查找不分大小写就靠这两下)
+; ---------------------------------------------------------------------------
+up_al:
+    cmp al, 'a'
+    jb .done
+    cmp al, 'z'
+    ja .done
+    sub al, 0x20
+.done:
+    ret
+
+up_bl:
+    cmp bl, 'a'
+    jb .done
+    cmp bl, 'z'
+    ja .done
+    sub bl, 0x20
+.done:
+    ret
+
+; ---------------------------------------------------------------------------
+;  str_len:edi = 串 → eax = 长度(不算结尾的 0)
+; ---------------------------------------------------------------------------
+str_len:
+    push edi
+    xor eax, eax
+.loop:
+    cmp byte [edi], 0
+    je .done
+    inc edi
+    inc eax
+    jmp .loop
+.done:
+    pop edi
+    ret
+
+; ---------------------------------------------------------------------------
+;  str_eq:esi / edi 两个 0 结尾的串 → eax = 1 一模一样 / 0 不一样
+; ---------------------------------------------------------------------------
+str_eq:
+    push ebx
+    push esi
+    push edi
+.loop:
+    mov al, [esi]
+    mov bl, [edi]
+    cmp al, bl
+    jne .diff
+    test al, al
+    jz .same
+    inc esi
+    inc edi
+    jmp .loop
+.diff:
+    xor eax, eax
+    jmp .out
+.same:
+    mov eax, 1
+.out:
+    pop edi
+    pop esi
+    pop ebx
+    ret
+
+; ---------------------------------------------------------------------------
 ;  redraw:整屏重画(标题 / 正文 / 状态行 / 光标)
 ; ---------------------------------------------------------------------------
 redraw:
@@ -537,6 +814,8 @@ redraw:
     mov ecx, 1
 .few:
     mov [cr_full], ecx
+    call ensure_visible                 ; ★ 光标那一行必须在正文区里(打字打到屏幕底、
+                                        ;   回车换行、PgDn 之后都靠它把视图滚上来)
 
     call api_clear
 
@@ -620,9 +899,34 @@ redraw:
     mov eax, [cursor]
     call cell_column                    ; → eax = 第几个字符格
     mov [cur_col], eax
+
+    ; ---- 可见光标:在光标那一格画一个亮色的 CURSOR_CHAR ----
+    ;  屏幕是"整屏重画"的:每敲一个键都 api_clear 再从头画一遍,所以光标离开旧
+    ;  位置时,那个格子会被正文本身(或空格)重新盖回去 —— 恢复是白送的,不用记账。
+    ;  但**越界不能画**:光标行不在正文区、或者那一格被长行挤到屏幕外就不画,
+    ;  不然会画到标题/状态行上,或者顶到最后一格触发滚屏,把界面弄花。
+    mov eax, [cur_row]
+    cmp eax, ROW_FIRST
+    jb .no_cursor
+    mov ecx, [cr_full]
+    add ecx, ROW_FIRST
+    cmp eax, ecx
+    jae .no_cursor
+    mov eax, [cur_col]
+    cmp eax, [cr_width]
+    jae .no_cursor                      ; 这一格在屏幕外(行太长),画了也是花屏
+    mov bl, CURSOR_ATTR
+    call api_color
+    mov esi, cursor_str
     mov ebx, [cur_row]
-    mov ecx, eax
-    mov eax, 9                          ; 第 9 号:定位光标
+    mov ecx, [cur_col]
+    mov edx, [cr_width]                 ; 第 13 号的"最多几格"是**绝对列号**
+    call api_put_at
+.no_cursor:
+
+    mov ebx, [cur_row]                  ; 硬件光标也摆过去(第 9 号:超界会自己夹住)
+    mov ecx, [cur_col]
+    mov eax, 9
     int 0x30
 
     popad
@@ -734,13 +1038,16 @@ api_put_at:
 def_name     db 'NOTES.TXT', 0
 msg_title    db 'JoyOS editor  ---  ', 0
 msg_mod      db '   [modified]', 0
-msg_help     db 'Ctrl-S save  Ctrl-Q quit  arrows/Home/End/Del move  PgUp/PgDn page', 0
+msg_help     db 'Ctrl-S save  Ctrl-Q quit  Ctrl-F find  arrows/Home/End/Del  PgUp/PgDn', 0
 msg_new      db 'new file (Ctrl-S saves it)', 0
 msg_saved    db 'saved to disk', 0
 msg_savefail db 'SAVE FAILED (disk full or no FAT16?)', 0
 msg_unsaved  db 'unsaved changes!  press Ctrl-Q again to quit anyway', 0
 msg_full     db 'file is full (8 KB max)', 0
+msg_find     db 'find: ', 0
+msg_notfound db 'not found (searched to the end, then wrapped around)', 0
 msg_bye      db 'editor closed.', 10, 0
+cursor_str   db CURSOR_CHAR, 0          ; 可见光标画的那个字符(13 号接口要 0 结尾串)
 
 text_len    dd 0
 cursor      dd 0
@@ -764,4 +1071,11 @@ mv_lstart   dd 0
 pg_steps    dd 0
 cv_line     dd 0
 cv_top      dd 0
+find_buf    times FIND_MAX + 1 db 0     ; 上次用的关键词(回车直接沿用 → 找下一个)
+find_edit   times FIND_MAX + 1 db 0     ; 正在提示行里敲的关键词
+find_len    dd 0
+find_col    dd 0
+find_go     dd 0                        ; 1 = 有词可查 / 0 = 取消
+find_same   dd 0                        ; 1 = 和上次同一个词(从光标下一个字节接着找)
+find_start  dd 0                        ; 这一轮从哪个偏移开始找
 row_buf     times 256 db 0
