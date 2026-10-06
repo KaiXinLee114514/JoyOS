@@ -44,14 +44,17 @@ void windinit(void)
 {
     int rows = 0;
     Columns = j_screensize(&rows);
-    Rows = rows;
+    Rows = rows - 1;
     if (Columns < 20)
         Columns = 80;
     if (Rows < 5)
         Rows = 25;
-    /* ★ 不要自己再减 1:stevie 的 Rows 就是"整屏行数",最后一行它自己拿来显示
-       状态/: 命令行(NT 版也是照 Console 的行数原样设的)。我第一版多减了一行,
-       于是屏幕底部空一行、状态行上移一格。 */
+    /* ★ 必须减 1,而且这是实测定下来的:stevie 的文本区只占 Rows 行(0..Rows-1),
+       状态行/`:` 命令行画在**第 Rows 行**(0 基),也就是它默认屏幕有 Rows+1 行。
+       不减 1 的话:内核报 37 行 → 文本区 0..35、状态行落在第 37 行(y=592),
+       最后半行被屏幕下沿切掉 —— 测试里表现为"vi 起来了"这一条读不到
+       `vitest.txt` 状态行,后面全线连崩(踩了两轮)。
+       减 1 之后:文本区 0..35 + 状态行在第 36 行(y=576),正好用满可用屏幕。 */
     j_clrscr();
     p_row = p_col = 0;
     linelen = 0;
