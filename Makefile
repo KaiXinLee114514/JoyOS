@@ -138,7 +138,10 @@ $(BUILD)/bigdir/.stamp: | $(BUILD)
 	@for i in $$(seq -w 0 39); do printf 'file %s\n' "$$i" > $(BUILD)/bigdir/f$$i.txt; done
 	@touch $@
 
-BIGDIR_SPECS = $$(for i in $$(seq -w 0 39); do printf 'BIGDIR/F%s.TXT=%s/bigdir/f%s.txt ' "$$i" "$(BUILD)" "$$i"; done)
+# 用 make 自己的 $(shell ...) 生成清单:以前写成 recipe 里的 shell 循环,
+# 一旦 `seq`/引号在某个环境里不合适,清单就变成空的 → mkfat 收到怪名字
+# (比如 BIGDIR/F.TXT),根目录里的文件全乱(踩过)。
+BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 39),BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
 
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
           $(PROG_BINS) progs/README.TXT progs/NOTES.TXT tools/mkimg.py tools/mkfat.py \
