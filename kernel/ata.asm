@@ -181,11 +181,11 @@ ata_read_sectors:
     ja .refuse
     cmp edi, 0x10000                    ; 目标必须在已映射的低端内存里
     jb .refuse
-    mov eax, ecx                        ; 而且"目标 + 长度"不能越过 4 MiB
+    mov eax, ecx                        ; 而且"目标 + 长度"不能越过恒等映射(IDENT_LIMIT)
     shl eax, 9
     add eax, edi
     jc .refuse
-    cmp eax, 0x400000
+    cmp eax, IDENT_LIMIT
     ja .refuse
     popad
     mov [ata_lba], eax

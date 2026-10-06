@@ -980,13 +980,288 @@ cmd_page:
     call term_set_color
     ret
 
+; ---------------------------------------------------------------------------
+;  pmem:看一眼物理页池(位图分配器,细节在 kernel/pmem.asm)
+; ---------------------------------------------------------------------------
+cmd_pmem:
+    mov esi, msg_pmem_head
+    call term_print
+    mov esi, msg_pmem_pool
+    call term_print
+    mov eax, PMEM_START
+    call term_print_hex
+    mov esi, msg_pmem_dash
+    call term_print
+    mov eax, PMEM_END
+    call term_print_hex
+    mov esi, msg_pmem_lparen
+    call term_print
+    mov eax, PMEM_MIB
+    call term_print_dec
+    mov esi, msg_pmem_mib
+    call term_print
+
+    mov esi, msg_pmem_total
+    call term_print
+    mov eax, PMEM_TOTAL
+    call term_print_dec
+    mov esi, msg_pmem_pages
+    call term_print
+
+    mov esi, msg_pmem_used
+    call term_print
+    mov eax, [pmem_alloced]
+    call term_print_dec
+    mov esi, msg_pmem_free_lbl
+    call term_print
+    mov eax, [pmem_free_pages]
+    call term_print_dec
+    mov esi, msg_pmem_pages_end
+    call term_print
+
+    mov esi, msg_pmem_hi
+    call term_print
+    mov eax, [pmem_hi]
+    call term_print_hex
+    mov esi, msg_pmem_bitmap
+    call term_print
+    mov eax, PMEM_BITMAP
+    call term_print_hex
+    mov al, 10
+    call term_putc
+    ret
+
+; ---------------------------------------------------------------------------
+;  pmap <va>:从页池拿一页映到虚拟地址 va —— 页表不存在就现建一张(动态建表)
+; ---------------------------------------------------------------------------
+cmd_pmap:
+    mov esi, [cmd_arg]
+    call parse_hex
+    jnc .ok
+    mov esi, msg_pmap_usage
+    jmp .err
+.ok:
+    test eax, 0xFFF                     ; 得 4 KiB 对齐
+    jnz .bad
+    mov [pmap_va], eax
+    call pmem_alloc
+    test eax, eax
+    jz .bad                              ; 页池空了
+    mov [pmap_pa], eax
+    mov ebx, eax
+    mov eax, [pmap_va]
+    mov ecx, PAGE_P | PAGE_RW
+    call paging_map
+    jc .bad
+    mov esi, msg_pmap_head
+    call term_print
+    mov eax, [pmap_va]
+    call term_print_hex
+    mov esi, msg_pmap_arrow
+    call term_print
+    mov eax, [pmap_pa]
+    call term_print_hex
+    mov esi, msg_pmap_ok
+    call term_print
+    ret
+.bad:
+    mov esi, msg_pmap_bad
+.err:
+    mov al, COL_ERR
+    call term_set_color
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    ret
+
+; ---------------------------------------------------------------------------
+;  pumap <va>:解掉映射,把那页还回页池(对 pmap 用)
+; ---------------------------------------------------------------------------
+cmd_pumap:
+    mov esi, [cmd_arg]
+    call parse_hex
+    jnc .ok
+    mov esi, msg_pumap_usage
+    jmp .err
+.ok:
+    call paging_unmap                   ; eax = 原来映到的物理地址(0 = 没映)
+    test eax, eax
+    jz .none
+    mov [pmap_pa], eax
+    call pmem_free                      ; 还给页池(不是池里的会被拒,无所谓)
+    mov esi, msg_pumap_head
+    call term_print
+    mov eax, [pmap_pa]
+    call term_print_hex
+    mov esi, msg_pumap_done
+    call term_print
+    ret
+.none:
+    mov esi, msg_pumap_none
+.err:
+    mov al, COL_ERR
+    call term_set_color
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    ret
+
+; ---------------------------------------------------------------------------
+;  ptest:动态建表 + 页池的自动测试(跑完自己收拾干净,不留泄漏)
+;    1. 记下页池空闲页数
+;    2. 分配两页,映到 16 MiB 处 —— 那里本来连页表都没有,必须现建
+;    3. 通过**虚拟地址**写,通过**物理地址**读:是同一个页才读得到
+;    4. 解映射 + 归还,空闲页数必须回到开头(顺带验证页表被回收)
+; ---------------------------------------------------------------------------
+PTEST_VA    equ 0x01000000             ; 16 MiB:恒等映射之外,页目录第 4 项本来是空的
+PTEST_MAGIC  equ 0x5A5A1234            ; 写进去的标记值
+PTEST_MAGIC2 equ 0xC3C3ABCD
+
+cmd_ptest:
+    mov esi, msg_ptest_head
+    call term_print
+    mov eax, [pmem_free_pages]
+    mov [ptest_free0], eax
+    mov esi, msg_ptest_free0
+    call term_print
+    call term_print_dec
+    mov al, 10
+    call term_putc
+
+    ; ---- 1) 从页池拿两页 ----
+    call pmem_alloc
+    test eax, eax
+    jz .fail_alloc
+    mov [ptest_pa0], eax
+    call pmem_alloc
+    test eax, eax
+    jz .fail_alloc
+    mov [ptest_pa1], eax
+    mov esi, msg_ptest_alloc
+    call term_print
+    mov eax, [ptest_pa0]
+    call term_print_hex
+    mov al, ' '
+    call term_putc
+    mov eax, [ptest_pa1]
+    call term_print_hex
+    mov al, 10
+    call term_putc
+
+    ; ---- 2) 映射到虚拟 16 MiB(页表要现建)----
+    mov eax, PTEST_VA
+    mov ebx, [ptest_pa0]
+    mov ecx, PAGE_P | PAGE_RW
+    call paging_map
+    jc .fail_map
+    mov eax, PTEST_VA + 4096
+    mov ebx, [ptest_pa1]
+    mov ecx, PAGE_P | PAGE_RW
+    call paging_map
+    jc .fail_map
+    mov esi, msg_ptest_map
+    call term_print
+
+    ; ---- 3) 虚拟地址写 → 物理地址读 ----
+    mov eax, PTEST_VA
+    mov ebx, PTEST_MAGIC
+    mov [eax], ebx
+    mov eax, [ptest_pa0]
+    mov eax, [eax]
+    cmp eax, PTEST_MAGIC
+    jne .fail_rw
+    mov eax, PTEST_VA + 4096
+    mov ebx, PTEST_MAGIC2
+    mov [eax], ebx
+    mov eax, [ptest_pa1]
+    mov eax, [eax]
+    cmp eax, PTEST_MAGIC2
+    jne .fail_rw
+    mov esi, msg_ptest_rw
+    call term_print
+
+    ; ---- 4) translate 对得上,而且虚拟 != 物理 ----
+    mov eax, PTEST_VA
+    call paging_translate
+    cmp eax, [ptest_pa0]
+    jne .fail_tr
+    mov esi, msg_ptest_xlate
+    call term_print
+    mov eax, PTEST_VA
+    call term_print_hex
+    mov esi, msg_ptest_arrow
+    call term_print
+    mov eax, [ptest_pa0]
+    call term_print_hex
+    mov esi, msg_ptest_ne
+    call term_print
+
+    ; ---- 5) 收拾干净 ----
+    mov eax, PTEST_VA
+    call paging_unmap
+    call pmem_free                       ; unmap 返回的旧物理地址就在 eax 里
+    mov eax, PTEST_VA + 4096
+    call paging_unmap
+    call pmem_free
+    mov esi, msg_ptest_free1
+    call term_print
+    mov eax, [pmem_free_pages]
+    call term_print_dec
+    mov esi, msg_ptest_slash
+    call term_print
+    mov eax, [ptest_free0]
+    call term_print_dec
+    mov esi, msg_ptest_pages
+    call term_print
+    mov eax, [pmem_free_pages]
+    cmp eax, [ptest_free0]
+    jne .fail_leak
+    mov eax, PTEST_VA                    ; 解映射之后不该再能翻译出来
+    call paging_translate
+    test eax, eax
+    jnz .fail_leak
+
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_ptest_pass
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    ret
+
+.fail_alloc:
+    mov esi, msg_ptest_fail_alloc
+    jmp .err
+.fail_map:
+    mov esi, msg_ptest_fail_map
+    jmp .err
+.fail_rw:
+    mov esi, msg_ptest_fail_rw
+    jmp .err
+.fail_tr:
+    mov esi, msg_ptest_fail_tr
+    jmp .err
+.fail_leak:
+    mov esi, msg_ptest_fail_leak
+.err:
+    push esi
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_ptest_fail_pre
+    call term_print
+    pop esi
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    ret
+
 ; 故意踩没映射的地址 → 14 号页错误,panic 屏里会打出 CR2
 cmd_fault:
     mov al, COL_ERR
     call term_set_color
     mov esi, msg_fault
     call term_print
-    mov eax, [0x00800000]                 ; 4 MiB 之外,页目录里没有这一项
+    mov eax, [0x02000000]                 ; 32 MiB:恒等映射(16 MiB)之外,页目录里没这一项
     ret                                   ; 走不到这里
 
 ; 重启:传统做法是让 8042 键盘控制器拉复位线(0xFE)
@@ -1084,6 +1359,10 @@ n_mkdir  db 'mkdir', 0
 n_rmdir  db 'rmdir', 0
 n_fault  db 'fault', 0
 n_reboot db 'reboot', 0
+n_pmem   db 'pmem', 0
+n_pmap   db 'pmap', 0
+n_pumap  db 'pumap', 0
+n_ptest  db 'ptest', 0
 
 cmd_table:
     dd n_help,   cmd_help
@@ -1101,6 +1380,10 @@ cmd_table:
     dd n_page,   cmd_page
     dd n_fault,  cmd_fault
     dd n_reboot, cmd_reboot
+    dd n_pmem,   cmd_pmem
+    dd n_pmap,   cmd_pmap
+    dd n_pumap,  cmd_pumap
+    dd n_ptest,  cmd_ptest
     dd 0, 0
 
 ; ---------------------------------------------------------------------------
@@ -1132,7 +1415,11 @@ msg_help db \
     'zh            print Chinese (bitmap glyphs from GNU Unifont)', 10, \
     'clear         clear the screen', 10, \
     'info          CPU / paging / IDT info', 10, \
-    'page <hex>    walk the page tables, e.g. page 0x400000', 10, \
+    'page <hex>    walk the page tables, e.g. page 0x1000000', 10, \
+    'pmem          physical page pool (free/used pages)', 10, \
+    'pmap <va>     map a fresh page from the pool at a virtual address', 10, \
+    'pumap <va>    unmap it and give the page back', 10, \
+    'ptest         self-test: dynamic page tables + page pool', 10, \
     'fault         touch an unmapped page on purpose', 10, \
     'reboot        restart the machine', 10, \
     'ls            list files on the FAT16 disk', 10, \
@@ -1157,7 +1444,8 @@ msg_info_idt3    db '  (256 vectors)', 10, 0
 msg_info_seg     db 'segments    : CS = ', 0
 msg_info_seg2    db '   DS = ', 0
 msg_info_seg3    db '  (flat: base 0, limit 4 GiB)', 10, 0
-msg_info_page    db 'paging      : identity 0..4 MiB; 0x00400000 -> 0x00100000', 10, \
+msg_info_page    db 'paging      : identity 0..16 MiB + VBE LFB high window', 10, \
+                    '              page pool 0x00400000-0x00FFFFFF (pmem / ptest)', 10, \
                     '              CR0.PG = 1 (bit31), CR4.PSE = 0 (4 KiB pages)', 10, 0
 
 msg_page_usage   db 'usage: page <hex address>, e.g. page 0x400000', 10, 0
@@ -1173,6 +1461,50 @@ msg_page_readonly db ' + read-only', 0
 msg_page_npde    db '  PDE not present -> would page-fault', 10, 0
 msg_page_npte    db '  PTE not present -> would page-fault', 10, 0
 msg_page_phys    db 'physical     = ', 0
+
+; ---- pmem / pmap / pumap / ptest ----
+msg_pmem_head    db '--- pmem: physical page pool ---', 10, 0
+msg_pmem_pool    db 'pool        : ', 0
+msg_pmem_dash    db ' - ', 0
+msg_pmem_lparen  db '  (', 0
+msg_pmem_mib     db ' MiB)', 10, 0
+msg_pmem_total   db 'pages       : ', 0
+msg_pmem_pages   db ' total (4 KiB each)', 10, 0
+msg_pmem_used    db 'used        : ', 0
+msg_pmem_free_lbl db '   free: ', 0
+msg_pmem_pages_end db ' pages', 10, 0
+msg_pmem_hi      db 'highest ever: ', 0
+msg_pmem_bitmap  db '   bitmap @ ', 0
+
+msg_pmap_usage   db 'usage: pmap <hex virtual address, 4 KiB aligned>, e.g. pmap 0x8000000', 10, 0
+msg_pmap_head    db 'mapped ', 0
+msg_pmap_arrow   db ' -> physical ', 0
+msg_pmap_ok      db '  (page table created on demand; check with: page <va>)', 10, 0
+msg_pmap_bad     db 'pmap failed (pool empty, or address not 4 KiB aligned)', 10, 0
+
+msg_pumap_usage  db 'usage: pumap <hex virtual address>', 10, 0
+msg_pumap_head   db 'unmapped, gave back ', 0
+msg_pumap_done   db '  (page returned to the pool; empty page table recycled)', 10, 0
+msg_pumap_none   db 'pumap: that address was not mapped', 10, 0
+
+msg_ptest_head   db '--- ptest: dynamic page tables + page pool ---', 10, 0
+msg_ptest_free0  db 'pool free before : ', 0
+msg_ptest_alloc  db 'got two pages    : ', 0
+msg_ptest_map    db 'mapped them at 0x1000000 (page table built on demand)', 10, 0
+msg_ptest_rw     db 'write via virtual, read via physical: OK', 10, 0
+msg_ptest_xlate  db 'translate ', 0
+msg_ptest_arrow  db ' -> ', 0
+msg_ptest_ne     db '   (virtual != physical)', 10, 0
+msg_ptest_free1  db 'pool free after  : ', 0
+msg_ptest_slash  db ' / ', 0
+msg_ptest_pages  db ' pages', 10, 0
+msg_ptest_pass   db 'ptest: all good (page table and both pages returned, no leak)', 10, 0
+msg_ptest_fail_pre      db 'ptest FAILED: ', 0
+msg_ptest_fail_alloc    db 'could not allocate pages from the pool', 10, 0
+msg_ptest_fail_map      db 'paging_map failed', 10, 0
+msg_ptest_fail_rw       db 'value written via virtual address not seen at the physical address', 10, 0
+msg_ptest_fail_tr       db 'paging_translate does not match the allocated page', 10, 0
+msg_ptest_fail_leak     db 'pool did not return to its starting count (leak) or unmap left it translatable', 10, 0
 
 msg_no_fat      db 'no FAT16 filesystem (boot from the hard-disk image)', 10, 0
 msg_no_file     db 'file not found', 10, 0
@@ -1205,6 +1537,11 @@ cmd_arg    dd 0
 page_va      dd 0
 page_pde     dd 0
 page_pde_idx dd 0
+pmap_va      dd 0                      ; pmap / pumap 的虚拟地址
+pmap_pa      dd 0                      ; 对应的物理页
+ptest_pa0    dd 0                      ; ptest 临时用的两页
+ptest_pa1    dd 0
+ptest_free0  dd 0                      ; ptest 开始前的空闲页数(用来对比有没有泄漏)
 page_pte_idx dd 0
 
 idtr_buf   times 6 db 0

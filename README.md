@@ -55,7 +55,7 @@
 | **多扇区读盘** | 一次读多个扇区把 64 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
 | 保护模式 | GDT(代码段 + 数据段,平坦 4 GiB)、`CR0.PE`、32 位段寄存器全部就位 |
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
-| 分页 | 页目录 + 页表,恒等映射前 4 MiB,另外把 `0x400000` 映到物理 `0x100000`,开 `CR0.PG` |
+| 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`pmap`),物理页池 = 位图分配器 12 MiB(`pmem` / `ptest`) |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift),64 字节环形缓冲 |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
@@ -208,20 +208,31 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 
 ```
 0x000000 - 0x0004FF   中断向量表 / BIOS 数据区
-0x001000              页目录                (paging.asm,PD_ADDR)
-0x002000              页表:前 4 MiB         (PT_LOW)
-0x003000              页表:0x400000→0x100000 (PT_DEMO)
-0x004000              页表:VBE 线性帧缓冲    (PT_LFB,按帧缓冲物理地址对齐)
+0x001000              页目录                  (paging.asm,PD_ADDR)
+0x002000              页表:恒等 0-4 MiB        (PT_LOW)
+0x003000              页表:恒等 4-8 MiB        (PT_ID1)
+0x004000              页表:VBE 线性帧缓冲      (PT_LFB,按帧缓冲物理地址对齐)
+0x005000              页表:恒等 8-12 MiB       (PT_ID2)
+0x006000              页池位图(384 字节)      (pmem.asm,PMEM_BITMAP)
+0x007000              页表:恒等 12-16 MiB      (PT_ID3)
 0x007C00              引导扇区(512 字节)
-0x010000 - 0x017FFF   内核本体(64 KiB = 128 扇区)
+0x010000 - 0x02FFFF   内核区(128 KiB = 256 扇区,实到约 48 KiB)
 0x090000              内核栈(往下长)
 0x0B8000              VGA 文本缓冲(80×25,每格 2 字节:字符 + 颜色)
 0x100000              FAT 扇区缓冲           (fat.asm 的 FAT_BUF)
 0x110000              cat 的文件缓冲         (shell.asm 的 FILE_BUF)
+0x120000 - 0x19FFFF   程序加载地址           (shell.asm 的 PROG_ADDR)
+0x1A0000 - 0x1EFFFF   堆(malloc,320 KB)      (include/joyos.h)
 0x1F0000              读磁盘描述块的临时缓冲 (fontdisk.asm)
 0x200000 - 0x3AF110   完整字库(从磁盘读进来,1.7 MB)
-0x120000              程序加载地址           (shell.asm 的 PROG_ADDR,最多 896 KB)
+0x400000 - 0xFFFFFF   物理页池(12 MiB)       (pmem.asm,3072 页 × 4 KiB,位图记账)
+0xFD000000            VBE 线性帧缓冲(单独挂一张页表,映射到它所在的 4 MiB 窗口)
 ```
+
+0~16 MiB 全是**恒等映射**(虚拟地址 = 物理地址),所以内核里指针就是物理地址,
+写代码不用想 MMU;16 MiB 以上没映射(踩了就吃 14 号页错误)。页池只从 0x400000
+往上发,因为低 4 MiB 被上表这些固定区域占满了 —— 与其一条条列"这些不许用",
+不如整段划出去。
 
 ## 4. 图形模式(VBE + 帧缓冲)
 
@@ -231,7 +242,7 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 ```
 实模式 stub    int 0x10 AX=4F00/4F01 列模式 → AX=4F02 设成 800×600×32(带线性帧缓冲)
                → 把 帧缓冲物理地址/宽/高/pitch/色深 写进 BOOTINFO(0x8000)
-分页           帧缓冲在 0xFD000000,不在原来 identity-map 的 0-4 MiB 里
+分页           帧缓冲在 0xFD000000,不在恒等映射的 0~16 MiB 里
                → 按 4 MiB 对齐算页目录项,挂一张页表把它映射进来(不映射第一次写像素就吃页错误)
 帧缓冲终端     kernel/fbterm.asm:码位 → 二分查找字库 → 逐行取位 → 往显存写 4 字节像素
                (颜色从文本模式的属性字节换算成 RGB;滚屏就是 memmove 整块显存往上 16 行)
@@ -349,6 +360,28 @@ run HELLO      → fat_stat 看大小 → fat_read_file 读进 0x120000 → call
 寄存器细节写在 [font/README.md](font/README.md) 里,但上限只有 63 个字,所以默认走图形模式,
 那个实验仍可用 `make run-font` 跑。)
 
+### 6.9 `not` 不改标志位(页池分配器跳过了一整段空闲页)
+
+位图分配器找空闲页,第一版我这么写:
+
+```asm
+    mov eax, [esi + edx*4]
+    not eax                ; 0 位(空闲页)取反变成 1
+    jnz .found             ; ✗ 这个 ZF 是**上一条**指令留下的
+```
+
+`not` 和 `mov` 一样**不影响标志位**。于是 `jnz` 判断的是别人剩下的标志,
+结果全看运气:页池明明 3072 页全空,`ptest` 第一次分配却拿到第 33 页(`0x00420000`),
+前面 32 页像"已被占用"一样被跳过。换成真正会设标志的指令就好:
+
+```asm
+    cmp eax, -1            ; 全 1 = 这个 dword 全占满
+    jne .found
+```
+
+坑点:`not` / `mov` / `lea` 不动标志位,后面别紧跟条件跳转。
+(`inc`/`dec` 只是**不改 CF**,ZF/SF 照改,所以 `inc edx` + `cmp` 那套是安全的。)
+
 ## 7. shell 命令
 
 ```
@@ -357,7 +390,11 @@ echo <text>   把文字打回来
 zh            显示中文(点阵字库,直接 blit 到帧缓冲)
 clear         清屏
 info          CR0/CR2/CR3/CR4、IDT 基址与限长、段寄存器、读盘方式
-page <hex>    逐级走页表,查虚拟地址映射到哪(例:page 0x400000)
+page <hex>    逐级走页表,查虚拟地址映射到哪(例:page 0x400000 / page 0x8000000)
+pmem          物理页池:总页数、已用、空闲、位图地址
+pmap <va>     从页池拿一页,动态建页表映到虚拟地址(玩分页最直接的一条)
+pumap <va>    解掉映射并把页还回池子(页表空了会一起回收)
+ptest         自测:分配→建表→虚拟地址写/物理地址读→解映射→归还,查有没有泄漏
 fault         故意踩没映射的地址,看页错误 panic 屏
 reboot        重启(通过 8042 键盘控制器)
 ls            列 FAT16 根目录(名字 + 字节数;硬盘模式才有)
@@ -366,17 +403,26 @@ write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
 run <file>    把程序读进 0x120000 跑(名字不带点会自动补 .BIN;裸敲 run 打印接口说明)
 ```
 
-`page` 的输出示例(这就是分页在干的事):
+`page` / `pmap` 的输出示例(这就是分页在干的事):
 
 ```
-> page 0x400000
+> page 0x400000          ← 恒等映射:虚拟地址 = 物理地址
 virtual      = 0x00400000
 PDE index    = 0x00000001 [1] = 0x00003003  present + writable
-PTE index    = 0x00000000 [0] = 0x00100003  present
-physical     = 0x00100000
-> page 0x800000
-virtual      = 0x00800000
-PDE index    = 0x00000002 [2] = 0x00000000  PDE not present -> would page-fault
+PTE index    = 0x00000000 [0] = 0x00400003  present
+physical     = 0x00400000
+> page 0x2000000         ← 16 MiB 以外没映射
+virtual      = 0x02000000
+PDE index    = 0x00000008 [8] = 0x00000000  PDE not present -> would page-fault
+> pmap 0x8000000         ← 现建一张页表,拿页池里的物理页映上去
+mapped 0x08000000 -> physical 0x00400000  (page table created on demand; check with: page <va>)
+> page 0x8000000
+virtual      = 0x08000000
+PDE index    = 0x00000020 [32] = 0x00401003  present + writable
+PTE index    = 0x00000000 [0] = 0x00400003  present
+physical     = 0x00400000
+> pumap 0x8000000
+unmapped, gave back 0x00400000  (page returned to the pool; empty page table recycled)
 ```
 
 键盘直接给字节、**没有输入法**,所以命令行本身只能打 ASCII;
@@ -451,15 +497,28 @@ make hd
 
 ### 8.6 改分页怎么映射
 
-`kernel/paging.asm` 顶部:
+`kernel/paging.asm` 顶部那几张页表是**开机用**的,恒等映射 0~16 MiB:
 
 ```asm
-DEMO_VADDR  equ 0x00400000      ; 虚拟地址
-DEMO_PADDR  equ 0x00100000      ; 映到哪块物理内存
+PD_ADDR     equ 0x1000     ; 页目录
+PT_LOW      equ 0x2000     ; 恒等 0-4 MiB
+PT_ID1      equ 0x3000     ; 恒等 4-8 MiB   (往上:PT_ID2 = 0x5000,PT_ID3 = 0x7000)
+PT_LFB      equ 0x4000     ; VBE 帧缓冲窗口
 ```
 
-改完在 shell 里 `page 0x400000` 就能看到 PDE/PTE 变了。想让它"映了但不许写",
-把那项的 `PAGE_RW` 去掉(变成只读),写它就会吃 13 号通用保护异常。
+想玩"虚拟地址 ≠ 物理地址"不用改代码,shell 里现成有:
+
+```
+> pmap 0x8000000     ← 从页池拿一页(4 MiB 以上),现建页表映到 128 MiB 那个虚拟地址
+> page 0x8000000     ← 看 PDE/PTE:虚拟 0x08000000、物理 0x00400000
+> pumap 0x8000000    ← 解映射并把页还回去
+> ptest              ← 一个命令跑完整个流程(分配→建表→读写→归还),还会检查页池有没有泄漏
+```
+
+要加一个"固定的自定义映射",在 `paging_init` 末尾照 LFB 那段写就行;
+`paging_map(va, pa, flags)` 和 `paging_unmap(va)` 是内核里的动态接口
+(`kernel/paging.asm`,页表不够会自己找 `pmem_alloc` 要页)。想让它"映了但不许写",
+把 flags 里的 `PAGE_RW` 去掉,写它就会吃 13 号通用保护异常。
 
 ### 8.7 让 panic 屏显示更多
 
@@ -515,6 +574,9 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 - **程序带参数**:`run PROG arg` 需要定义一个"启动信息块"(参数放哪、栈怎么给)
 - **保护程序搞坏内核**:现在程序和内核平起平坐,能直接改内核内存 ——
   真正的下一步是 ring 3 + TSS + 每进程页表,`int 0x80` 当系统调用
+- **每进程独立地址空间 / 按需分页**:地基已经有了(页池 `pmem` + 动态建表 `paging_map`),
+  缺的是"每个程序一套页目录 + 切 CR3"(程序的数据页就能随机分配物理页了),
+  再往后才是缺页时按需给页(要先把 14 号处理程序从"红屏"改成"填表 + `iret` 重试")
 - **PIT 定时器(IRQ0)**:有了它才能做 `uptime`、闪烁光标、`sleep`
 - **光标键 / Home / End**:要处理扫描码的 `0xE0` 前缀
 - **ELF 加载 / 内存分配**:现在程序是平铺二进制读到固定地址,`malloc` 也没有

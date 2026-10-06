@@ -28,6 +28,7 @@ kmain:                                  ; 32 位内核入口(stub 里 jmp 0x1000
 %include "speaker.asm"                   ; PC 蜂鸣器(beep,忙等标定见文件开头)
 %include "idt.asm"                       ; IDT / 异常 / panic 屏
 %include "paging.asm"                    ; 页目录 / 页表
+%include "pmem.asm"                      ; 物理页池(位图分配器,paging_map 会找它要页)
 %include "fbterm.asm"                   ; 帧缓冲终端(图形模式)
 %include "vgafont.asm"                   ; 自定义点阵字模(文本模式实验)
 %include "keyboard.asm"                  ; PS/2 键盘

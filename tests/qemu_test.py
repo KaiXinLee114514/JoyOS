@@ -991,12 +991,33 @@ def main() -> int:
             results.append(("info 有 CR0/CR3", has("CR0 = 0x") and has("CR3 = 0x"), "CR0/CR3"))
             results.append(("info 有 IDT 基址", has("base = 0x"), "IDT base"))
 
+            # ---- 分页:0~16 MiB 恒等映射(0x400000 不再是"演示映射"那种特例)----
             run("page 0x400000")
-            results.append(("page 查到映射", has("0x00100000") and has("present"),
-                            "0x00100000 + present"))
+            results.append(("page 恒等映射", has("0x00400000") and has("present"),
+                            "0x00400000 + present"))
 
-            run("page 0x800000")
-            results.append(("page 报未映射", has("PDE not present"), "PDE not present"))
+            # ---- 物理页池 + 动态建表:pmap 现建页表 → page 复查 → pumap 回收 ----
+            run("pmem")
+            results.append(("pmem 页池", has("3072 total") and has("12 MiB"),
+                            "3072 页 / 12 MiB"))
+
+            run("pmap 0x8000000")
+            results.append(("pmap 自动建页表", has("mapped") and has("0x08000000"),
+                            "mapped 0x08000000"))
+            run("page 0x8000000")
+            results.append(("pmap 后 page 查到映射", has("present") and has("0x0040"),
+                            "present + 物理页是页池发的"))
+
+            run("pumap 0x8000000")
+            results.append(("pumap 归还页", has("unmapped") and has("0x0040"),
+                            "unmapped + 归还的物理地址"))
+            run("page 0x8000000")
+            results.append(("pumap 后 page 报未映射", has("PDE not present"),
+                            "PDE not present"))
+
+            run("ptest")
+            results.append(("ptest 自测通过", has("ptest: all good") and has("3072 / 3072"),
+                            "translate 对得上 + 页池没泄漏"))
 
             run("badcommand")
             results.append(("未知命令有提示", has("unknown command"), "unknown command"))
@@ -1039,7 +1060,7 @@ def main() -> int:
                 ("停机提示",        "system halted"),
             ]
         elif pgfault_mode:
-            # shell 里敲 fault:访问 4 MiB 之外 → 14 号页错误,CR2 应记下那个地址
+            # shell 里敲 fault:访问恒等映射(16 MiB)之外 → 14 号页错误,CR2 应记下那个地址
             mon.type_text("fault")
             mon.sendkey("ret")
             time.sleep(1.0)
@@ -1047,7 +1068,7 @@ def main() -> int:
             checks = [
                 ("panic 标题",      "*** KERNEL PANIC ***"),
                 ("页错误 + 名字",   "EXCEPTION 0E: page fault"),
-                ("CR2 = 出错地址",  "CR2 (faulting address) = 0x00800000"),
+                ("CR2 = 出错地址",  "CR2 (faulting address) = 0x02000000"),
                 ("故障指令地址",    "EIP = 0x"),
                 ("停机提示",        "system halted"),
             ]

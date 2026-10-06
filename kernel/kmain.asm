@@ -26,14 +26,19 @@
 ;      0x1A0000-0x1EFFFF 堆(malloc,320 KB)※ 和程序加载区有重叠,见 include/joyos.h
 ;      0x1F0000          内核临时缓冲(读字库描述块)
 ;      0x200000-0x3AFFFF 完整字库(FONT_LOAD_ADDR,1.7 MB)
+;      0x400000-0xFFFFFF 物理页池(pmem.asm 的位图分配器:3072 页 × 4 KiB)
 ;      0xFD000000…       VBE 线性帧缓冲(页表按 4 MiB 窗口映射,真实基址看 fb_phys)
-;      以上全部 < 4 MiB 的东西都是恒等映射(虚拟地址 = 物理地址),所以指针就是物理地址。
+;      0~16 MiB 全是恒等映射(虚拟地址 = 物理地址),所以指针就是物理地址;
+;      页池只从 0x400000 往上发,低 4 MiB 被上面这些固定区域占满了。
 ; ============================================================================
 
 BOOTINFO   equ 0x8000
 VGA_MEM    equ 0xB8000
 VGA_COLS   equ 80
 VGA_ROWS   equ 25
+; 恒等映射的上限:0~16 MiB 线性 = 物理(paging.asm 建表),页池也顶在这儿(pmem.asm)。
+; 内核里凡是"地址能不能直接当指针用"的判断都以它为准(比如 ata.asm 的安全闸)。
+IDENT_LIMIT equ 0x1000000
 
 COL_NORMAL equ 0x07                    ; 浅灰
 COL_HEADER equ 0x0B                    ; 亮青
@@ -143,6 +148,16 @@ COL_ERR    equ 0x0C                    ; 亮红
     ; ---- 开分页 ----
     call paging_init
     mov esi, msg_paging
+    call term_print
+
+    ; ---- 物理页池(位图分配器):4 MiB 以上 12 MiB 交给它 ----
+    ; 必须在分页之后:paging_map 动态建表时要找它要页,而它自己只认恒等映射过的地址
+    call pmem_init
+    mov esi, msg_pmem
+    call term_print
+    mov eax, PMEM_TOTAL
+    call term_print_dec
+    mov esi, msg_pmem2
     call term_print
 
     ; (帧缓冲终端在开头已经初始化过 —— 它自带清屏,调两次会把前面的输出擦掉)
@@ -682,7 +697,9 @@ msg_disk    db 'boot disk: ', 0
 msg_disk_lba db 'LBA (EDD multi-sector read)', 10, 0
 msg_disk_chs db 'CHS fallback (BIOS has no LBA)', 10, 0
 msg_idt     db 'IDT: 256 vectors installed (errors 0-31 have handlers)', 10, 0
-msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-4 MiB (+ 0x400000 -> 0x100000)', 10, 0
+msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-16 MiB (+ VBE LFB high window)', 10, 0
+msg_pmem    db 'pmem: page pool 0x00400000-0x00FFFFFF, ', 0
+msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: pmem / ptest)', 10, 0
 msg_kbd     db 'keyboard: PIC remapped to 0x20, IRQ1 enabled', 10, 0
 msg_font    db 'font: ', 0
 msg_font_disk    db 'loaded from disk (ATA), ', 0
