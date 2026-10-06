@@ -64,7 +64,7 @@
 | **程序接口 15 个功能** | 打印/颜色/收键 + 清屏、读写文件、定位光标、读键事件(方向键)、屏幕尺寸、程序参数、定位画字、**蜂鸣器(14 号 `beep`)** —— 够写全屏程序,还够唱一首 |
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
 | **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-Q` 退出 |
-| **组件:蜂鸣器 + 文本谱播放** | `run PLAY RICK.TXT`:PC 喇叭按 FAT 上的**纯文本谱**唱歌(注释、音名 `C4`~`B5` 带 `#`、时值、tempo 都能改);`run PLAY --list` 只解析不出声、把谱子打到屏幕上(可测);内核那头就是 14 号 `beep`,忙等标定见 [kernel/speaker.asm](kernel/speaker.asm)(见 [docs/quickstart.md](docs/quickstart.md)) |
+| **组件:蜂鸣器 + 文本谱播放器(不含示例谱,自备谱文件)** | `run PLAY MYSONG.TXT`:PC 喇叭按 FAT 上的**纯文本谱**唱歌(注释、音名 `C4`~`B5` 带 `#`、时值、tempo 都能改);`run PLAY --list` 只解析不出声、把谱子打到屏幕上(可测);内核那头就是 14 号 `beep`,忙等标定见 [kernel/speaker.asm](kernel/speaker.asm)(见 [docs/quickstart.md](docs/quickstart.md)) |
 | **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q) |
 | **vi(STEVIE 移植)** | `run VI NOTES.TXT`:公有领域的 vi 克隆(STEVIE 3.68,vim 的前身),约 10 900 行 C 一行没改,只把平台层换成 `int 0x30` —— 插入模式、方向键、`:w` 存盘、`:q` 退出(移植记在 [docs/vi.md](docs/vi.md)) |
 | **C 语言支持** | 普通 `gcc -m32` 就能编(`make cc-check`);自带 crt0 + 迷你 libc(malloc/printf/stdio)+ `joyos.h`,程序照样是平铺二进制丢进 FAT16 跑(见 [docs/c-programs.md](docs/c-programs.md)) |
@@ -111,9 +111,8 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 > run EDIT              ← 编辑器:改 NOTES.TXT,方向键移动,Ctrl-S 存盘,Ctrl-Q 退出
 > run EDIT MY.TXT       ← 也可以指定文件(不存在就是新文件)
 > run VI NOTES.TXT      ← vi(STEVIE 移植):i 进插入模式,ESC 回普通模式,:w 存盘,:q 退出
-> run PLAY RICK.TXT     ← 蜂鸣器按文本谱唱歌(音名/时值/tempo 都在 txt 里,自己改谱)
-> run PLAY --list RICK.TXT  ← 只解析:把谱子打到屏幕上(不出声,改谱时拿它对答案)
-> run PLAY SCALE.TXT    ← 上行音阶,验证音准
+> run PLAY MYSONG.TXT   ← 蜂鸣器按文本谱唱歌(谱子自己写,音名/时值/tempo 都在 txt 里)
+> run PLAY --list MYSONG.TXT ← 只解析:把谱子打到屏幕上(不出声,改谱时拿它对答案)
 > ls DOCS               ← 列子目录(目录显示成 <DIR>)
 > cat DOCS/NOTE.TXT     ← 路径里带目录也行(斜杠/反斜杠都认)
 > cd DOCS               ← 进目录,提示符变成 DOCS>
@@ -125,11 +124,13 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 
 QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` 切到 monitor 控制台(`Ctrl+Alt+1` 切回来)。
 
-**想听 `run PLAY RICK.TXT` 出声**,`make hd` 那条 QEMU 命令不够:QEMU 7 以后 PC 蜂鸣器要显式接一个音频后端才响,
-用这一条(要 PC 扬声器仿真 + 一个 audiodev,PA/pipewire 宿主用 `pa`):
+**想听 `run PLAY` 出声**,`make hd` 那条 QEMU 命令不够:QEMU 7 以后 PC 蜂鸣器要显式接一个音频后端才响,
+用这一条(要 PC 扬声器仿真 + 一个 audiodev,PA/pipewire 宿主用 `pa`;方波**没有音量控制**,想小声就在宿主
+混音器里把这条流单独调小 —— 下面命令里的 `out.stream-name=JoyOS` 就是给它起个认得出的名字。
+注意 `-audiodev` 里**没有** `out.volume=` 这种参数,QEMU 会拒绝启动):
 
 ```bash
-qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0 \
+qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0,out.stream-name=JoyOS \
     -drive file=build/joyos-hd.img,format=raw,if=ide,index=0 -boot c
 ```
 
@@ -183,9 +184,7 @@ progs/CALC.asm         组件:计算器(定点小数,自己算 ±2147.483647)
 progs/EDIT.asm         组件:全屏文本编辑器(方向键 + 存盘 + 打开)
 progs/NOTES.TXT        放进镜像的示例文本(编辑器默认打开它)
 progs/CHELLO.c         C 写的示例程序(printf / malloc / 参数 / 读文件)
-progs/PLAY.C           组件:文本谱播放器(读 FAT 上的谱子 → int 0x30 的 beep;--list 只解析)
-progs/songs/rick.txt   示例谱(示意用途,音名/时值都是手写的,自己改着玩)
-progs/songs/scale.txt  上行音阶谱,验证音准用
+progs/PLAY.C           组件:文本谱播放器(读 FAT 上的谱子 → int 0x30 的 beep;--list 只解析;不含示例谱)
 include/joyos.h        C 程序用的头:15 个 int 0x30 包装 + 颜色/键值常量
 lib/minic.c            迷你 libc(约 600 行:字符串/内存/printf/一点点 stdio)
 lib/crt0.asm           C 程序入口:清 BSS → main() → ret 回 shell

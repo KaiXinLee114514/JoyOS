@@ -31,21 +31,30 @@
 **临时规避**
 `cat` 大文件的时候分几次看,或者用编辑器打开。
 
-## 2. 蜂鸣器:VBox 里听不见,时值也是估的(已知,这次不修)
+## 2. 蜂鸣器:VBox 里听不见,时值也是估的,音量还没法调(已知,这次不修)
 
 **现状**
 
-1. **VirtualBox 不仿真 PC 扬声器。** `run PLAY RICK.TXT` 在 VBox 里跑得完全正常
+1. **VirtualBox 不仿真 PC 扬声器。** `run PLAY MYSONG.TXT` 在 VBox 里跑得完全正常
    (谱子照样解析、屏幕照样滚),就是**没有声音** —— VBox 从来没做 PIT 通道 2 + `0x61`
    那套 PC 喇叭仿真(它只认 AC'97/HDA 声卡)。QEMU 有,但 **7.0 以后默认不接音频后端**,
    得显式写 `-machine pcspk-audiodev=snd0 -audiodev pa,id=snd0` 才响
    (完整命令在 [quickstart.md 第 8 节](quickstart.md))。测试里的 QEMU 是
-   `-display none` 且不带音频后端,所以**自动化测试只能断言"谱子解析对了",
-   断言不了声音**。
+   `-display none` 且不带音频后端,所以**自动化测试断言不了声音**
+   (原来那条"`--list` 解析出音名"的断言随示例谱一起撤了)。
 2. **时值是估算的。** 这次没加 IRQ0/时钟:`beep` 的"毫秒"是数指令圈数忙等出来的
    (`kernel/speaker.asm` 的 `SPKR_LOOPS_PER_MS`)。本机 QEMU(TCG)实测,标称 300 ms
    实际等了 289~318 ms(±5%,宿主负载一变就抖),换台机器/开 KVM/跑真机会差好几倍。
    音高**不受影响**:那是 PIT 硬件按 1193182 Hz 分频算出来的,宿主是谁都一样。
+3. **PC 蜂鸣器是方波,而且没有音量控制。** 硬件只有"响 / 不响"(`0x61` 那两位),
+   全音量下很刺耳,所以镜像里**默认不内置曲谱**(播放器还在,谱自己写)。想小声点只能在
+   宿主侧动手:调低系统音量,或者在宿主混音器(`wpctl` / `pavucontrol`)里把 QEMU 那条流
+   单独调小(`-audiodev pa,id=snd0,out.stream-name=JoyOS` 起个认得出的名字)。
+   ★ **QEMU 侧没有音量参数**:`-audiodev pa,id=snd0,out.volume=0.2` 这种写法是错的,
+   QEMU 直接拒绝启动(`Parameter 'out.volume' is unexpected`,本机 10.0.11 实测;上游
+   QAPI 的 `AudiodevPerDirectionOptions` 只有 frequency / channels / voices / format /
+   buffer-length / mixing-engine)。完全不想出声就换后端:`-audiodev wav,id=snd0,path=/tmp/joy.wav`
+   (只录不响)或 `-audiodev none,id=snd0`。
 
 **要真做准(下一步)**
 

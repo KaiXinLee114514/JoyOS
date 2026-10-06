@@ -11,11 +11,12 @@ JoyOS 磁盘说明(UTF-8 文本,用 cat README.TXT 看)
      (源码放 progs/ 里、加进 Makefile 的 PROGS 也行,那样 make hd 会自动带上)
 
 蜂鸣器(主板小喇叭)+ 文本谱:
-  run PLAY RICK.TXT         让 JoyOS 按 FAT 上的文本谱唱歌(谱子自己改)
-  run PLAY --list RICK.TXT  只解析、把谱子打到屏幕上(不出声,改谱时对答案用)
-  谱子是纯文本:progs/songs/rick.txt(短 riff)、scale.txt(音阶);格式见 docs/quickstart.md
+  run PLAY MYSONG.TXT       让 JoyOS 按 FAT 上的文本谱唱歌(镜像里不带示例谱,自己写)
+  run PLAY --list MYSONG.TXT  只解析、把谱子打到屏幕上(不出声,改谱时对答案用)
+  谱子是纯文本:自己 run EDIT MYSONG.TXT 写几行,格式见 docs/quickstart.md(Ctrl-S 存盘/Ctrl-Q 退出)
+  方波没有音量控制(全音量很吵):在宿主混音器/系统音量里把它调小;-audiodev 没有 out.volume 参数
   ★ QEMU 7 以后不给 PC 喇叭接音频后端就是静音,要听声音得这么起:
-      qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0 \
+      qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0,out.stream-name=JoyOS \
           -drive file=build/joyos-hd.img,format=raw,if=ide,index=0 -boot c
   程序接口是 14 号 beep(ebx=频率 Hz,ecx=毫秒):音高准,时值是忙等估的
 

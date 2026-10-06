@@ -5,9 +5,12 @@
  *  改一个音名就换一个音,不用重新编译内核、也不用重新编译这个程序。
  *
  *  用法(shell 里,run 会把整行剩下的部分当参数塞给程序):
- *      run PLAY RICK.TXT            按谱播放
- *      run PLAY --list RICK.TXT     只解析、把谱子打到屏幕上(不出声,方便核对)
+ *      run PLAY MYSONG.TXT          按谱播放
+ *      run PLAY --list MYSONG.TXT   只解析、把谱子打到屏幕上(不出声,方便核对)
  *      run PLAY                     打用法
+ *
+ *  ★ 镜像里**不带示例谱**:自己 `run EDIT MYSONG.TXT` 写几行(格式见下),
+ *    或者在自己电脑上写好再塞进镜像。
  *
  *  ── 谱子格式(纯文本,人人可改)────────────────────────────────────────
  *      # 一个词的第一个字符是 # → 从这里到行尾都是注释
@@ -301,7 +304,8 @@ static void usage(void)
     printf("    A4  4           音名 + 时值(1 全 2 半 4 四分 8 八分 16 十六分)\n");
     printf("    C#5 8           升号写 #;八度 1~9 都行\n");
     printf("    R   4           R = 休止\n");
-    printf("现成两首:run PLAY RICK.TXT  /  run PLAY SCALE.TXT\n");
+    j_color(JOY_GREY);
+    printf("镜像里不带示例谱:自己写一个,比如 run EDIT MYSONG.TXT\n");
 }
 
 int main(void)

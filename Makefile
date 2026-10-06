@@ -150,14 +150,13 @@ $(BUILD)/bigdir/.stamp: | $(BUILD)
 BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 39),BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
 
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/songs/rick.txt \
-          progs/songs/scale.txt tools/mkimg.py tools/mkfat.py \
+          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT \
+          tools/mkimg.py tools/mkfat.py \
           $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
-	    RICK.TXT=progs/songs/rick.txt SCALE.TXT=progs/songs/scale.txt \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
@@ -170,15 +169,14 @@ hd: $(HDIMG)
 HD32IMG := $(BUILD)/joyos-hd32.img
 
 $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/songs/rick.txt \
-            progs/songs/scale.txt tools/mkimg.py tools/mkfat.py \
+            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT \
+            tools/mkimg.py tools/mkfat.py \
             $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \
 	    font/full-joyf.bin --disk-mb 96
 	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
-	    RICK.TXT=progs/songs/rick.txt SCALE.TXT=progs/songs/scale.txt \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd32: $(HD32IMG)

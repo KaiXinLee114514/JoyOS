@@ -92,25 +92,40 @@ bin/joyos-run MYPROG.BIN                # 造镜像 + 开 QEMU
 ## 8. 让 JoyOS 唱歌:蜂鸣器 + 文本谱
 
 内核多了 **14 号功能 `beep`**(C 里就是 `j_beep(freq_hz, ms)`),`progs/PLAY.C` 拿它当播放器:
-谱子是 FAT 上的**纯文本**,不用重新编译任何东西,`run EDIT RICK.TXT` 改两行就能换一首。
+谱子是 FAT 上的**纯文本**,不用重新编译任何东西,`run EDIT MYSONG.TXT` 改两行就能换一首。
+
+> **播放器在,但默认不带示例谱 —— 谱要自己写。**
+> 镜像根目录里没有现成的曲谱:照下面 8.2 的格式敲几行就有歌听。
+> (PC 喇叭是方波、没有音量控制,全音量太吵,示例谱就撤了 —— 自己写能挑个安静点的曲子。)
 
 ### 8.1 先让它响
 
 ```bash
 make hd          # 或者只做镜像:make -s build/joyos-hd.img
 # ★ QEMU 7 以后,PC 蜂鸣器必须显式接一个音频后端,不然一点声音都没有:
-qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0 \
+# ★ 方波没有音量控制、全音量很刺耳 —— 用 out.stream-name 给这条流起个名,
+#   好在宿主混音器里认出它、单独调小(见下面第一条),先调小再听:
+qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0,out.stream-name=JoyOS \
     -drive file=build/joyos-hd.img,format=raw,if=ide,index=0 -boot c
 ```
 
-窗口里敲:
+窗口里敲(谱子得自己写,格式见 8.2):
 
 ```
-> run PLAY SCALE.TXT        ← 上行音阶(先验音准)
-> run PLAY RICK.TXT         ← 一段短 riff
-> run PLAY --list RICK.TXT  ← 只解析、把谱子打到屏幕上(不出声,改谱时拿它对答案)
+> run PLAY MYSONG.TXT        ← 按谱播放
+> run PLAY --list MYSONG.TXT ← 只解析、把谱子打到屏幕上(不出声,改谱时拿它对答案)
 ```
 
+* **怎么让蜂鸣器别吵**:PC 喇叭是方波,**硬件没有音量控制**(`0x61` 那两位只有
+  "响 / 不响"),所以音量只能在宿主侧调 —— 直接调低系统音量,或者在宿主混音器
+  (`wpctl` / `pavucontrol`)里把 QEMU 那条流单独调小(上面用 `out.stream-name=JoyOS`
+  给它起了个认得出的名字,不然一堆 `qemu-system-i386` 分不清谁是谁);
+* ★ **`-audiodev` 里没有 `out.volume=` 这个参数**:网上能搜到这种写法,但 QEMU 会直接
+  拒绝启动(`Parameter 'out.volume' is unexpected`,本机 QEMU 10.0.11 实测;上游 QAPI
+  的 `AudiodevPerDirectionOptions` 里只有 frequency / channels / voices / format /
+  buffer-length / mixing-engine)。别拿它当音量旋钮 —— 宿主混音器才是;
+* **一点声都不想出**:把后端换成 `-audiodev wav,id=snd0,path=/tmp/joy.wav`(只录不响,
+  还能拿录音核对音准),或者 `-audiodev none,id=snd0`(什么都不接);
 * `-audiodev pa,id=snd0` 是 PipeWire/PulseAudio 宿主上的写法(老 QEMU 的 `pa` 后端同名);
   没声音先看 QEMU 有没有报 audio 的错,或者先试 `-audiodev none,id=snd0`(至少不报错);
 * **VirtualBox 不仿真 PC 扬声器**,在那边是听不见的(记在 [known-issues.md](known-issues.md));
@@ -150,5 +165,5 @@ R   4              # R = 休止(不出声,只等这么久)
 2. `run PLAY --list MYSONG.TXT` 对着屏幕检查音名/频率(打错了这里就会报行号);
 3. `run PLAY MYSONG.TXT` 听。想换 tempo 就改 `tempo` 那一行,不用动别的。
 
-现成的两个谱都在 `progs/songs/`:`rick.txt`(16 个音的短 riff,**示意用途**,不是官方谱,
-自己改着玩)、`scale.txt`(上行音阶,验证音准)。
+**播放器在,但默认不带示例谱 —— 谱要自己写**:镜像根目录里没有 `.TXT` 曲谱,
+上面第 1 步就是起点(以前带过两首示例,PC 喇叭方波全音量太吵,已经撤了)。
