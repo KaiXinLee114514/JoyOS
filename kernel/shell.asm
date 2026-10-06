@@ -794,7 +794,22 @@ cmd_info:
     call term_print
     mov eax, kmain
     call term_print_hex
-    mov esi, msg_info_kernel2
+    ; 内核区大小/起始 LBA 都从 BOOTINFO 来(boot_sectors/boot_lba 是 kmain 抄的)——
+    ; 这里以前写死 "+32 KiB (64 sectors)",KERNEL_SECTS 改成 256 以后就一直显示错数字。
+    mov esi, msg_info_kernel_plus
+    call term_print
+    mov eax, [boot_sectors]
+    shr eax, 1                          ; 扇区 × 512 B ÷ 1024 = KiB
+    call term_print_dec
+    mov esi, msg_info_kernel_kib
+    call term_print
+    mov eax, [boot_sectors]
+    call term_print_dec
+    mov esi, msg_info_kernel_sect
+    call term_print
+    mov eax, [boot_lba]
+    call term_print_dec
+    mov esi, msg_info_kernel_end
     call term_print
 
     ; ---- 控制寄存器 ----
@@ -1128,7 +1143,10 @@ msg_help db \
 msg_info_head    db '--- JoyOS info ---', 10, 0
 msg_info_disk    db 'boot disk   : ', 0
 msg_info_kernel  db 'kernel      : ', 0
-msg_info_kernel2 db ' .. +32 KiB (64 sectors from LBA 1)', 10, 0
+msg_info_kernel_plus db ' .. +', 0
+msg_info_kernel_kib  db ' KiB (', 0
+msg_info_kernel_sect db ' sectors from LBA ', 0
+msg_info_kernel_end  db ')', 10, 0
 msg_info_cr0     db 'CR0 = ', 0
 msg_info_cr3     db '   CR3 = ', 0
 msg_info_cr2     db 'CR2 = ', 0
