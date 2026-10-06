@@ -52,24 +52,54 @@ class Monitor:
         finally:
             self.s.settimeout(10.0)
 
-    def cmd(self, line: str, wait: float = 0.4) -> str:
+    def _write(self, data: bytes, tries: int = 6) -> bool:
+        """往 monitor 写,带超时重试。
+
+        为什么要重试:客户机重画一整屏(帧缓冲是 MMIO)时 QEMU 主循环会被压住,
+        monitor 一时读不走数据,sendall 就会阻塞。以前这里没有保护,
+        一阻塞就是"整轮测试卡死"(踩过)。"""
+        for _ in range(tries):
+            try:
+                self.s.sendall(data)
+                return True
+            except (socket.timeout, BlockingIOError, OSError):
+                time.sleep(0.4)
+        return False
+
+    def cmd(self, line: str, wait: float = 0.4, budget: float = 8.0) -> str:
+        """发一条 monitor 命令并收结果。
+
+        ★ 收数据必须有硬上限:以前是 while True: recv(...),只要 monitor 还有
+          数据在流,超时就永远不触发 —— 测试无限等下去(卡死的老根因)。
+          现在:最多等 budget 秒,而且一看到 (qemu) 提示符就认为答完了。"""
         self.buf = b""
-        self.s.sendall((line + "\n").encode())
+        self._write((line + chr(10)).encode())
         time.sleep(wait)
+        deadline = time.time() + budget
+        self.s.settimeout(0.3)
         try:
-            while True:
-                chunk = self.s.recv(65536)
+            while time.time() < deadline:
+                try:
+                    chunk = self.s.recv(65536)
+                except socket.timeout:
+                    if b"(qemu)" in self.buf:
+                        break
+                    continue
                 if not chunk:
                     break
                 self.buf += chunk
-        except socket.timeout:
+                if b"(qemu)" in chunk:
+                    break
+        except OSError:
             pass
+        finally:
+            self.s.settimeout(10.0)
         return self.buf.decode("utf-8", "replace")
 
     def sendkey(self, key: str):
         """只发不等 —— sendkey 没有回显,等就是白等。
         间隔别太大:整个测试要敲几百个键,0.05 秒就是十几秒的纯等待"""
-        self.s.sendall(f"sendkey {key}\n".encode())
+        self._write(f"sendkey {key}\n".encode())
         time.sleep(0.03)
 
     def type_text(self, text: str, delay: float = 0.04):
