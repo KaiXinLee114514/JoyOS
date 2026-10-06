@@ -31,8 +31,13 @@ UNIFONT_HEX ?= font/unifont-subset.hex
 UNIFONT_FULL ?= font/.cache/unifont_all.hex
 QEMU    := qemu-system-i386
 BUILD   := build
-IMG     := $(BUILD)/joyos.img            # 软盘镜像(1.44 MB,无字库)
-HDIMG   := $(BUILD)/joyos-hd.img         # 硬盘镜像(16 MB,带完整字库)
+# 注释必须单独成行!写在同一行时,`#` 前面的空格会算进变量值,
+# 值末尾的空格会把 `-drive file=$(HDIMG),format=raw` 劈成两个参数(make hd 就报
+# "drive with bus=0, unit=0 (index=0) exists")。见 makefile-check 目标。
+# 软盘镜像(1.44 MB,无字库)
+IMG     := $(BUILD)/joyos.img
+# 硬盘镜像(16 MB,带完整字库)
+HDIMG   := $(BUILD)/joyos-hd.img
 DIV_IMG    := $(BUILD)/joyos-div.img
 
 BOOT_SRC    := boot/boot.asm
@@ -66,7 +71,7 @@ VI_OBJS     := $(addprefix $(BUILD)/vi/,$(notdir $(patsubst %.c,%.o,$(wildcard e
 
 PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS) $(C_PROGS))
 
-.PHONY: all run run-font hd hd32 ext ext-img run-ext subset test test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check
+.PHONY: all run run-font hd hd32 ext ext-img run-ext subset test makefile-check test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check
 
 all: $(IMG) $(HDIMG)
 
@@ -249,7 +254,17 @@ font: tools/unifont2bin.py font/charset.txt font/strings.txt
 	    --vga-font font/vga-font.bin --vga-map font/vga-zh-map.asm --vga-chars-file font/charset.txt \
 	    --zh-strings-in font/strings.txt --zh-strings-out font/vga-zh-strings.asm
 
-test: test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32
+# 防回归:变量定义里 `#` 前有空格时,那些空格会进变量值 —— 曾把 make hd 的
+# `-drive file=$(HDIMG),format=raw` 劈成两个参数。注释请单独成行。
+makefile-check:
+	@bad=$$(grep -nE '^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:=[^#]*[[:space:]]+#' Makefile || true); \
+	if [ -n "$$bad" ]; then \
+	    echo "✗ Makefile 里这些变量定义的 # 前有空格,值末尾会带空格:"; echo "$$bad"; \
+	    echo "  把注释挪到单独一行,否则 shell 会把参数劈开(例如 make hd 会失败)。"; exit 1; \
+	fi
+	@echo "makefile-check: OK(变量定义里没有行尾空格)"
+
+test: makefile-check test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32
 
 test-fda: $(IMG)
 	@echo "── 作为软盘启动(BIOS 无 LBA,应走 CHS 退回)──"
