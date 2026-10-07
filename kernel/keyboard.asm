@@ -13,7 +13,9 @@
 ;      sc_lo[]  = 不按 Shift 时的字符
 ;      sc_hi[]  = 按着 Shift 时的字符
 ;      bit7=1 的扫描码是"松键",要忽略(Shift 的松键要处理,否则一直算按住)
-;  这个 OS 只处理最普通的情况,小键盘/Ctrl/Alt/Caps 先不管(注释里标了)。
+;  大小写:字母是 "Shift XOR Caps Lock"(两个都开 = 小写,和真键盘一样);
+;  数字/符号只看 Shift。Caps Lock 按一下翻状态,顺便给键盘发 0xED 点灯。
+;  小键盘/数字锁定先不管(注释里标了)。
 ;
 ;  ── 为什么用环形缓冲区 ──────────────────────────────────────────────────
 ;  中断随时会来,可能比程序"取字符"快得多。所以中断只往缓冲区里塞,
@@ -171,14 +173,28 @@ keyboard_irq:
     inc byte [alt_len]
     jmp .done                          ; 数字被吃掉,不回显(松开 Alt 时直接出字)
 .not_alt_digit:
-    cmp bl, 0x3A                       ; Caps Lock(先只当"按了没用")
-    je .done
+    cmp bl, 0x3A                       ; Caps Lock:翻一下状态,顺便点灯
+    je .caps_toggle
 
     movzx ecx, bl
     cmp ecx, 0x80
     jae .done
-    mov al, [sc_lo + ecx]              ; 先查"不按 Shift"的表
-    test byte [shift_down], 1
+    mov dl, [sc_lo + ecx]              ; 不按 Shift 时这个键是什么
+    cmp dl, 'a'                        ; 字母才受 Caps Lock 影响
+    jb .not_letter
+    cmp dl, 'z'
+    ja .not_letter
+    ; ---- 字母:大写 = Shift XOR Caps Lock(两个都开反而变小写,和真键盘一样)----
+    mov al, dl
+    mov dh, [shift_down]
+    xor dh, [caps_down]
+    test dh, 1
+    jz .translated
+    mov al, [sc_hi + ecx]
+    jmp .translated
+.not_letter:
+    mov al, dl
+    test byte [shift_down], 1          ; 数字/符号只看 Shift
     jz .translated
     mov al, [sc_hi + ecx]              ; 按着 Shift 就用另一张表
 .translated:
@@ -186,13 +202,19 @@ keyboard_irq:
     jz .done
     cmp byte [ctrl_down], 0            ; Ctrl + 字母 → 控制码(Ctrl-S = 0x13)
     je .push
-    cmp al, 'a'
+    cmp dl, 'a'                        ; 用 sc_lo 那一栏算,免得 Shift/Caps 把 Ctrl 弄丢
     jb .push
-    cmp al, 'z'
+    cmp dl, 'z'
     ja .push
+    mov al, dl
     sub al, 'a' - 1
 .push:
     call kbd_push
+    jmp .done
+
+.caps_toggle:
+    xor byte [caps_down], 1
+    call kbd_set_leds                  ; 尽量把键盘上的灯也点对(点不亮不影响打字)
     jmp .done
 
     ; ---------------- 扩展键(前缀已经收到)----------------
@@ -528,6 +550,7 @@ sc_hi:
     times 0x80 - ($ - sc_hi) db 0
 
 shift_down db 0
+caps_down  db 0                        ; Caps Lock 状态(按一下翻一次)
 ctrl_down  db 0
 ext_pending db 0
 ext_code   db 0
@@ -560,3 +583,49 @@ sc_ext:
     db 0                               ; 52 Insert
     db 7                               ; 53 Delete
     times 0x80 - ($ - sc_ext) db 0
+
+; ---------------------------------------------------------------------------
+;  kbd_set_leds:把键盘上的 Caps Lock 灯点亮/熄灭
+;  PS/2 键盘:先往 0x60 发命令字节 0xED("设置指示灯"),再发一个数据字节
+;      bit0 = Scroll Lock,bit1 = Num Lock,bit2 = Caps Lock
+;  往 0x60 写之前要先看 0x64 的状态位 bit1(输入缓冲满不满);键盘忙就等一小会儿,
+;  还忙就放弃 —— 灯不亮不影响打字(真机上 QEMU/VMware 会把灯状态转给宿主键盘)。
+; ---------------------------------------------------------------------------
+kbd_set_leds:
+    push eax
+    mov al, 0xED
+    call kbd_send
+    test al, al
+    jz .out
+    mov al, 0
+    test byte [caps_down], 1
+    jz .send
+    or  al, 4                          ; bit2 = Caps Lock
+.send:
+    call kbd_send
+.out:
+    pop eax
+    ret
+
+; kbd_send:al = 要发给键盘的字节;返回 al = 1 成功 / 0 键盘一直忙(放弃)
+kbd_send:
+    push ecx
+    push edx
+    mov dl, al
+    mov ecx, 0x10000
+.wait:
+    in  al, KBD_STATUS
+    test al, 2                         ; bit1 = 输入缓冲满
+    jz .ready
+    dec ecx
+    jnz .wait
+    xor al, al                         ; 超时
+    jmp .out
+.ready:
+    mov al, dl
+    out KBD_DATA, al
+    mov al, 1
+.out:
+    pop edx
+    pop ecx
+    ret

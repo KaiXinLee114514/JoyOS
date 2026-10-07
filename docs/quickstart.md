@@ -91,6 +91,8 @@ bin/joyos-run MYPROG.BIN                # 造镜像 + 开 QEMU
 * 码位就是 Unicode 编号(十进制):`中` = U+4E2D = 20013;
 * 松开 Alt 之前敲了别的键 = 取消那一次输入;
 * Alt 期间的数字**不会**回显,松开就出字;
+* 顺便:大小写用 **Shift 或 Caps Lock** 都行(字母是 `Shift XOR Caps Lock`,
+  两个都开反而是小写);Caps Lock 按一下还会给键盘发 `0xED`,把灯点对;
 * 前提是字库在盘上(`make hd` 的镜像有,4 万个字形)—— 不然只能显示内置的 ASCII
   子集,中文会变成方块。
 

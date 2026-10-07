@@ -698,6 +698,31 @@ def main() -> int:
             rescan()
             results.append(("退格删掉 c", has("abd") and not has("abc"),
                             "屏幕上应该是 'abd' 而不是 'abc'"))
+
+            # ---- Caps Lock:按一下翻状态,和 Shift 同时按要互相抵消 ----
+            mon.sendkey("ret")
+            time.sleep(0.3)
+            mon.sendkey("caps_lock")                # 打开 Caps Lock
+            time.sleep(0.3)
+            mon.type_text("efg")
+            time.sleep(0.5)
+            rescan()
+            results.append(("Caps Lock 打大写", has("EFG") and not has("efg"),
+                            "Caps Lock 开着打 efg 应该出 EFG"))
+
+            mon.sendkey("shift-h")                  # Caps + Shift → 反而小写
+            time.sleep(0.5)
+            rescan()
+            results.append(("Caps + Shift 抵消", has("EFGh"),
+                            "Caps 开着再按 Shift+H 应该是小写 h"))
+
+            mon.sendkey("caps_lock")                # 关掉 Caps Lock
+            time.sleep(0.3)
+            mon.type_text("ij")
+            time.sleep(0.5)
+            rescan()
+            results.append(("再按一次 Caps 关掉", has("EFGhij") and not has("EFGhIJ"),
+                            "关掉之后 ij 应该是小写"))
             return report(results)
 
         mode = ("boot disk: LBA (EDD multi-sector read)" if as_hdd
