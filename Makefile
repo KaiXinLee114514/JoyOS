@@ -38,6 +38,9 @@ BUILD   := build
 IMG     := $(BUILD)/joyos.img
 # 硬盘镜像(16 MB,带完整字库)
 HDIMG   := $(BUILD)/joyos-hd.img
+# QMP socket:`make hd` / `make hd32` 把它开在这儿,
+# tools/text2alt.py --send 就靠它把中文/日文/韩文打进去(见该脚本的说明)
+QMP_SOCK := $(BUILD)/qmp.sock
 DIV_IMG    := $(BUILD)/joyos-div.img
 
 BOOT_SRC    := boot/boot.asm
@@ -165,7 +168,8 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
-	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c
+	@rm -f $(QMP_SOCK)
+	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait
 
 # ---------------------------------------------------------------------------
 #  FAT32 版镜像:同一个内核(BPB 自动认 FAT16/FAT32),只是分区格式不一样。
@@ -185,7 +189,8 @@ $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-jo
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd32: $(HD32IMG)
-	$(QEMU) -drive file=$(HD32IMG),format=raw,if=ide,index=0 -boot c
+	@rm -f $(QMP_SOCK)
+	$(QEMU) -drive file=$(HD32IMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait
 
 # ---------------------------------------------------------------------------
 #  扩展:不进默认构建/默认镜像的东西(现在就一个 vi)

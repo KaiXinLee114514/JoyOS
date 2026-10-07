@@ -33,11 +33,22 @@
 
 ---
 
-## 键盘打中文:Alt 码位输入
+## 键盘打中文/日文/韩文:Alt 码位输入
 
 键盘只认 ASCII?**按住左 Alt,敲十进制码位,松开 Alt** —— 就打出那个字符:
 `Alt+20013` = 中、`Alt+22909` = 好、`Alt+128512` = 😀。
 原理见 [docs/quickstart.md](docs/quickstart.md) 第 7 节(内核里把码位编成 UTF-8 塞进按键缓冲)。
+
+因为是"码位直通",**日文/韩文/emoji 一样能打**(磁盘字库里有全平假名、全片假名、
+全部谚文音节、CJK 基本区两万多字)。手敲数字太累,有个转换脚本:
+
+```bash
+python3 tools/text2alt.py "日本語 한국어"        # 每个字 = Alt+多少,顺便查字库有没有这个字形
+python3 tools/text2alt.py --line "你好,世界"     # 只要一行数字
+python3 tools/text2alt.py --decode 26085 26412   # 反着来:码位 → 字
+python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
+                                # ↑ 直接打进正在跑的虚拟机(make hd 已经把 QMP 开在 build/qmp.sock)
+```
 
 大小写:**Shift 和 Caps Lock 都管用**(字母是 `Shift XOR Caps Lock`,和真键盘一样 ——
 两个都开反而是小写),Caps Lock 按一下还会给键盘发 `0xED` 把灯点对。
@@ -198,8 +209,9 @@ tools/mkimg.py         拼镜像:boot(第 0 扇区)+ stub + kernel + 磁盘字�
 tools/mkfat.py         在镜像里造 FAT16 或 FAT32 分区(--fat32),并把文件/目录放进去
 tools/unifont2bin.py   Unifont .hex → JOYF 二进制字库 / VGA 字模 / 中文文案
 tools/mkfontsubset.py  从完整 .hex 里抽出要用的字形(生成入库的小子集)
+tools/text2alt.py      文字 → Alt 码位序列(查字库 / 直接打进 QEMU),见上面的"日文/韩文"
 tools/run.sh           QEMU 启动脚本(软盘/硬盘/完整硬盘/panic 演示/gdb/monitor/dry-run)
-tests/qemu_test.py     无头测试:monitor socket 抓屏 + sendkey 注入按键 + 离线解析镜像
+tests/qemu_test.py     无头测试:HMP 抓屏 + sendkey 注入按键 + QMP 打码位 + 离线解析镜像
 tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 节)
 ```
 

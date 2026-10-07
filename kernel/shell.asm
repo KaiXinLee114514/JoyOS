@@ -64,6 +64,8 @@ shell_readline:
     je .backspace
     cmp al, 32                            ; 其它控制字符先不管
     jb .next
+    cmp al, 0x80                          ; ≥0x80 = 多字节 UTF-8 的首字节
+    jae .multibyte
     cmp dword [shell_len], SHELL_LINE_MAX - 1
     jae .next                             ; 满了就丢(不给它撑爆的机会)
     mov ebx, [shell_len]
@@ -71,11 +73,53 @@ shell_readline:
     inc dword [shell_len]
     call term_putc                        ; 回显
     jmp .next
+.multibyte:
+    call shell_read_mb                    ; 中文/日文/韩文/emoji:整串一起收、一起画
+    jmp .next
 
 .backspace:
     cmp dword [shell_len], 0
     je .next
-    dec dword [shell_len]
+    ; 从尾巴往前跳过"续字节"(0x80~0xBF):一个汉字三个字节必须一起删,
+    ; 只删一个字节的话缓冲区里会剩半个序列,下次重画就成方块了(踩过)
+    mov ecx, [shell_len]
+    dec ecx
+.skip_cont:
+    cmp ecx, 0
+    jbe .cut
+    mov al, [shell_buf + ecx]
+    and al, 0xC0
+    cmp al, 0x80
+    jne .cut
+    dec ecx
+    jmp .skip_cont
+.cut:
+    mov ebx, ecx                          ; ebx = 这个字符的第一个字节
+    mov eax, [shell_len]
+    sub eax, ebx                          ; eax = 它占了几个字节
+    mov [shell_len], ebx
+    mov byte [shell_buf + ebx], 0
+    ; 屏幕上按宽度擦:ASCII 1 格,多字节按 2 格(字库里的都是宽字形)
+    cmp eax, 1
+    jne .erase_wide
+    mov al, 8
+    call term_putc
+    mov al, ' '
+    call term_putc
+    mov al, 8
+    call term_putc
+    jmp .next
+.erase_wide:
+    mov al, 8
+    call term_putc
+    mov al, 8
+    call term_putc
+    mov al, ' '
+    call term_putc
+    mov al, ' '
+    call term_putc
+    mov al, 8
+    call term_putc
     mov al, 8
     call term_putc
     jmp .next
@@ -85,6 +129,68 @@ shell_readline:
     mov byte [shell_buf + ebx], 0         ; 补个结尾,方便当字符串用
     mov al, 10
     call term_putc
+    ret
+
+; ---------------------------------------------------------------------------
+;  shell_read_mb:al = UTF-8 首字节 → 把这个字符整个收进 shell_buf 并回显
+;
+;  为什么不能像 ASCII 那样一个字节一个字节画:一个汉字是 3 个字节,
+;  分开画的话每个字节都单独解码,全都不合法 → 屏幕上三个"缺字形方块"
+;  (Alt 码位输入打中文时一眼就能看见)。所以这里按首字节算出长度,把整串
+;  一起交给 term_print(它认 UTF-8,会画出真正的字形、也会按宽度推进光标)。
+; ---------------------------------------------------------------------------
+shell_read_mb:
+    push eax
+    push ebx
+    push ecx
+    push edx
+    mov [mb_first], al                    ; 首字节(别留在 bl 里:下面要用 ebx)
+    movzx eax, al
+    mov ebx, 1                            ; 先当单字节(不认识的字节就原样画)
+    cmp al, 0xC0
+    jb .have_len
+    mov ebx, 2
+    cmp al, 0xE0
+    jb .have_len
+    mov ebx, 3
+    cmp al, 0xF0
+    jb .have_len
+    mov ebx, 4
+.have_len:
+    ; ⚠ 长度必须放内存里:kbd_getchar 会冲掉 ecx(踩过,结果画出来是两个方块)
+    mov [mb_len], ebx
+    mov eax, [shell_len]
+    add eax, ebx
+    cmp eax, SHELL_LINE_MAX - 1
+    jae .done                            ; 放不下就整个丢掉
+    mov eax, [shell_len]
+    mov dl, [mb_first]
+    mov [shell_buf + eax], dl
+    inc dword [shell_len]
+    mov dword [mb_got], 1                 ; 已经收进来几个字节
+.more:
+    mov eax, [mb_got]
+    cmp eax, [mb_len]
+    jae .echo
+    call kbd_getchar                      ; 续字节(Alt 码位输入是一次性推进来的)
+    mov ebx, [shell_len]
+    mov [shell_buf + ebx], al
+    inc dword [shell_len]
+    inc dword [mb_got]
+    jmp .more
+
+.echo:
+    mov ebx, [shell_len]
+    sub ebx, [mb_len]                     ; 这个字符在缓冲里的起点
+    mov eax, [mb_len]
+    mov byte [shell_buf + ebx + eax], 0   ; 临时收尾(在 len 之外,不影响数据)
+    lea esi, [shell_buf + ebx]
+    call term_print
+.done:
+    pop edx
+    pop ecx
+    pop ebx
+    pop eax
     ret
 
 ; ---------------------------------------------------------------------------
@@ -1598,6 +1704,9 @@ file_size  dd 0
 
 shell_buf  times SHELL_LINE_MAX db 0
 shell_len  dd 0
+mb_len     dd 0                       ; 正在收的多字节 UTF-8 字符占几个字节
+mb_got     dd 0                       ; 已经收进来几个字节
+mb_first   db 0                       ; 这个字符的首字节
 cmd_len    dd 0
 cmd_arg    dd 0
 

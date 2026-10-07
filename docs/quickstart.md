@@ -77,7 +77,7 @@ bin/joyos-run MYPROG.BIN                # 造镜像 + 开 QEMU
 源码丢进 `extensions/<名字>/`,Makefile 的 `EXT_BINS` 加一行,`make ext` 就编它。
 规矩见 `extensions/README.md`:**扩展不许拖累主线**,挂了也不能影响 `make test`。
 
-## 7. 用键盘打中文(Alt 码位输入)
+## 7. 用键盘打中文/日文/韩文(Alt 码位输入)
 
 键盘只认 ASCII?按住 **左 Alt**,在小键盘/主键盘上敲**十进制码位**,松开 Alt ——
 那个字符就作为 UTF-8 打进当前程序(编辑器、`write`、shell 都吃):
@@ -85,14 +85,27 @@ bin/joyos-run MYPROG.BIN                # 造镜像 + 开 QEMU
 | 想打 | 敲 |
 |---|---|
 | 中 | 按 Alt + `20013`,松开 |
-| 好 | 按 Alt + `22909`,松开 |
+| あ | 按 Alt + `12354`,松开 |
+| 한 | 按 Alt + `54620`,松开 |
 | 😀 | 按 Alt + `128512`,松开(4 字节 UTF-8,能画出来就画) |
+
+因为是"码位直通",**日文/韩文照样能打**,不用改内核 —— 磁盘字库里就有全平假名、
+全片假名、全部谚文音节和 CJK 基本区两万多字。手敲数字太累,用转换脚本:
+
+```bash
+python3 tools/text2alt.py "日本語 한국어"       # 每个字 = Alt+多少,并查字库有没有这个字形
+python3 tools/text2alt.py --line "こんにちは"   # 只要一行能照着敲的数字
+python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
+                                 # ↑ 直接打进正在跑的虚拟机(make hd 的 QMP 开在 build/qmp.sock)
+```
 
 * 码位就是 Unicode 编号(十进制):`中` = U+4E2D = 20013;
 * 松开 Alt 之前敲了别的键 = 取消那一次输入;
 * Alt 期间的数字**不会**回显,松开就出字;
 * 顺便:大小写用 **Shift 或 Caps Lock** 都行(字母是 `Shift XOR Caps Lock`,
   两个都开反而是小写);Caps Lock 按一下还会给键盘发 `0xED`,把灯点对;
+* 多字节字符在 shell 里是**整个字符一起回显、退格也整个删**(按字节画的话
+  一个字会碎成三个"缺字形方块");全屏程序(EDIT/计算器)内部还是按字节算的;
 * 前提是字库在盘上(`make hd` 的镜像有,4 万个字形)—— 不然只能显示内置的 ASCII
   子集,中文会变成方块。
 

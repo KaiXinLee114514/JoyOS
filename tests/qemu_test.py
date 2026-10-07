@@ -625,10 +625,16 @@ def main() -> int:
     # 显式写 format=raw:不然 QEMU 会警告"自动探测格式有风险",还可能拒绝对块 0 写入
     drive = ([f"-drive", f"file={img},format=raw,if=ide,index=0", "-boot", "c"] if as_hdd
              else [f"-drive", f"file={img},format=raw,if=floppy", "-boot", "a"])
+    # 再开一个 QMP socket:Alt 码位输入要"按住 Alt 敲数字",HMP 的 sendkey 做不到,
+    # 得用 QMP 的 input-send-event 分开按/放(tools/text2alt.py --send 就是干这个的)
+    qmp_sock = f"{sock}.qmp"
+    if os.path.exists(qmp_sock):
+        os.unlink(qmp_sock)
     qemu = subprocess.Popen(
         ["qemu-system-i386", *drive,
          "-display", "none", "-no-reboot",
-         "-monitor", f"unix:{sock},server,nowait"],
+         "-monitor", f"unix:{sock},server,nowait",
+         "-qmp", f"unix:{qmp_sock},server,nowait"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
@@ -867,6 +873,31 @@ def main() -> int:
             results.append(("程序退出后页池没泄漏", has("free: 3072 pages"),
                             "free: 3072 pages"))
 
+            # ---- Alt 码位输入:日文/韩文/中文(靠 QMP 分开按住 Alt,tools/text2alt.py)
+            run("clear")
+            sent = subprocess.run([sys.executable, "tools/text2alt.py", "--send", qmp_sock,
+                                   "--gap", "0.01", "日本語あ한中文字"],
+                                  capture_output=True, timeout=120)
+            results.append(("Alt 输入工具跑通", sent.returncode == 0,
+                            (sent.stdout + sent.stderr).decode("utf-8", "replace")[-70:]))
+            time.sleep(0.8)
+            rescan()
+            results.append(("Alt 码位输入:日文/韩文/中文",
+                            has("日本語") and has("한") and has("中文字"),
+                            "打出 日本語あ한中文字(每个字 3 字节 UTF-8)"))
+            results.append(("多字节字符回显不碎",
+                            not has("?"),  # 缺字形/按字节画才会出现 '?' 或方块
+                            "屏幕上不该出现缺字形方块"))
+            # 退格要整个字符一起删(不是删一个字节),清干净别影响后面的检查
+            for _ in range(9):
+                mon.sendkey("backspace")
+                time.sleep(0.08)
+            time.sleep(0.5)
+            rescan()
+            results.append(("退格按字符删(不是按字节)",
+                            not has("日本語") and not has("中") and not has("한"),
+                            "九下退格把九个字符退干净"))
+
             run("run count", wait=1.1)
             results.append(("第二个程序:循环打印", has("counting: 1 2 3 4 5 6 7 8 9 10"),
                             "counting: 1 2 3 4 5 6 7 8 9 10"))
@@ -1008,6 +1039,7 @@ def main() -> int:
             time.sleep(0.6)
             rescan()
             results.append(("编辑器能存进子目录", has("editor closed."), "editor closed."))
+
 
             # ---- 第二信道:先把 QEMU 关掉(让它把缓存落盘),再自己解析镜像 ----
             qemu.terminate()
