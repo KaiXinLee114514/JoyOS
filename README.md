@@ -69,7 +69,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **多扇区读盘** | 一次读多个扇区把 64 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
 | 保护模式 | GDT(代码段 + 数据段,平坦 4 GiB)、`CR0.PE`、32 位段寄存器全部就位 |
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
-| 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`pmap`),物理页池 = 位图分配器 12 MiB(`pmem` / `ptest`) |
+| 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`pmap`),物理页池 = 位图分配器 12 MiB(`pmem` / `ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift)、**Caps Lock**(顺带给键盘发 `0xED` 点灯)、方向键/PgUp 等扩展键、64 字节环形缓冲 |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
@@ -182,7 +182,7 @@ kernel/start.asm       内核镜像入口:拼装 stub 之后的 32 位部分(顺
 kernel/kmain.asm       内核入口 + 终端驱动(滚屏、光标、十六进制/十进制打印)
 kernel/utf8.asm        UTF-8 解码(坏字节 → U+FFFD,防溢出/代理区都拦了)
 kernel/idt.asm         IDT、32 个异常入口、panic 屏,idt_install 负责装门
-kernel/paging.asm      页目录 + 页表 + 开分页(含帧缓冲那张页表)
+kernel/paging.asm      页目录 + 页表 + 开分页 + 按需分页(缺页补页、程序私有空间)
 kernel/keyboard.asm    8259A 重映射、IRQ1 键盘中断、扫描码翻译、环形缓冲
 kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
@@ -196,6 +196,7 @@ progs/HELLO.asm        示例程序(最简)      —— 编译成 HELLO.BIN 放�
 progs/COUNT.asm        示例程序(打印/颜色/码位)
 progs/CALC.asm         组件:计算器(定点小数,自己算 ±2147.483647)
 progs/EDIT.asm         组件:全屏文本编辑器(方向键 + 存盘 + 打开)
+progs/TOUCH.asm        示例程序(按需分页演示:一页页碰内存再验证)
 progs/NOTES.TXT        放进镜像的示例文本(编辑器默认打开它)
 progs/CHELLO.c         C 写的示例程序(printf / malloc / 参数 / 读文件)
 progs/PLAY.C           组件:文本谱播放器(读 FAT 上的谱子 → int 0x30 的 beep;--list 只解析;不含示例谱)
@@ -236,8 +237,8 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 0x0B8000              VGA 文本缓冲(80×25,每格 2 字节:字符 + 颜色)
 0x100000              FAT 扇区缓冲           (fat.asm 的 FAT_BUF)
 0x110000              cat 的文件缓冲         (shell.asm 的 FILE_BUF)
-0x120000 - 0x19FFFF   程序镜像(虚拟地址)    (shell.asm 的 PROG_ADDR;物理页每次运行都换)
-0x1A0000 - 0x1EFFFF   堆(malloc,320 KB,虚拟) (include/joyos.h;同样是每程序私有页)
+0x120000 - 0x19FFFF   程序镜像(虚拟地址)    (shell.asm 的 PROG_ADDR;物理页每次运行都换,按需才给)
+0x1A0000 - 0x1EFFFF   堆(malloc,320 KB,虚拟) (include/joyos.h;同样是每程序私有页,按需才给)
 0x1F0000              读磁盘描述块的临时缓冲 (fontdisk.asm)
 0x200000 - 0x3AF110   完整字库(从磁盘读进来,1.7 MB)
 0x400000 - 0xFFFFFF   物理页池(12 MiB)       (pmem.asm,3072 页 × 4 KiB,位图记账)
@@ -248,6 +249,10 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 写代码不用想 MMU;16 MiB 以上没映射(踩了就吃 14 号页错误)。页池只从 0x400000
 往上发,因为低 4 MiB 被上表这些固定区域占满了 —— 与其一条条列"这些不许用",
 不如整段划出去。
+
+**唯一的例外是跑程序的时候**:0x120000~0x1EFFFF 那 208 页在内核里照旧是恒等映射
+(所以 shell 能读能写),但在程序那套页表里它们是"不存在"的 —— 程序碰到哪页,
+缺页处理才从页池现拿一页(见第 5 节的按需分页)。
 
 ## 4. 图形模式(VBE + 帧缓冲)
 
@@ -279,40 +284,62 @@ ATA PIO 的寄存器顺序和两个坑、磁盘字库怎么加载、FAT16 的字
 
 ```
 run HELLO      → fat_stat 看大小 → fat_read_file 先读进 0x120000(暂存)
-               → space_create:从页池拿私有页 + 建私有页目录 → 镜像拷进私有页
-               → 切 CR3 → call 0x120000 → 程序 ret 回 shell → 切回 CR3 → 私有页全还给页池
+               → space_create 建一套空地址空间(页目录 + 页表两页,窗口里的页一页都不给)
+               → 切 CR3 → call 0x120000 → 程序碰到哪页,页错误才从暂存区补哪页
+               → 程序 ret 回 shell → 切回 CR3 → 补出来的页连页表一起还给页池
 程序里:         mov eax, 0 / mov esi, 字符串 / int 0x30   ← 打印一行
 ```
 
-### 每个程序有自己的地址空间
+### 每个程序有自己的地址空间(而且是按需给的)
 
-这是"全分页"的第一步:跑程序之前,内核给它现搭一套页表(**见
-[kernel/paging.asm](kernel/paging.asm) 的 `space_create`**):
+跑程序之前,内核给它现搭一套页表(**见 [kernel/paging.asm](kernel/paging.asm)
+的 `space_create`**):
 
 ```
 页目录   = 内核页目录的副本        (内核、IDT、VGA、字库、帧缓冲都还在)
-页表[0]  = PT_LOW 的副本,但 0x120000~0x1EFFFF 换成私有页
-私有页   = 从页池现拿的两段连续页:镜像 512 KiB + 堆 320 KiB,而且**清零**
+页表[0]  = PT_LOW 的副本,但 0x120000~0x1EFFFF 的 208 项**清成"不存在"**
+私有页   = 一页都不预先给 —— 程序碰到哪一页,14 号页错误才现补哪一页
 ```
 
 所以:程序的**虚拟地址不变**(还是链接到 `0x120000`,程序自己不用改),
-但**物理页每次运行都是新的一批**,跑完连页表一起还给页池:
+**物理页每次运行都是新的一批**,而且**只有它真正走过的页才会拿到内存**:
 
 ```
 > run HELLO.BIN
 running HELLO.BIN
-address space: CR3 = 0x00400000  (own page directory + private pages)
-  image 0x120000 -> 0x00402000   heap 0x1A0000 -> 0x00482000
+address space: CR3 = 0x00400000  (own page directory + demand paging)
 Hello from HELLO.BIN - I was loaded from the FAT16 disk!
 program returned to the shell
-address space destroyed: 210 pages back to the pool
+address space destroyed: 3 page(s) back to the pool
+demand paging: 1 page(s) faulted in (image 1 + heap 0), first page 0x00402000
 ```
 
-再跑一次,`image 0x120000 ->` 后面那串就变了(页池是轮转着找连续页的)。
-内核窗口继续恒等映射,所以 `int 0x30` 照旧能用 —— **不需要 ring 3**,
-程序传给内核的指针也照旧解得开(那会儿用的就是程序这套页表)。
-还没做的是**按需分页**(缺页时才给页、栈自动长),那个要把 14 号处理程序
-从"红屏"改成"填表 + `iret` 重试"。
+249 字节的程序**只要 1 页**(以前是把 208 页全给它)。主动去踩内存的是
+[progs/TOUCH.asm](progs/TOUCH.asm),`run TOUCH` 会一页一页碰 32 页堆 + 一页 `.bss`,
+然后回头检查每一页都还是自己写进去的标记:
+
+```
+> run TOUCH.BIN
+  heap: touched 32 pages (4 KiB each), wrote 0xA5 into every one of them
+  pages that were NOT zero before my write: 0     ← 现给的页必须是干净零页
+  pages that did not read back what I wrote: 0     ← 每页都真的归自己
+  page beyond the file (bss at 0x184000): was zero, as it should be
+demand paging: 34 page(s) faulted in (image 2 + heap 32), first page 0x00425000
+```
+
+补页的流程(都在 [kernel/paging.asm](kernel/paging.asm) 的 `page_fault_try_handle`
+和 [kernel/idt.asm](kernel/idt.asm) 的 `isr_common` 里):CR2 是出错地址 → 判断它
+落在镜像窗口还是堆窗口(窗口外就照旧红屏 panic)→ 从页池拿一页、清零 →
+镜像窗口里"文件之内"的部分从暂存区拷过来("文件之外"就是 `.bss`,留零页)→
+填页表 + `invlpg` → `iret` 回去**重执行那条指令**。程序完全感觉不到。
+
+几个老实交代的地方:
+
+- 没有 swap、没有页置换、没有写时复制:页一旦补进来就留到程序结束;
+- 窗口里的**空洞也会给页**(程序只是读一下 0x1A0000 附近的地址,也会拿到一页零页);
+- 暂时**不给程序自己长栈**:栈还是 shell 的栈(内核那套页表里);
+- 内核窗口继续恒等映射,所以 `int 0x30` 照旧能用 —— **不需要 ring 3**,
+  程序传给内核的指针也照旧解得开(那会儿用的就是程序这套页表)。
 
 ## 6. 踩过的坑(这部分才是精华)
 
@@ -430,6 +457,37 @@ address space destroyed: 210 pages back to the pool
 坑点:`not` / `mov` / `lea` 不动标志位,后面别紧跟条件跳转。
 (`inc`/`dec` 只是**不改 CF**,ZF/SF 照改,所以 `inc edx` + `cmp` 那套是安全的。)
 
+### 6.10 "建空间"把"镜像多大"一起清了(程序跑的是 208 页零字节)
+
+按需分页第一版:CPU 一碰 0x120000 就红屏,报的却是
+
+```
+EXCEPTION 0E: page fault
+EIP = 0x00200008   CS = 0x00000008   EFLAGS = 0x00010203
+CR2 (faulting address) = 0x5CD90000
+```
+
+CR2 是个野地址(不是 0x120000),说明**第一次补页其实成功了**,程序跑起来了 ——
+只是跑的内容不对。把物理内存 dump 下来读 `space_*` 变量才看清:
+
+```
+space_img_bytes = 0x00000000     ← ✗ 镜像大小是 0
+space_pf_run    = 0x000000d0     ← 补了 208 页 = 整个窗口一页不落
+pf_off          = 0x0007f000
+pf_len          = 0x00000000     ← 每页都算"文件之外",一句都没拷
+```
+
+`space_img_bytes` = 0 时,补页逻辑认为**整个窗口都是 `.bss`**,于是每一页都给零页:
+程序执行的是 208 页的 0 字节(`add [eax], al` 一路乱跳),最后跳到 0x00200008 那种
+野地方 → 二次页错误 → 红屏。
+
+根因不是补页逻辑,是**调用顺序**:`cmd_run` 里先 `space_set_image`(写大小)、
+后 `space_create`(建空间),而 `space_create` 开头会把自己那堆状态清零 ——
+顺手把刚写进去的大小也清了。修法两条:create 里**不许清输入参数**
+`space_img_bytes`,调用顺序改成 create → set_image。教训:初始化函数"重置自己的状态"时,
+别把**别人刚给你的输入**一起重置 —— 这类症状(数据全是 0)和"逻辑写错"长得一模一样,
+最省事的查法是 dump 内存看变量,而不是盯着代码猜。
+
 ## 7. shell 命令
 
 ```
@@ -448,7 +506,8 @@ reboot        重启(通过 8042 键盘控制器)
 ls            列 FAT16 根目录(名字 + 字节数;硬盘模式才有)
 cat <file>    把文件(UTF-8 文本)打出来,中文能直接看
 write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
-run <file>    给程序建一套独立地址空间再跑(名字不带点会自动补 .BIN;裸敲 run 打印接口说明)
+run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不带点会自动补 .BIN;
+              裸敲 run 打印接口说明;跑完会报补了多少页:run TOUCH 最能看出来)
 ```
 
 `page` / `pmap` 的输出示例(这就是分页在干的事):
@@ -568,9 +627,12 @@ PT_LFB      equ 0x4000     ; VBE 帧缓冲窗口
 (`kernel/paging.asm`,页表不够会自己找 `pmem_alloc` 要页)。想让它"映了但不许写",
 把 flags 里的 `PAGE_RW` 去掉,写它就会吃 13 号通用保护异常。
 
-想改"每个程序拿到多少私有页"看 `paging.asm` 顶部的 `SPACE_IMG_PAGES` /
-`SPACE_HEAP_PAGES`(`space_create` 就是照这两个数字建空间的)。
-`cmd_run` 里那三步也一眼能认出来:建空间 → 拷镜像 + 切 CR3 跑 → `space_destroy` 归还。
+想改"程序能用多大内存"看 `paging.asm` 顶部的 `SPACE_IMG_PAGES` / `SPACE_HEAP_PAGES`
+—— 现在这两个数字**只表示窗口大小**(镜像 512 KiB + 堆 320 KiB),建空间时一页都不给,
+是程序碰到才补。想知道它是怎么补的,从 `page_fault_try_handle` 看起;
+想关掉按需分页回到"一次给满",在 `space_create` 里把清页表那几行换成
+`paging_map` 逐页映上去就行(老版本就是这么写的,git 历史里能翻到)。
+`cmd_run` 里那几步一眼能认出来:建空间 → 写镜像大小 → 切 CR3 跑 → `space_destroy` 归还。
 
 ### 8.7 让 panic 屏显示更多
 
@@ -626,9 +688,9 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 - **程序带参数**:`run PROG arg` 需要定义一个"启动信息块"(参数放哪、栈怎么给)
 - **保护程序搞坏内核**:现在程序和内核平起平坐,能直接改内核内存 ——
   真正的下一步是 ring 3 + TSS + 系统调用门,把"内核窗口"从程序地址空间里挪走
-- **按需分页(真正的虚拟内存)**:每个程序的独立地址空间已经有了(`space_create`),
-  缺的是"缺页时才给页、栈自动长":要把 14 号处理程序从"红屏"改成"填表 + `iret` 重试",
-  再加个页回收策略(现在是一口气把 512 KiB 镜像窗口 + 320 KiB 堆全映射出来)
+- **虚拟内存的下一层**:按需分页已经有了(碰到哪页才给哪页),但还没有
+  **页置换 / swap / 写时复制**,也**不给程序自己长栈**(栈还是内核那套);
+  窗口里的空洞也会给页(按访问给,不是按"真的要用"给)
 - **PIT 定时器(IRQ0)**:有了它才能做 `uptime`、闪烁光标、`sleep`
 - **光标键 / Home / End**:要处理扫描码的 `0xE0` 前缀
 - **ELF 加载 / 内存分配**:现在程序是平铺二进制读到固定地址,`malloc` 也没有

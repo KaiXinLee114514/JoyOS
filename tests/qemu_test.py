@@ -12,6 +12,7 @@ JoyOS 无头自动化测试。
 """
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -618,6 +619,14 @@ def main() -> int:
         print(f"❌ 找不到镜像 {img}(先 make)")
         return 2
 
+    # ★ 用镜像的**副本**跑:这套测试会往盘里写文件(写断言读回来),而且跑的时候
+    #   谁要是在旁边敲一句 `make`(重造镜像)就会把正在跑的虚拟机脚下的盘换掉 ——
+    #   症状是莫名其妙的中途失败/虚拟机自己退出。副本 + 跑完自动删,两边都省心。
+    img_copy = os.path.join(tempfile.gettempdir(), f"joyos-test-{os.getpid()}.img")
+    shutil.copyfile(img, img_copy)
+    print(f"(跑的是镜像副本 {img_copy},原镜像 {img} 不动)")
+    img = img_copy
+
     sock = os.path.join(tempfile.gettempdir(), f"joyos-mon-{os.getpid()}.sock")
     if os.path.exists(sock):
         os.unlink(sock)
@@ -848,19 +857,22 @@ def main() -> int:
                             has("font still intact: 砰"),
                             "font still intact: 砰 —— 这个字的点阵就在以前那个加载地址上"))
 
-            # ---- 全分页第一步:每个程序一套页目录,私有页从页池现拿 ----
+            # ---- 按需分页:程序拿到的窗口一页都不预给,碰到哪页才补哪页 ----
             def space_line() -> str:
-                """抓屏幕上最后一行 "image 0x120000 -> 0x…"(地址每次运行都不一样)"""
+                """抓屏幕上最后一行 "…, first page 0x…"(物理页每次运行都不一样)"""
                 hits = [ln.strip() for ln in screen_lines().splitlines()
-                        if "image 0x120000 ->" in ln]
+                        if "), first page 0x" in ln]
                 return hits[-1] if hits else ""
 
             results.append(("程序有自己的地址空间",
                             has("address space: CR3 = 0x") and has("own page directory"),
-                            "address space: CR3 = 0x… (own page directory)"))
+                            "address space: CR3 = 0x… (own page directory + demand paging)"))
             results.append(("跑完地址空间收摊归还页",
-                            has("address space destroyed:") and has("pages back to the pool"),
-                            "address space destroyed: N pages back to the pool"))
+                            has("address space destroyed:") and has("page(s) back to the pool"),
+                            "address space destroyed: N page(s) back to the pool"))
+            results.append(("按需分页只补碰到的页(HELLO 只要 1 页)",
+                            has("demand paging: 1 page(s) faulted in (image 1 + heap 0)"),
+                            "demand paging: 1 page(s) faulted in (image 1 + heap 0)"))
 
             first_space = space_line()
             run("run hello", wait=1.1)
@@ -868,6 +880,22 @@ def main() -> int:
             results.append(("两次运行拿到不同物理页",
                             first_space != "" and second_space != "" and first_space != second_space,
                             f"两次映射行:{first_space} / {second_space}"))
+
+            # ---- TOUCH.BIN:自己主动去碰 32 页堆 + 一页 .bss,并检查页是干净的 ----
+            run("run touch", wait=1.4)
+            results.append(("TOUCH 跑通(按需分页补了 34 页)",
+                            has("touch test: asking for memory the kernel never handed me")
+                            and has("demand paging: 34 page(s) faulted in (image 2 + heap 32)"),
+                            "demand paging: 34 page(s) faulted in (image 2 + heap 32)"))
+            results.append(("补进来的页都是干净的零页",
+                            has("pages that were NOT zero before my write: 0"),
+                            "pages that were NOT zero before my write: 0"))
+            results.append(("每页写进去的标记都读得回来",
+                            has("pages that did not read back what I wrote: 0"),
+                            "pages that did not read back what I wrote: 0"))
+            results.append((".bss 那页(文件之外)也是零页",
+                            has("page beyond the file (bss at 0x184000): was zero"),
+                            "page beyond the file (bss at 0x184000): was zero, as it should be"))
 
             run("pmem")
             results.append(("程序退出后页池没泄漏", has("free: 3072 pages"),
@@ -1183,6 +1211,8 @@ def main() -> int:
             qemu.kill()
         if os.path.exists(sock):
             os.unlink(sock)
+        if os.path.exists(img_copy):
+            os.unlink(img_copy)          # 临时副本用完就删
 
     print()
     if failures:

@@ -664,8 +664,13 @@ cmd_write:
     ret
 
 ; ---------------------------------------------------------------------------
-;  run <文件>:把程序读进 PROG_ADDR 然后 call 进去
+;  run <文件>:把程序读进 PROG_ADDR(暂存区)→ 建一套空的程序地址空间 →
+;             切 CR3 跑 → 跑完把页全还给页池
 ;  名字不带点就自动补 .BIN(所以 run HELLO 和 run HELLO.BIN 一样)
+;
+;  ★ 现在程序是**按需分页**:文件读进 0x120000 之后就留在那儿当"页面来源",
+;    程序第一次碰某一页时才从页池拿页、把那一页的内容从暂存区拷过去。
+;    HELLO.BIN 这种小程序实际只拿走 1 页镜像,不再一上来就占 208 页(见 paging.asm)。
 ;
 ;  ★ 加载地址为什么是 0x120000 而不是看起来更顺眼的 0x300000:
 ;    完整字库是读到 0x200000 的,1.7 MB 一直铺到 0x3AF110 ——
@@ -756,12 +761,12 @@ cmd_run:
     call fat_stat
     cmp eax, -1
     je .notfound
-    mov [prog_size], eax                ; 记下大小:待会儿按它往私有页里拷
-    cmp eax, SPACE_IMG_PAGES * 4096     ; 私有镜像窗口只有 512 KiB
+    mov [prog_size], eax
+    cmp eax, SPACE_IMG_PAGES * 4096     ; 镜像窗口只有 512 KiB(128 页)
     ja .toobig
     mov esi, [prog_name_ptr]
     mov edi, PROG_ADDR
-    call fat_read_file                  ; 先读到暂存区(0x120000,恒等映射)
+    call fat_read_file                  ; 读进暂存区 —— 它就留在这儿当"页面来源"
     cmp eax, -1
     je .notfound
     mov al, COL_HEADER
@@ -774,10 +779,19 @@ cmd_run:
     call term_putc
     mov al, COL_NORMAL
     call term_set_color
-    ; ---- 给这个程序建一套自己的地址空间(私有页目录 + 私有页)----
+
+    ; ---- 建一套空地址空间:页目录 + 页表两页,窗口里的页一页都不给 ----
+    ; 文件也不往私有页里拷了:程序第一次碰到哪一页,页错误处理才从暂存区
+    ; 把那一页拷过去(见 paging.asm 的 page_fault_try_handle)。
+    ; ★ 顺序:先 create(建页表、重置这趟的计数),再 set_image 把镜像大小写进去。
+    ;   space_create 特意**不碰** space_img_bytes —— 早期版本在 create 里顺手清它,
+    ;   结果大小被清成 0,整个镜像窗口都算成 `.bss`(零页),程序跑的是 0 字节,
+    ;   一路乱跳到野地址崩溃(见 README 6.10)。这个坑踩过。
     call space_create
     test eax, eax
     jz .nomem
+    mov eax, [prog_size]
+    call space_set_image                ; 告诉分页层镜像多大(决定 `.bss` 从哪页开始)
     mov al, COL_HEADER
     call term_set_color
     mov esi, msg_space_head
@@ -786,40 +800,20 @@ cmd_run:
     call term_print_hex
     mov esi, msg_space_tail
     call term_print
-    mov esi, msg_space_img
-    call term_print
-    mov eax, [space_img_pa]
-    call term_print_hex
-    mov esi, msg_space_heap
-    call term_print
-    mov eax, [space_heap_pa]
-    call term_print_hex
-    mov al, 10
-    call term_putc
     mov al, COL_NORMAL
     call term_set_color
 
-    ; ---- 把暂存区的镜像抄进私有页 ----
-    ; 私有页是连续拿的,所以一次 rep movsd 就够(不用翻页表一页页拷)
-    mov esi, PROG_ADDR
-    mov edi, [space_img_pa]
-    mov ecx, [prog_size]
-    add ecx, 3
-    shr ecx, 2                          ; 字节 → dword(向上取整)
-    rep movsd
-
     ; ---- 切到程序自己的页目录,跳进去跑;它 ret 回来后再切回内核的 ----
+    ; (按需分页的开关和 CR3 是在 space_activate / space_deactivate 里成对切的)
     pushad
-    mov eax, [space_pd]
-    mov cr3, eax                        ; ★ 从这里开始,0x120000 是私有页了
+    call space_activate                 ; ★ 从这里开始,0x120000 是"空的"
     call PROG_ADDR                      ; ← 程序在这里跑,它 ret 就回来
-    mov eax, PD_ADDR
-    mov cr3, eax                        ; 切回内核页目录
+    call space_deactivate
     popad
 
     mov al, 10
     call term_putc
-    ; ---- 收摊:私有页 + 私有页表 + 页目录,全还给页池 ----
+    ; ---- 收摊:按需给出去的页 + 私有页表 + 页目录,全还给页池 ----
     call space_destroy
     mov [space_freed], eax
     mov al, COL_OK
@@ -832,6 +826,30 @@ cmd_run:
     call term_print_dec
     mov esi, msg_space_back
     call term_print
+    mov al, 10
+    call term_putc
+
+    ; ---- 按需分页的账:这一趟只补了程序真正碰过的页 ----
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_demand
+    call term_print
+    mov eax, [space_pf_run]
+    call term_print_dec
+    mov esi, msg_demand_split
+    call term_print
+    mov eax, [space_pf_img]
+    call term_print_dec
+    mov esi, msg_demand_and
+    call term_print
+    mov eax, [space_pf_heap]
+    call term_print_dec
+    mov esi, msg_demand_first
+    call term_print
+    mov eax, [space_first_pa]
+    call term_print_hex
+    mov al, 10
+    call term_putc
     mov al, COL_NORMAL
     call term_set_color
     ret
@@ -1680,11 +1698,13 @@ msg_running     db 'running ', 0
 msg_prog_done   db 'program returned to the shell', 10, 0
 msg_prog_toobig db 'program too big for the load area', 10, 0
 msg_space_head  db 'address space: CR3 = ', 0
-msg_space_tail  db '  (own page directory + private pages)', 10, 0
-msg_space_img   db '  image 0x120000 -> ', 0
-msg_space_heap  db '   heap 0x1A0000 -> ', 0
+msg_space_tail  db '  (own page directory + demand paging)', 10, 0
 msg_space_gone  db 'address space destroyed: ', 0
-msg_space_back  db ' pages back to the pool', 10, 0
+msg_space_back  db ' page(s) back to the pool', 0
+msg_demand      db 'demand paging: ', 0
+msg_demand_split db ' page(s) faulted in (image ', 0
+msg_demand_and  db ' + heap ', 0
+msg_demand_first db '), first page ', 0
 msg_space_nomem db 'no free physical pages: cannot build an address space for the program', 10, 0
 msg_file_toobig db 'file too big to print (over 60 KiB)', 10, 0
 

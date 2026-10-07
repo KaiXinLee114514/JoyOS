@@ -150,6 +150,17 @@ isr_common:
     pushad
     mov ebp, esp
 
+    ; ---- 14 号页错误先问一句:这是不是"按需分页"该补的页? ----
+    ; page_fault_try_handle 返回 1 = 已经从页池拿了一页、填好了程序页表,
+    ; 那就按原路回去把出错的那条指令**重执行一遍**(iret 的 EIP 就是它)。
+    ; 没有程序在跑、或者地址不在程序窗口里 → 返回 0,照旧走下面的 panic。
+    cmp dword [ebp + 32], 14
+    jne .no_demand
+    call page_fault_try_handle
+    test eax, eax
+    jnz .resume
+.no_demand:
+
     mov al, 10                           ; 先换行,免得和半行输出粘在一起
     call term_putc
     mov al, 0x4F                         ; 白字红底
@@ -227,6 +238,13 @@ isr_common:
 .panic_hang:
     hlt
     jmp .panic_hang
+
+; 按需分页补好了:扔掉"向量号 + 错误码",iret 回去重试那条指令
+; (栈上现在是:向量号, 错误码, EIP, CS, EFLAGS —— popad 之后正是这样)
+.resume:
+    popad
+    add esp, 8
+    iret
 
 ; ---------------------------------------------------------------------------
 ;  isr_name:向量号(传在 eax)→ 名字字符串地址(返在 eax)
