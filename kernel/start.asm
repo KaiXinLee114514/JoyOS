@@ -31,7 +31,8 @@ kmain:                                  ; 32 位内核入口(stub 里 jmp 0x1000
 %include "pmem.asm"                      ; 物理页池(位图分配器,paging_map 会找它要页)
 %include "fbterm.asm"                   ; 帧缓冲终端(图形模式)
 %include "vgafont.asm"                   ; 自定义点阵字模(文本模式实验)
-%include "keyboard.asm"                  ; PS/2 键盘
+%include "keyboard.asm"                  ; PS/2 键盘(顺手重映射 PIC)
+%include "pit.asm"                       ; PIT 定时器(IRQ0,100 Hz 心跳)
 %include "shell.asm"                     ; shell
 
 ; 内核区补到 64 KiB(128 扇区)—— 图形模式的帧缓冲终端和字库都要地方

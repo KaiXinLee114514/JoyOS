@@ -245,6 +245,12 @@ COL_ERR    equ 0x0C                    ; 亮红
     mov esi, msg_kbd
     call term_print
 
+    ; ---- 定时器:通道 0 → 100 Hz 心跳 ----
+    ; 必须排在 kbd_init 后面:PIC 的重映射是键盘那边做的,PIT 只是把 IRQ0 放行。
+    call pit_init
+    mov esi, msg_pit
+    call term_print
+
     mov al, COL_OK
     call term_set_color
     mov esi, msg_ok
@@ -701,6 +707,7 @@ msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-16 MiB (+ VBE LFB high windo
 msg_pmem    db 'pmem: page pool 0x00400000-0x00FFFFFF, ', 0
 msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: pmem / ptest)', 10, 0
 msg_kbd     db 'keyboard: PIC remapped to 0x20, IRQ1 enabled', 10, 0
+msg_pit     db 'timer: PIT channel 0 at 100 Hz (IRQ0 0x20; try: uptime / sleep)', 10, 0
 msg_font    db 'font: ', 0
 msg_font_disk    db 'loaded from disk (ATA), ', 0
 msg_font_builtin db 'built-in subset, ', 0

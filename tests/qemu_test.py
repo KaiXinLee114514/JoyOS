@@ -901,6 +901,33 @@ def main() -> int:
             results.append(("程序退出后页池没泄漏", has("free: 3072 pages"),
                             "free: 3072 pages"))
 
+            # ---- 定时器(PIT):tick 在涨、uptime 读得到、sleep 真的等够 ----
+            def uptime_ticks() -> int:
+                """屏幕上最后一次 "up N s (T ticks at 100 Hz)" 里的 T,没有就 -1"""
+                hits = re.findall(r"up (\d+) s \((\d+) ticks at 100 Hz\)", screen_lines())
+                return int(hits[-1][1]) if hits else -1
+
+            t_wall0 = time.time()
+            run("uptime")
+            t_before = uptime_ticks()
+            results.append(("uptime 读得到计时器", t_before > 0,
+                            f"up … ({t_before} ticks at 100 Hz)"))
+
+            run("sleep 2", wait=3.2)
+            results.append(("sleep 2 报 200 ticks(100 Hz)",
+                            has("slept 2 s (200 ticks)"),
+                            "slept 2 s (200 ticks)"))
+            run("uptime")
+            t_after = uptime_ticks()
+            wall = time.time() - t_wall0
+            delta = t_after - t_before
+            # 注意:两次 uptime 之间还夹着 harness 抓屏/等屏幕稳定的时间(好几秒),
+            # 所以别拿 200 当上界 —— 该比的是"guest 数出来的 tick"和"宿主墙钟"一致。
+            expect = wall * 100
+            results.append(("定时器速度和墙钟一致(sleep 期间 tick 真的在涨)",
+                            delta > 200 and abs(delta - expect) <= expect * 0.35,
+                            f"guest 走了 {delta} ticks,宿主墙钟 {wall:.1f} s(≈{expect:.0f} ticks)"))
+
             # ---- Alt 码位输入:日文/韩文/中文(靠 QMP 分开按住 Alt,tools/text2alt.py)
             run("clear")
             sent = subprocess.run([sys.executable, "tools/text2alt.py", "--send", qmp_sock,
@@ -1193,6 +1220,7 @@ def main() -> int:
                 ("IDT 装载",        "IDT: 256 vectors installed"),
                 ("分页开启",        "paging: CR0.PG=1"),
                 ("键盘就绪",        "keyboard: PIC remapped to 0x20, IRQ1 enabled"),
+                ("定时器就绪",      "timer: PIT channel 0 at 100 Hz"),
                 ("阶段完成提示",    "OK - stage 5"),
                 ("shell 就绪",      'type "help" for commands.'),
             ]

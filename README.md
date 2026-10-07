@@ -71,6 +71,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
 | 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`pmap`),物理页池 = 位图分配器 12 MiB(`pmem` / `ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift)、**Caps Lock**(顺带给键盘发 `0xED` 点灯)、方向键/PgUp 等扩展键、64 字节环形缓冲 |
+| **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);以后做抢占式多任务就从 `pit_irq` 里切栈(见 §6.11) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
 | **子目录** | `ls DOCS`、`cat DOCS/NOTE.TXT`、`cd` / `mkdir` / `rmdir`、路径里 `/` 和 `\` 都认;子目录里的程序 `run DOCS/HELLO.BIN` 和 `int 0x30` 的读写接口都跟着当前目录走;子目录满了会自动往簇链上接新簇 |
@@ -86,7 +87,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
 | 中文显示 | ✅ 一个汉字 16×16 直接画在帧缓冲上;文本是标准 **UTF-8**(四字节 emoji、坏字节替换符都处理了) |
 | 终端 | 会滚屏的终端(文本模式走 VGA 文本缓冲,图形模式走帧缓冲),支持 `\n` `\r` `\b` |
-| shell | `help` `echo` `zh` `clear` `info` `page` `fault` `reboot` `ls` `cat` `write` `run`,带退格的行编辑 |
+| shell | `help` `echo` `zh` `clear` `info` `page` `fault` `reboot` `ls` `cat` `write` `run` `uptime` `sleep`,带退格的行编辑 |
 
 ## 2. 快速开始
 
@@ -184,6 +185,7 @@ kernel/utf8.asm        UTF-8 解码(坏字节 → U+FFFD,防溢出/代理区都�
 kernel/idt.asm         IDT、32 个异常入口、panic 屏,idt_install 负责装门
 kernel/paging.asm      页目录 + 页表 + 开分页 + 按需分页(缺页补页、程序私有空间)
 kernel/keyboard.asm    8259A 重映射、IRQ1 键盘中断、扫描码翻译、环形缓冲
+kernel/pit.asm         8254 定时器:通道 0 按 100 Hz 发 IRQ0,只加 tick 计数(uptime/sleep 靠它)
 kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
 kernel/ata.asm         ATA(IDE)PIO 驱动:读扇区 + 写扇区 + FLUSH CACHE
@@ -488,6 +490,45 @@ pf_len          = 0x00000000     ← 每页都算"文件之外",一句都没拷
 别把**别人刚给你的输入**一起重置 —— 这类症状(数据全是 0)和"逻辑写错"长得一模一样,
 最省事的查法是 dump 内存看变量,而不是盯着代码猜。
 
+### 6.11 `mov ebx, 10` 把刚解出来的数字冲掉了(sleep 2 睡了 10 秒)
+
+加定时器那天,`uptime` 一切正常,`sleep 2` 却报:
+
+```
+> sleep 2
+slept 10 s (1000 ticks)
+```
+
+2 秒变成了 10 秒 —— 说明解析出来的数字根本不是 2。看 `parse_dec` 的循环:
+
+```asm
+.next:
+    mov bl, [esi]
+    sub bl, '0'          ; ← 数字取到了,存在 bl
+    mov ebx, 10          ; ✗ bl 也是 ebx 的一部分,这一句把数字冲成了 10
+    mul ebx              ; eax = eax×10
+    movzx ebx, bl
+    add eax, ebx         ; 于是加的是 10
+```
+
+`mul ebx` 的乘数要用 ebx,而刚解出来的数字正好存在 bl 里 —— 一个字一个字敲进去的
+`2` 被乘数覆盖了,最后 `1 * 10 + 10` 那种算法得出了 10。修法是**先乘再回读字符**:
+
+```asm
+    mov ebx, 10
+    mul ebx
+    test edx, edx
+    jnz .bad
+    movzx ebx, byte [esi]   ; ← 回读原字符,不依赖"上一次读到的寄存器"
+    sub ebx, '0'
+    add eax, ebx
+```
+
+这已经是同一类错的**第二次**了(更早那次是 `mov ebx, [shell_len]` 覆盖了存首字节的 `bl`),
+所以教训记牢:在 x86 里**"al/ax/eax 是同一个寄存器"** —— 往 ebx 写值就会改 bl,
+往 eax 写值就会改 al。手上有"临时值"时,先想想下一条指令会不会顺手把它覆盖掉;
+能被覆盖的临时值,要么放别的寄存器,要么**从内存重新读一次**。
+
 ## 7. shell 命令
 
 ```
@@ -508,6 +549,19 @@ cat <file>    把文件(UTF-8 文本)打出来,中文能直接看
 write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
 run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不带点会自动补 .BIN;
               裸敲 run 打印接口说明;跑完会报补了多少页:run TOUCH 最能看出来)
+uptime        开机到现在多久(内含 tick 数,例:up 4 s (432 ticks at 100 Hz))
+sleep <秒>    用 hlt 睡这么多秒(空闲不烧 CPU;上限 3600 秒)
+```
+
+`uptime` / `sleep` 的样子(定时器就是靠 100 Hz 的 IRQ0 数出来的):
+
+```
+> uptime
+up 4 s (432 ticks at 100 Hz)
+> sleep 2
+slept 2 s (200 ticks)
+> uptime
+up 13 s (1306 ticks at 100 Hz)
 ```
 
 `page` / `pmap` 的输出示例(这就是分页在干的事):
@@ -670,16 +724,12 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 `db '你好,世界!', 0` 写进内核,程序里也一样;坏字节会画成替换字符 `�` 而不是卡死。
 细节(包括之前那套"码位数组"的历史)见 [docs/encoding.md](docs/encoding.md)。
 
-## 10. 正在做:子目录 + FAT32
+## 10. 正在做:抢占式多任务
 
-用户点名的接下来两件事(计划写在 [docs/fat-plan.md](docs/fat-plan.md)):
-
-1. **子目录**:把"根目录 = 固定区域"这个写死的地方抽成"目录游标"(根区和簇链都当目录),
-   再加路径解析(`a/b/c.txt`)、`cd` / `mkdir` / `rmdir`、在子目录里读写文件;
-   vi 和编辑器跟着就能编辑任意路径的文件。
-2. **FAT32**:按 BPB 自动识别(FAT 表 32 位项、根目录变成簇链、FSInfo/EBPB),
-   `tools/mkfat.py --fat32` 能造 FAT32 分区,并用 `fsck.fat`/`mcopy` 交叉验证
-   —— 拿别的系统认得的结果来证明我们写对了。
+定时器(PIT / IRQ0)已经落地,`uptime` 和 `sleep` 都在用它。下一步是**抢占式内核线程**:
+在 `pit_irq` 里把现场存下来、换到另一个栈上继续跑,让内核同时"跑"几段代码。
+难点:内核现在是**不可重入**的(全局变量共享、`hlt` 等键、`space_live` 这类状态机),
+所以得先把"能被抢的地方"划出来,再谈抢占 —— 计划写在 [docs/known-issues.md](docs/known-issues.md)。
 
 ## 11. 还没做的(想练手就从这里挑)
 
@@ -691,7 +741,11 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 - **虚拟内存的下一层**:按需分页已经有了(碰到哪页才给哪页),但还没有
   **页置换 / swap / 写时复制**,也**不给程序自己长栈**(栈还是内核那套);
   窗口里的空洞也会给页(按访问给,不是按"真的要用"给)
-- **PIT 定时器(IRQ0)**:有了它才能做 `uptime`、闪烁光标、`sleep`
+- **抢占式多任务(内核线程)**:定时器已经有了(100 Hz 的 IRQ0),下一步是在 `pit_irq` 里
+  保存现场、换栈,让内核同时"跑"几段代码 —— 难点在内核目前不可重入(全局变量共享、
+  `hlt` 等待),得先把"可以被抢的地方"划出来(见 `kernel/pit.asm` 里那段注释)
+- **闪烁光标**:有定时器就能做(现在光标是常亮的)
+- **`sleep` 的更细粒度**:现在按秒睡(tick 粒度已经到 10 ms,只是 shell 只认整秒)
 - **光标键 / Home / End**:要处理扫描码的 `0xE0` 前缀
 - **ELF 加载 / 内存分配**:现在程序是平铺二进制读到固定地址,`malloc` 也没有
 - **鼠标(IRQ12)**:PS/2 鼠标比键盘多几个坑(要发命令、读 3 字节包)

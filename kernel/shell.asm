@@ -1463,6 +1463,68 @@ cmd_reboot:
     hlt                                   ; 真到这儿就只能拔电了
 
 ; ---------------------------------------------------------------------------
+;  cmd_uptime:开机以来过了多久 —— 数的是 PIT 的心跳(tick),不是墙钟
+; ---------------------------------------------------------------------------
+cmd_uptime:
+    call pit_get_ticks                    ; eax = tick 数
+    mov ebx, eax                          ; 留着待会儿还要再打一遍
+    xor edx, edx
+    mov ecx, TICK_HZ
+    div ecx                               ; eax = 秒,edx = 不到一秒的零头
+    mov esi, msg_uptime_1
+    call term_print
+    call term_print_dec                   ; 秒数
+    mov esi, msg_uptime_2
+    call term_print
+    mov eax, ebx
+    call term_print_dec                   ; tick 数(100 Hz:一秒一百个)
+    mov esi, msg_uptime_3
+    call term_print
+    ret
+
+; ---------------------------------------------------------------------------
+;  cmd_sleep:睡 <秒> —— 等 PIT 的 tick,期间 hlt,不烧 CPU
+;  上限 3600 秒:玩具归玩具,别让人一条命令把机器睡死过去
+; ---------------------------------------------------------------------------
+cmd_sleep:
+    call parse_dec
+    jc .usage
+    cmp eax, 3600
+    ja .too_long
+    mov ecx, TICK_HZ
+    mul ecx                               ; eax = 要等几个 tick
+    mov [sleep_want], eax
+    call pit_get_ticks
+    mov [sleep_from], eax
+    mov ecx, [sleep_want]
+    call pit_wait_ticks
+    call pit_get_ticks
+    sub eax, [sleep_from]                 ; 实际等了几个 tick
+    mov ebx, eax
+    mov esi, msg_sleep_done
+    call term_print
+    mov eax, [sleep_want]
+    xor edx, edx
+    mov ecx, TICK_HZ
+    div ecx                               ; 要的秒数
+    call term_print_dec
+    mov esi, msg_sleep_mid
+    call term_print
+    mov eax, ebx
+    call term_print_dec                   ; 实际 tick 数(通常会多 0~1 个:hlt 的边界)
+    mov esi, msg_sleep_tail
+    call term_print
+    ret
+.usage:
+    mov esi, msg_sleep_usage
+    call term_print
+    ret
+.too_long:
+    mov esi, msg_sleep_long
+    call term_print
+    ret
+
+; ---------------------------------------------------------------------------
 ;  parse_hex:把 [cmd_arg] 当十六进制数解析(可以带 0x),返 eax + CF
 ; ---------------------------------------------------------------------------
 parse_hex:
@@ -1524,6 +1586,54 @@ parse_hex:
     ret
 
 ; ---------------------------------------------------------------------------
+;  parse_dec:把 [cmd_arg] 当十进制数解析,返 eax + CF(CF=1 = 不是个合法的数)
+;  和 parse_hex 是一对:只认无符号十进制,溢出就报错(不悄悄回绕)
+; ---------------------------------------------------------------------------
+parse_dec:
+    push esi
+    push ebx
+    push ecx
+    mov esi, [cmd_arg]
+    xor eax, eax
+    xor ecx, ecx                          ; 数字位数
+.next:
+    mov bl, [esi]
+    test bl, bl
+    jz .end
+    cmp bl, ' '
+    je .end
+    cmp bl, '0'
+    jb .bad
+    cmp bl, '9'
+    ja .bad
+    ; ⚠ 别把刚取到的数字存在 bl 里然后 mov ebx, 10 —— 那样数字会被冲掉
+    ;   (踩过:sleep 2 睡成了 10 秒)。先乘 10,再回读字符取数字。
+    mov ebx, 10
+    mul ebx                               ; eax = eax×10,高位落在 edx
+    test edx, edx
+    jnz .bad                              ; 乘 10 就溢出了 → 这个数根本放不下
+    movzx ebx, byte [esi]
+    sub ebx, '0'
+    add eax, ebx
+    inc ecx
+    cmp ecx, 10
+    ja .bad
+    inc esi
+    jmp .next
+.end:
+    test ecx, ecx
+    jz .bad                               ; 一个数字都没有
+    clc
+    jmp .out
+.bad:
+    stc
+.out:
+    pop ecx
+    pop ebx
+    pop esi
+    ret
+
+; ---------------------------------------------------------------------------
 ;  命令表:名字 + 处理函数(名字为 0 表示表尾)
 ; ---------------------------------------------------------------------------
 n_help   db 'help', 0
@@ -1545,6 +1655,8 @@ n_pmem   db 'pmem', 0
 n_pmap   db 'pmap', 0
 n_pumap  db 'pumap', 0
 n_ptest  db 'ptest', 0
+n_uptime db 'uptime', 0
+n_sleep  db 'sleep', 0
 
 cmd_table:
     dd n_help,   cmd_help
@@ -1566,6 +1678,8 @@ cmd_table:
     dd n_pmap,   cmd_pmap
     dd n_pumap,  cmd_pumap
     dd n_ptest,  cmd_ptest
+    dd n_uptime, cmd_uptime
+    dd n_sleep,  cmd_sleep
     dd 0, 0
 
 ; ---------------------------------------------------------------------------
@@ -1591,6 +1705,15 @@ msg_fault       db 'touching an unmapped address on purpose...', 10, 0
 msg_reboot      db 'rebooting...', 10, 0
 msg_reboot_fail db '8042 did not reset, trying triple fault...', 10, 0
 
+msg_uptime_1    db 'up ', 0
+msg_uptime_2    db ' s (', 0
+msg_uptime_3    db ' ticks at 100 Hz)', 10, 0
+msg_sleep_done  db 'slept ', 0
+msg_sleep_mid   db ' s (', 0
+msg_sleep_tail  db ' ticks)', 10, 0
+msg_sleep_usage db 'usage: sleep <seconds>, e.g. sleep 2 (max 3600)', 10, 0
+msg_sleep_long  db 'sleep: too long (max 3600 seconds)', 10, 0
+
 msg_help db \
     'help          show this list', 10, \
     'echo <text>   print the text back', 10, \
@@ -1602,6 +1725,8 @@ msg_help db \
     'pmap <va>     map a fresh page from the pool at a virtual address', 10, \
     'pumap <va>    unmap it and give the page back', 10, \
     'ptest         self-test: dynamic page tables + page pool', 10, \
+    'uptime        how long the PIT has been ticking', 10, \
+    'sleep <sec>   sleep N seconds (hlt while waiting, max 3600)', 10, \
     'fault         touch an unmapped page on purpose', 10, \
     'reboot        restart the machine', 10, \
     'ls            list files on the FAT16 disk', 10, \
@@ -1729,6 +1854,8 @@ mb_got     dd 0                       ; 已经收进来几个字节
 mb_first   db 0                       ; 这个字符的首字节
 cmd_len    dd 0
 cmd_arg    dd 0
+sleep_want dd 0                          ; sleep 要等几个 tick
+sleep_from dd 0                          ; sleep 开始时的 tick 数
 
 page_va      dd 0
 page_pde     dd 0
