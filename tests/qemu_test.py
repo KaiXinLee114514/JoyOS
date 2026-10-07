@@ -817,6 +817,31 @@ def main() -> int:
                             has("font still intact: 砰"),
                             "font still intact: 砰 —— 这个字的点阵就在以前那个加载地址上"))
 
+            # ---- 全分页第一步:每个程序一套页目录,私有页从页池现拿 ----
+            def space_line() -> str:
+                """抓屏幕上最后一行 "image 0x120000 -> 0x…"(地址每次运行都不一样)"""
+                hits = [ln.strip() for ln in screen_lines().splitlines()
+                        if "image 0x120000 ->" in ln]
+                return hits[-1] if hits else ""
+
+            results.append(("程序有自己的地址空间",
+                            has("address space: CR3 = 0x") and has("own page directory"),
+                            "address space: CR3 = 0x… (own page directory)"))
+            results.append(("跑完地址空间收摊归还页",
+                            has("address space destroyed:") and has("pages back to the pool"),
+                            "address space destroyed: N pages back to the pool"))
+
+            first_space = space_line()
+            run("run hello", wait=1.1)
+            second_space = space_line()
+            results.append(("两次运行拿到不同物理页",
+                            first_space != "" and second_space != "" and first_space != second_space,
+                            f"两次映射行:{first_space} / {second_space}"))
+
+            run("pmem")
+            results.append(("程序退出后页池没泄漏", has("free: 3072 pages"),
+                            "free: 3072 pages"))
+
             run("run count", wait=1.1)
             results.append(("第二个程序:循环打印", has("counting: 1 2 3 4 5 6 7 8 9 10"),
                             "counting: 1 2 3 4 5 6 7 8 9 10"))

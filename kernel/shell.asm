@@ -650,11 +650,12 @@ cmd_run:
     call fat_stat
     cmp eax, -1
     je .notfound
-    cmp eax, PROG_MAX_SIZE
+    mov [prog_size], eax                ; 记下大小:待会儿按它往私有页里拷
+    cmp eax, SPACE_IMG_PAGES * 4096     ; 私有镜像窗口只有 512 KiB
     ja .toobig
     mov esi, [prog_name_ptr]
     mov edi, PROG_ADDR
-    call fat_read_file
+    call fat_read_file                  ; 先读到暂存区(0x120000,恒等映射)
     cmp eax, -1
     je .notfound
     mov al, COL_HEADER
@@ -667,14 +668,71 @@ cmd_run:
     call term_putc
     mov al, COL_NORMAL
     call term_set_color
-    pushad
-    call PROG_ADDR                      ; ← 程序在这里跑,它 ret 就回来
-    popad
+    ; ---- 给这个程序建一套自己的地址空间(私有页目录 + 私有页)----
+    call space_create
+    test eax, eax
+    jz .nomem
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_space_head
+    call term_print
+    mov eax, [space_pd]
+    call term_print_hex
+    mov esi, msg_space_tail
+    call term_print
+    mov esi, msg_space_img
+    call term_print
+    mov eax, [space_img_pa]
+    call term_print_hex
+    mov esi, msg_space_heap
+    call term_print
+    mov eax, [space_heap_pa]
+    call term_print_hex
     mov al, 10
     call term_putc
+    mov al, COL_NORMAL
+    call term_set_color
+
+    ; ---- 把暂存区的镜像抄进私有页 ----
+    ; 私有页是连续拿的,所以一次 rep movsd 就够(不用翻页表一页页拷)
+    mov esi, PROG_ADDR
+    mov edi, [space_img_pa]
+    mov ecx, [prog_size]
+    add ecx, 3
+    shr ecx, 2                          ; 字节 → dword(向上取整)
+    rep movsd
+
+    ; ---- 切到程序自己的页目录,跳进去跑;它 ret 回来后再切回内核的 ----
+    pushad
+    mov eax, [space_pd]
+    mov cr3, eax                        ; ★ 从这里开始,0x120000 是私有页了
+    call PROG_ADDR                      ; ← 程序在这里跑,它 ret 就回来
+    mov eax, PD_ADDR
+    mov cr3, eax                        ; 切回内核页目录
+    popad
+
+    mov al, 10
+    call term_putc
+    ; ---- 收摊:私有页 + 私有页表 + 页目录,全还给页池 ----
+    call space_destroy
+    mov [space_freed], eax
     mov al, COL_OK
     call term_set_color
     mov esi, msg_prog_done
+    call term_print
+    mov esi, msg_space_gone
+    call term_print
+    mov eax, [space_freed]
+    call term_print_dec
+    mov esi, msg_space_back
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    ret
+.nomem:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_space_nomem
     call term_print
     ret
 .notfound:
@@ -1014,7 +1072,7 @@ cmd_pmem:
     call term_print_dec
     mov esi, msg_pmem_free_lbl
     call term_print
-    mov eax, [pmem_free_pages]
+    mov eax, [pmem_free_count]
     call term_print_dec
     mov esi, msg_pmem_pages_end
     call term_print
@@ -1120,7 +1178,7 @@ PTEST_MAGIC2 equ 0xC3C3ABCD
 cmd_ptest:
     mov esi, msg_ptest_head
     call term_print
-    mov eax, [pmem_free_pages]
+    mov eax, [pmem_free_count]
     mov [ptest_free0], eax
     mov esi, msg_ptest_free0
     call term_print
@@ -1205,7 +1263,7 @@ cmd_ptest:
     call pmem_free
     mov esi, msg_ptest_free1
     call term_print
-    mov eax, [pmem_free_pages]
+    mov eax, [pmem_free_count]
     call term_print_dec
     mov esi, msg_ptest_slash
     call term_print
@@ -1213,7 +1271,7 @@ cmd_ptest:
     call term_print_dec
     mov esi, msg_ptest_pages
     call term_print
-    mov eax, [pmem_free_pages]
+    mov eax, [pmem_free_count]
     cmp eax, [ptest_free0]
     jne .fail_leak
     mov eax, PTEST_VA                    ; 解映射之后不该再能翻译出来
@@ -1515,6 +1573,13 @@ msg_write_fail  db 'write failed (disk full?)', 10, 0
 msg_running     db 'running ', 0
 msg_prog_done   db 'program returned to the shell', 10, 0
 msg_prog_toobig db 'program too big for the load area', 10, 0
+msg_space_head  db 'address space: CR3 = ', 0
+msg_space_tail  db '  (own page directory + private pages)', 10, 0
+msg_space_img   db '  image 0x120000 -> ', 0
+msg_space_heap  db '   heap 0x1A0000 -> ', 0
+msg_space_gone  db 'address space destroyed: ', 0
+msg_space_back  db ' pages back to the pool', 10, 0
+msg_space_nomem db 'no free physical pages: cannot build an address space for the program', 10, 0
 msg_file_toobig db 'file too big to print (over 60 KiB)', 10, 0
 
 PROG_ADDR      equ 0x120000             ; 程序加载地址(progs/*.asm 里的 ORG 要和它一致)
@@ -1526,6 +1591,8 @@ FILE_MAX       equ PROG_ARG_ADDR - FILE_BUF
 
 name_buf   times 64 db 0              ; 名字里可能带目录(DOCS/NOTE.TXT),留宽一点
 prog_name_ptr dd 0                      ; run 用的:去掉目录部分之后的程序名
+prog_size   dd 0                        ; run 用的:程序文件多大(按它往私有页里拷)
+space_freed dd 0                        ; run 用的:收摊时还回去的页数
 cat_name_ptr dd 0                       ; cat 用的:去掉目录部分之后的文件名
 file_size  dd 0
 
