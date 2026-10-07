@@ -33,6 +33,7 @@ kmain:                                  ; 32 位内核入口(stub 里 jmp 0x1000
 %include "vgafont.asm"                   ; 自定义点阵字模(文本模式实验)
 %include "keyboard.asm"                  ; PS/2 键盘(顺手重映射 PIC)
 %include "pit.asm"                       ; PIT 定时器(IRQ0,100 Hz 心跳)
+%include "rtc.asm"                       ; CMOS 实时时钟(日期 / 时间)
 %include "shell.asm"                     ; shell
 
 ; 内核区补到 64 KiB(128 扇区)—— 图形模式的帧缓冲终端和字库都要地方

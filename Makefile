@@ -41,6 +41,9 @@ HDIMG   := $(BUILD)/joyos-hd.img
 # QMP socket:`make hd` / `make hd32` 把它开在这儿,
 # tools/text2alt.py --send 就靠它把中文/日文/韩文打进去(见该脚本的说明)
 QMP_SOCK := $(BUILD)/qmp.sock
+# RTC 给虚拟机的"现在几点":QEMU 默认 base=utc,guest 里 date 打出来会比你墙上钟少 8 小时。
+# 加了这个,窗口里看到的 CMOS 时间就是你本机时间(测试台自己起 QEMU,不受影响)
+RTC_ARG := -rtc base=localtime
 DIV_IMG    := $(BUILD)/joyos-div.img
 
 BOOT_SRC    := boot/boot.asm
@@ -169,7 +172,7 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
 
 hd: $(HDIMG)
 	@rm -f $(QMP_SOCK)
-	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait
+	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait $(RTC_ARG)
 
 # ---------------------------------------------------------------------------
 #  FAT32 版镜像:同一个内核(BPB 自动认 FAT16/FAT32),只是分区格式不一样。
@@ -190,7 +193,7 @@ $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-jo
 
 hd32: $(HD32IMG)
 	@rm -f $(QMP_SOCK)
-	$(QEMU) -drive file=$(HD32IMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait
+	$(QEMU) -drive file=$(HD32IMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait $(RTC_ARG)
 
 # ---------------------------------------------------------------------------
 #  扩展:不进默认构建/默认镜像的东西(现在就一个 vi)
@@ -211,7 +214,7 @@ $(EXT_IMG): $(EXT_BINS) $(HDIMG)
 ext-img: $(EXT_IMG)
 
 run-ext: $(EXT_IMG)
-	$(QEMU) -drive file=$(EXT_IMG),format=raw,if=ide,index=0 -boot c
+	$(QEMU) -drive file=$(EXT_IMG),format=raw,if=ide,index=0 -boot c $(RTC_ARG)
 
 test-hd32: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
 	@echo "── FAT32 镜像:同一套内核,BPB 自动认 32 位 FAT ──"
@@ -233,16 +236,16 @@ $(DIV_IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel-div.bin tools/mk
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel-div.bin $(DIV_IMG)
 
 run: $(IMG)
-	$(QEMU) -fda $(IMG) -boot a
+	$(QEMU) -fda $(IMG) -boot a $(RTC_ARG)
 
 # 带自定义点阵字模的实验版(见 font/README.md;默认构建不启用)
 run-font:
 	$(MAKE) -B build/kernel.bin USE_CUSTOM_FONT=1
 	$(MAKE) $(IMG)
-	$(QEMU) -fda $(IMG) -boot a
+	$(QEMU) -fda $(IMG) -boot a $(RTC_ARG)
 
 div: $(DIV_IMG)
-	$(QEMU) -fda $(DIV_IMG) -boot a
+	$(QEMU) -fda $(DIV_IMG) -boot a $(RTC_ARG)
 
 # 从上游 .hex 重新生成字模 / 映射 / 文案(需要先下 unifont 的 .hex,见 font/README.md)
 # 从完整字库重新抽子集(需要先有 font/.cache/unifont_all.hex,见 font/README.md)

@@ -1483,6 +1483,90 @@ cmd_uptime:
     ret
 
 ; ---------------------------------------------------------------------------
+;  cmd_date:读 CMOS 时钟 —— 日期 / 时间 / 星期
+;  和 uptime 不是一回事:uptime 数的是"开机后过了多久",date 读的是"现在几点"
+;     date          完整:YYYY-MM-DD HH:MM:SS 星期X + 一行当前模式
+;     date ymd      2026-10-07
+;     date mdy      10/07/2026(月/日/年)
+;     date dmy      07/10/2026(日/月/年)
+;     date time     11:00:24
+; ---------------------------------------------------------------------------
+cmd_date:
+    call rtc_get
+    mov esi, [cmd_arg]
+    call strip_name                       ; 参数去尾空格(顺手把换行干掉)
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .full                              ; 裸 date:老样子
+
+    ; 量一下这个词多长,喂给 str_eq
+    mov edi, esi
+    xor ecx, ecx
+.len:
+    cmp byte [edi], 0
+    je .len_done
+    inc edi
+    inc ecx
+    jmp .len
+.len_done:
+    mov edx, n_fmt_ymd
+    call str_eq
+    test eax, eax
+    jnz .ymd
+    mov esi, [cmd_arg]
+    mov edx, n_fmt_mdy
+    call str_eq
+    test eax, eax
+    jnz .mdy
+    mov esi, [cmd_arg]
+    mov edx, n_fmt_dmy
+    call str_eq
+    test eax, eax
+    jnz .dmy
+    mov esi, [cmd_arg]
+    mov edx, n_fmt_time
+    call str_eq
+    test eax, eax
+    jnz .time
+    jmp .usage
+
+.ymd:
+    call rtc_print_ymd
+    jmp .newline
+.mdy:
+    call rtc_print_mdy
+    jmp .newline
+.dmy:
+    call rtc_print_dmy
+    jmp .newline
+.time:
+    call rtc_print_hms
+.newline:
+    mov al, 10
+    call term_putc
+    ret
+
+.full:
+    call rtc_print_time
+    call rtc_print_state
+    ret
+
+.usage:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_date_usage
+    call term_print
+    mov esi, [cmd_arg]
+    call term_print
+    mov esi, msg_date_usage_end
+    call term_print
+    mov al, 10
+    call term_putc
+    mov al, COL_NORMAL
+    call term_set_color
+    ret
+
+; ---------------------------------------------------------------------------
 ;  cmd_sleep:睡 <秒> —— 等 PIT 的 tick,期间 hlt,不烧 CPU
 ;  上限 3600 秒:玩具归玩具,别让人一条命令把机器睡死过去
 ; ---------------------------------------------------------------------------
@@ -1657,6 +1741,13 @@ n_pumap  db 'pumap', 0
 n_ptest  db 'ptest', 0
 n_uptime db 'uptime', 0
 n_sleep  db 'sleep', 0
+n_date   db 'date', 0
+n_fmt_ymd  db 'ymd', 0
+n_fmt_mdy  db 'mdy', 0
+n_fmt_dmy  db 'dmy', 0
+n_fmt_time db 'time', 0
+msg_date_usage db 'date: unknown format, try ymd / mdy / dmy / time (got: ', 0
+msg_date_usage_end db ')', 0
 
 cmd_table:
     dd n_help,   cmd_help
@@ -1680,6 +1771,7 @@ cmd_table:
     dd n_ptest,  cmd_ptest
     dd n_uptime, cmd_uptime
     dd n_sleep,  cmd_sleep
+    dd n_date,   cmd_date
     dd 0, 0
 
 ; ---------------------------------------------------------------------------
@@ -1727,6 +1819,7 @@ msg_help db \
     'ptest         self-test: dynamic page tables + page pool', 10, \
     'uptime        how long the PIT has been ticking', 10, \
     'sleep <sec>   sleep N seconds (hlt while waiting, max 3600)', 10, \
+    'date [fmt]    read the CMOS clock: no arg = full, or ymd / mdy / dmy / time', 10, \
     'fault         touch an unmapped page on purpose', 10, \
     'reboot        restart the machine', 10, \
     'ls            list files on the FAT16 disk', 10, \

@@ -251,6 +251,11 @@ COL_ERR    equ 0x0C                    ; 亮红
     mov esi, msg_pit
     call term_print
 
+    ; ---- 实时时钟(CMOS):读日期/时间,顺手报到屏幕上 ----
+    ; 只读不写:这颗芯片会一直走到电池没电,我们不去改它
+    call rtc_get
+    call rtc_print_boot
+
     mov al, COL_OK
     call term_set_color
     mov esi, msg_ok

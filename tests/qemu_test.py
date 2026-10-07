@@ -10,6 +10,7 @@ JoyOS 无头自动化测试。
 
 退出码 0 = 全过。失败时会把整屏打出来,方便看卡在哪。
 """
+import datetime
 import os
 import re
 import shutil
@@ -928,6 +929,61 @@ def main() -> int:
                             delta > 200 and abs(delta - expect) <= expect * 0.35,
                             f"guest 走了 {delta} ticks,宿主墙钟 {wall:.1f} s(≈{expect:.0f} ticks)"))
 
+            # ---- CMOS 时钟:date 读的是 RTC 里"现在几点"----
+            # 测试台起 QEMU 时没加 -rtc,所以 guest 看到的就是宿主 UTC(Makefile 的
+            # 窗口版加了 -rtc base=localtime,那是给人看的,跟这里无关)
+            stamp = re.compile(r"(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})")
+
+            def guest_date():
+                """屏幕上最后一个 YYYY-MM-DD HH:MM:SS(当 UTC 看),没有就 None"""
+                hits = stamp.findall(screen_lines())
+                if not hits:
+                    return None
+                return datetime.datetime(*(int(x) for x in hits[-1]),
+                                         tzinfo=datetime.timezone.utc)
+
+            run("date", wait=0.9)
+            first = guest_date()
+            now = datetime.datetime.now(datetime.timezone.utc)
+            drift = abs((first - now).total_seconds()) if first else 1e9
+            results.append(("date 读得到 CMOS 时间(和宿主 UTC 对得上)",
+                            first is not None and drift < 180 and has("RTC: BCD, 24-hour mode"),
+                            f"date → {first}(宿主 UTC {now:%Y-%m-%d %H:%M:%S},差 {drift:.0f} 秒)"))
+            run("sleep 2", wait=3.2)
+            run("date", wait=0.9)
+            second = guest_date()
+            step = (second - first).total_seconds() if (first and second) else -1
+            results.append(("date 在真的走(sleep 2 之后往后跳)",
+                            second is not None and 1.0 <= step <= 15.0,
+                            f"两次 date 相隔 {step:.0f} 秒"))
+
+            # ---- date 的格式参数:ymd / mdy / dmy / time ----
+            run("date ymd", wait=0.7)
+            run("date mdy", wait=0.7)
+            run("date dmy", wait=0.7)
+            run("date time", wait=0.7)
+            run("date xxx", wait=0.7)
+            lines = [ln.strip() for ln in screen_lines().splitlines()]
+
+            def has_line(text: str) -> bool:
+                return text in lines
+
+            # 别在跨零点那几秒上栽跟头:前后两分钟以内都算对
+            around = [datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=off)
+                      for off in (-120, 0, 120)]
+            want = {name: {d.strftime(fmt) for d in around} for name, fmt in
+                    (("ymd", "%Y-%m-%d"), ("mdy", "%m/%d/%Y"), ("dmy", "%d/%m/%Y"))}
+            for name, fmt in (("ymd", "%Y-%m-%d"), ("mdy", "%m/%d/%Y"), ("dmy", "%d/%m/%Y")):
+                hit = [w for w in want[name] if has_line(w)]
+                results.append((f"date {name} 打的是 {fmt}", bool(hit),
+                                f"屏幕上有 {hit[0] if hit else '没找到'}"))
+            results.append(("date time 只打 HH:MM:SS",
+                            any(re.fullmatch(r"\d{2}:\d{2}:\d{2}", ln) for ln in lines),
+                            "有一行正好是 时:分:秒"))
+            results.append(("date 参数写错会提示",
+                            has("unknown format") and has("(got: xxx)"),
+                            "打红字说明支持哪些格式,并把手写的那个词带出来"))
+
             # ---- Alt 码位输入:日文/韩文/中文(靠 QMP 分开按住 Alt,tools/text2alt.py)
             run("clear")
             sent = subprocess.run([sys.executable, "tools/text2alt.py", "--send", qmp_sock,
@@ -1221,6 +1277,7 @@ def main() -> int:
                 ("分页开启",        "paging: CR0.PG=1"),
                 ("键盘就绪",        "keyboard: PIC remapped to 0x20, IRQ1 enabled"),
                 ("定时器就绪",      "timer: PIT channel 0 at 100 Hz"),
+                ("RTC 时钟",        "rtc: CMOS clock"),
                 ("阶段完成提示",    "OK - stage 5"),
                 ("shell 就绪",      'type "help" for commands.'),
             ]

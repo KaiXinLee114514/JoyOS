@@ -72,6 +72,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`pmap`),物理页池 = 位图分配器 12 MiB(`pmem` / `ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift)、**Caps Lock**(顺带给键盘发 `0xED` 点灯)、方向键/PgUp 等扩展键、64 字节环形缓冲 |
 | **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);以后做抢占式多任务就从 `pit_irq` 里切栈(见 §6.11) |
+| **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
 | **子目录** | `ls DOCS`、`cat DOCS/NOTE.TXT`、`cd` / `mkdir` / `rmdir`、路径里 `/` 和 `\` 都认;子目录里的程序 `run DOCS/HELLO.BIN` 和 `int 0x30` 的读写接口都跟着当前目录走;子目录满了会自动往簇链上接新簇 |
@@ -87,7 +88,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
 | 中文显示 | ✅ 一个汉字 16×16 直接画在帧缓冲上;文本是标准 **UTF-8**(四字节 emoji、坏字节替换符都处理了) |
 | 终端 | 会滚屏的终端(文本模式走 VGA 文本缓冲,图形模式走帧缓冲),支持 `\n` `\r` `\b` |
-| shell | `help` `echo` `zh` `clear` `info` `page` `fault` `reboot` `ls` `cat` `write` `run` `uptime` `sleep`,带退格的行编辑 |
+| shell | `help` `echo` `zh` `clear` `info` `page` `fault` `reboot` `ls` `cat` `write` `run` `date` `uptime` `sleep`,带退格的行编辑 |
 
 ## 2. 快速开始
 
@@ -186,6 +187,7 @@ kernel/idt.asm         IDT、32 个异常入口、panic 屏,idt_install 负责�
 kernel/paging.asm      页目录 + 页表 + 开分页 + 按需分页(缺页补页、程序私有空间)
 kernel/keyboard.asm    8259A 重映射、IRQ1 键盘中断、扫描码翻译、环形缓冲
 kernel/pit.asm         8254 定时器:通道 0 按 100 Hz 发 IRQ0,只加 tick 计数(uptime/sleep 靠它)
+kernel/rtc.asm         CMOS 实时时钟:等 UIP、读两遍比对、BCD/12 小时制换算、日期格式化(date 靠它)
 kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
 kernel/ata.asm         ATA(IDE)PIO 驱动:读扇区 + 写扇区 + FLUSH CACHE
@@ -529,6 +531,17 @@ slept 10 s (1000 ticks)
 往 eax 写值就会改 al。手上有"临时值"时,先想想下一条指令会不会顺手把它覆盖掉;
 能被覆盖的临时值,要么放别的寄存器,要么**从内存重新读一次**。
 
+### 6.12 测试台认不出"星期三"(OCR 的锅),还有 `-qmp` 必须带 `unix:`
+
+做 CMOS 时钟时撞上两个跟内核代码无关、但很费人的坑:
+
+- **抓屏 OCR 认不出中文星期**:`tests/qemu_test.py` 的 `screen_text()` 是拿字库点阵
+  去比对屏幕像素的,`date` 打的 `星期三` 会被认成 `??????`。所以测试套件里
+  **只断言 ASCII 部分**(时间戳、`RTC: BCD...`、格式参数),星期几得人眼看截图。
+- **QEMU 的 `-qmp` 参数必须写成 `unix:/path/to.sock`**:少写 `unix:` 前缀 QEMU 直接退出
+  (`'...' is not a valid char driver`)。`-monitor` 不用带前缀,`-qmp` 必须带 ——
+  排查时还顺手发现一个上次没杀干净的 QEMU 一直占着 `build/joyos-hd.img`。
+
 ## 7. shell 命令
 
 ```
@@ -549,6 +562,7 @@ cat <file>    把文件(UTF-8 文本)打出来,中文能直接看
 write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
 run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不带点会自动补 .BIN;
               裸敲 run 打印接口说明;跑完会报补了多少页:run TOUCH 最能看出来)
+date [fmt]    读 CMOS 时钟:裸 date 打日期+时间+星期,加 ymd / mdy / dmy / time 换格式
 uptime        开机到现在多久(内含 tick 数,例:up 4 s (432 ticks at 100 Hz))
 sleep <秒>    用 hlt 睡这么多秒(空闲不烧 CPU;上限 3600 秒)
 ```
@@ -562,6 +576,24 @@ up 4 s (432 ticks at 100 Hz)
 slept 2 s (200 ticks)
 > uptime
 up 13 s (1306 ticks at 100 Hz)
+```
+
+`date` 的样子(读的是 CMOS 里的真实时间;窗口版 QEMU 加了 `-rtc base=localtime`,所以跟你手腕上的表一致):
+
+```
+> date
+2026-10-07 11:03:36 星期三
+RTC: BCD, 24-hour mode (no timezone handling)
+> date ymd
+2026-10-07
+> date mdy
+10/07/2026
+> date dmy
+07/10/2026
+> date time
+11:03:42
+> date xxx
+date: unknown format, try ymd / mdy / dmy / time (got: xxx)
 ```
 
 `page` / `pmap` 的输出示例(这就是分页在干的事):
@@ -724,18 +756,20 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 `db '你好,世界!', 0` 写进内核,程序里也一样;坏字节会画成替换字符 `�` 而不是卡死。
 细节(包括之前那套"码位数组"的历史)见 [docs/encoding.md](docs/encoding.md)。
 
-## 10. 正在做:抢占式多任务
+## 10. 下一步:抢占式多任务
 
-定时器(PIT / IRQ0)已经落地,`uptime` 和 `sleep` 都在用它。下一步是**抢占式内核线程**:
+**刚刚落地:**`date` 读 CMOS 实时时钟(格式参数、中文星期、12/24 小时制都能认,见第 7 节)
+—— 想让屏幕上的光标一闪一闪、或者加个 `settime`,现在都有料可用了。
+
+定时器(PIT / IRQ0)也已经落地,`uptime` 和 `sleep` 都在用它。下一步是**抢占式内核线程**:
 在 `pit_irq` 里把现场存下来、换到另一个栈上继续跑,让内核同时"跑"几段代码。
 难点:内核现在是**不可重入**的(全局变量共享、`hlt` 等键、`space_live` 这类状态机),
 所以得先把"能被抢的地方"划出来,再谈抢占 —— 计划写在 [docs/known-issues.md](docs/known-issues.md)。
 
 ## 11. 还没做的(想练手就从这里挑)
 
-- **删文件 / 建子目录 / 长文件名**:现在只有根目录 + 8.3 短名(`rm` 会是最短的一步:
-  目录项首字节写 `0xE5` + 把簇链标回空闲)
-- **程序带参数**:`run PROG arg` 需要定义一个"启动信息块"(参数放哪、栈怎么给)
+- **删文件 / 长文件名**:`mkdir` / `rmdir` / 子目录已经能用了,还缺 `rm`
+  (目录项首字节写 `0xE5` + 把簇链标回空闲)和长文件名(VFAT,那是另一个故事)
 - **保护程序搞坏内核**:现在程序和内核平起平坐,能直接改内核内存 ——
   真正的下一步是 ring 3 + TSS + 系统调用门,把"内核窗口"从程序地址空间里挪走
 - **虚拟内存的下一层**:按需分页已经有了(碰到哪页才给哪页),但还没有
@@ -744,11 +778,14 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 - **抢占式多任务(内核线程)**:定时器已经有了(100 Hz 的 IRQ0),下一步是在 `pit_irq` 里
   保存现场、换栈,让内核同时"跑"几段代码 —— 难点在内核目前不可重入(全局变量共享、
   `hlt` 等待),得先把"可以被抢的地方"划出来(见 `kernel/pit.asm` 里那段注释)
-- **闪烁光标**:有定时器就能做(现在光标是常亮的)
+- **闪烁光标**:有定时器就能做(现在光标是常亮的;`pit_irq` 里翻转一下就行)
 - **`sleep` 的更细粒度**:现在按秒睡(tick 粒度已经到 10 ms,只是 shell 只认整秒)
-- **光标键 / Home / End**:要处理扫描码的 `0xE0` 前缀
-- **ELF 加载 / 内存分配**:现在程序是平铺二进制读到固定地址,`malloc` 也没有
+- **ELF 加载**:现在程序是平铺二进制读到固定地址(没有段、没有重定位),也不会
+  按程序要多少给多少地长大;`malloc` 已经有了(迷你 libc 里那个),但堆就固定那么大
 - **鼠标(IRQ12)**:PS/2 鼠标比键盘多几个坑(要发命令、读 3 字节包)
+- **`date` 只能读不能写 / 不知道时区**:没有 `settime`(往 CMOS 写得先关 NMI 位、
+  还得避开时钟更新,见 [docs/known-issues.md](docs/known-issues.md) 第 8 节);
+  打出来的就是 CMOS 里的原始数字,不做时区换算
 - **从磁盘读内核**:现在内核还是引导扇区按固定 LBA 读的,没有"从文件系统加载内核"
 
 ## 12. 许可
