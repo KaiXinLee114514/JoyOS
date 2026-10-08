@@ -4,11 +4,10 @@
 ;  能干的:
 ;      help            列出命令
 ;      echo <文字>     把文字打回来
-;      zh              显示中文(点阵字库,直接往帧缓冲里 blit)
 ;      clear           清屏
 ;      info            系统信息(CR0/CR3/IDT/段寄存器/读盘方式...)
-;      page <十六进制> 查一个虚拟地址被映射到哪(页目录 + 页表逐级查)
-;      fault           故意踩一个没映射的地址,看页错误 panic 屏
+;      debug <什么>    诊断/自检:page / pmem / pmap / pumap / ptest / fault
+;                      (演示类命令都收在这条下面;中文演示在磁盘程序 UTF8.BIN)
 ;      reboot          重启(通过 8042 键盘控制器)
 ;      ls              列 FAT16 根目录
 ;      cat <文件>      把一个文本文件(UTF-8)打出来,中文能直接看
@@ -16,7 +15,7 @@
 ;      run <文件>      把程序从磁盘读进内存跑(.BIN,平铺二进制)
 ;
 ;  注意:键盘直接给字节,没有输入法 —— 命令行本身只能打 ASCII。
-;  想看中文就用 cat(文件里存的是 UTF-8),或者让程序自己打。
+;  想看中文就用 cat(文件里存的是 UTF-8),或者让程序自己打(run UTF8)。
 ;
 ;  结构:读一行(shell_readline)→ 切成"命令 + 参数"(shell_execute)→ 查表跳转。
 ;  行编辑只有退格和回车 —— 光标键要先处理 0xE0 前缀,留给你自己加。
@@ -311,6 +310,107 @@ cmd_help:
     mov esi, msg_help
     call term_print
     ret
+; ---------------------------------------------------------------------------
+;  debug <what>:诊断/自检类命令都收在这一条下面
+;  子命令的实现原样复用(它们都从 [cmd_arg] 读参数),所以先把 [cmd_arg] 挪到
+;  子命令后面那截再尾调用过去 —— 它们看到的参数和以前单敲时一样:
+;      debug page 0x400000   → cmd_page 拿到的是 "0x400000"
+;      debug pmem            → cmd_pmem 拿到空串(它本来也不看参数)
+; ---------------------------------------------------------------------------
+cmd_debug:
+    push esi
+    push edi
+    push ecx
+    push ebx
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0                   ; 光敲 debug → 列用法
+    je .usage
+
+    mov edi, esi                        ; edi = 子命令词开头
+.find_end:
+    mov al, [esi]
+    test al, al
+    jz .end_found
+    cmp al, ' '
+    je .end_found
+    inc esi
+    jmp .find_end
+.end_found:
+    mov ecx, esi
+    sub ecx, edi                        ; ecx = 子命令词长
+.arg_skip:
+    cmp byte [esi], ' '                 ; 参数从后面的空格之后开始
+    jne .arg_ready
+    inc esi
+    jmp .arg_skip
+.arg_ready:
+    mov [dbg_arg], esi                  ; 先存好:下面每比一次都要重设 esi
+    mov esi, edi
+    mov edx, n_page
+    call str_eq
+    test eax, eax
+    jnz .page
+    mov esi, edi
+    mov edx, n_pmem
+    call str_eq
+    test eax, eax
+    jnz .pmem
+    mov esi, edi
+    mov edx, n_pmap
+    call str_eq
+    test eax, eax
+    jnz .pmap
+    mov esi, edi
+    mov edx, n_pumap
+    call str_eq
+    test eax, eax
+    jnz .pumap
+    mov esi, edi
+    mov edx, n_ptest
+    call str_eq
+    test eax, eax
+    jnz .ptest
+    mov esi, edi
+    mov edx, n_fault
+    call str_eq
+    test eax, eax
+    jnz .fault
+    jmp .usage
+
+.page:
+    mov eax, cmd_page
+    jmp .go
+.pmem:
+    mov eax, cmd_pmem
+    jmp .go
+.pmap:
+    mov eax, cmd_pmap
+    jmp .go
+.pumap:
+    mov eax, cmd_pumap
+    jmp .go
+.ptest:
+    mov eax, cmd_ptest
+    jmp .go
+.fault:
+    mov eax, cmd_fault
+.go:
+    mov ecx, [dbg_arg]                  ; 把参数挪到子命令处理函数看的地方
+    mov [cmd_arg], ecx
+    pop ebx
+    pop ecx
+    pop edi
+    pop esi
+    jmp eax                             ; 尾调用:它的 ret 直接回 shell_execute
+.usage:
+    mov esi, msg_debug_usage
+    call term_print
+    pop ebx
+    pop ecx
+    pop edi
+    pop esi
+    ret
+
 
 ; ---------------------------------------------------------------------------
 ;  ls:列根目录
@@ -910,39 +1010,6 @@ strlen:
     jmp .loop
 .done:
     pop esi
-    ret
-
-cmd_zh:
-    mov al, COL_NORMAL
-    call term_set_color
-    mov esi, msg_zh_note
-    call term_print
-    xor ecx, ecx                        ; 一条一条打
-.next:
-    cmp ecx, zh_str_count
-    jae .done
-    mov esi, zh_str_table
-    mov esi, [esi + ecx * 4]
-    push ecx
-    call term_print                     ; UTF-8 字节串,走的是统一的那条路
-    mov al, 10
-    call term_putc
-    pop ecx
-    inc ecx
-    jmp .next
-.done:
-    ; ---- 顺手演示两件事 ----
-    ; (1) 4 字节 UTF-8:emoji 的码位在 U+1F600 以上,得走 4 字节那条分支
-    mov esi, msg_zh_emoji
-    call term_print
-    ; (2) 故意坏的 UTF-8:截断的 3 字节序列 + 一个孤立延续字节
-    ;     → 应该画出两个替换字符 U+FFFD(�),而且后面的文字还能继续显示
-    mov esi, msg_zh_broken
-    call term_print
-    mov esi, msg_zh_broken2
-    call term_print
-    mov al, 10
-    call term_putc
     ret
 
 cmd_echo:
@@ -1722,7 +1789,7 @@ parse_dec:
 ; ---------------------------------------------------------------------------
 n_help   db 'help', 0
 n_echo   db 'echo', 0
-n_zh     db 'zh', 0
+n_debug  db 'debug', 0
 n_ls     db 'ls', 0
 n_cat    db 'cat', 0
 n_write  db 'write', 0
@@ -1752,7 +1819,6 @@ msg_date_usage_end db ')', 0
 cmd_table:
     dd n_help,   cmd_help
     dd n_echo,   cmd_echo
-    dd n_zh,     cmd_zh
     dd n_ls,     cmd_ls
     dd n_cd,     cmd_cd
     dd n_mkdir,  cmd_mkdir
@@ -1762,13 +1828,8 @@ cmd_table:
     dd n_run,    cmd_run
     dd n_clear,  cmd_clear
     dd n_info,   cmd_info
-    dd n_page,   cmd_page
-    dd n_fault,  cmd_fault
+    dd n_debug,  cmd_debug
     dd n_reboot, cmd_reboot
-    dd n_pmem,   cmd_pmem
-    dd n_pmap,   cmd_pmap
-    dd n_pumap,  cmd_pumap
-    dd n_ptest,  cmd_ptest
     dd n_uptime, cmd_uptime
     dd n_sleep,  cmd_sleep
     dd n_date,   cmd_date
@@ -1781,6 +1842,7 @@ msg_shell_hello db 'type "help" for commands.', 10, 0
 msg_prompt      db '> ', 0
 cwd_str         times 64 db 0          ; 当前目录(cd 用,空 = 根)
 saved_dir       dd 0                   ; 命令借用目录时的"还回去"的值
+dbg_arg         dd 0                   ; debug 子命令后面那截参数的指针
 msg_mkdir_ok    db 'created directory ', 0
 msg_mkdir_bad   db 'mkdir failed (already exists or disk full)', 10, 0
 msg_mkdir_use   db 'usage: mkdir <dir>', 10, 0
@@ -1789,10 +1851,6 @@ msg_rmdir_bad   db 'rmdir failed (not found or not a directory)', 10, 0
 msg_rmdir_notempty db 'rmdir failed (directory not empty)', 10, 0
 msg_rmdir_use   db 'usage: rmdir <dir>', 10, 0
 msg_shell_unknown db 'unknown command: ', 0
-msg_zh_note     db 'zh: glyphs from GNU Unifont, blitted straight into the VBE framebuffer', 10, 0
-msg_zh_emoji    db 'emoji (4-byte UTF-8): 😀', 10, 0
-msg_zh_broken   db 'broken UTF-8: [', 0xE4, 0xBD, 0x20, 0x80, '] (should be two', 0
-msg_zh_broken2  db ' replacement chars, and this text still shows)', 10, 0
 msg_fault       db 'touching an unmapped address on purpose...', 10, 0
 msg_reboot      db 'rebooting...', 10, 0
 msg_reboot_fail db '8042 did not reset, trying triple fault...', 10, 0
@@ -1806,21 +1864,16 @@ msg_sleep_tail  db ' ticks)', 10, 0
 msg_sleep_usage db 'usage: sleep <seconds>, e.g. sleep 2 (max 3600)', 10, 0
 msg_sleep_long  db 'sleep: too long (max 3600 seconds)', 10, 0
 
+msg_debug_usage db 'usage: debug <what>  (what = page / pmem / pmap / pumap / ptest / fault)', 10, 0
 msg_help db \
     'help          show this list', 10, \
     'echo <text>   print the text back', 10, \
-    'zh            print Chinese (bitmap glyphs from GNU Unifont)', 10, \
     'clear         clear the screen', 10, \
     'info          CPU / paging / IDT info', 10, \
-    'page <hex>    walk the page tables, e.g. page 0x1000000', 10, \
-    'pmem          physical page pool (free/used pages)', 10, \
-    'pmap <va>     map a fresh page from the pool at a virtual address', 10, \
-    'pumap <va>    unmap it and give the page back', 10, \
-    'ptest         self-test: dynamic page tables + page pool', 10, \
+    'debug <what>  diagnostics: page / pmem / pmap / pumap / ptest / fault', 10, \
     'uptime        how long the PIT has been ticking', 10, \
     'sleep <sec>   sleep N seconds (hlt while waiting, max 3600)', 10, \
     'date [fmt]    read the CMOS clock: no arg = full, or ymd / mdy / dmy / time', 10, \
-    'fault         touch an unmapped page on purpose', 10, \
     'reboot        restart the machine', 10, \
     'ls            list files on the FAT16 disk', 10, \
     'cat <file>    print a text file (UTF-8)', 10, \
@@ -1845,10 +1898,10 @@ msg_info_seg     db 'segments    : CS = ', 0
 msg_info_seg2    db '   DS = ', 0
 msg_info_seg3    db '  (flat: base 0, limit 4 GiB)', 10, 0
 msg_info_page    db 'paging      : identity 0..16 MiB + VBE LFB high window', 10, \
-                    '              page pool 0x00400000-0x00FFFFFF (pmem / ptest)', 10, \
+                    '              page pool 0x00400000-0x00FFFFFF (debug pmem / debug ptest)', 10, \
                     '              CR0.PG = 1 (bit31), CR4.PSE = 0 (4 KiB pages)', 10, 0
 
-msg_page_usage   db 'usage: page <hex address>, e.g. page 0x400000', 10, 0
+msg_page_usage   db 'usage: debug page <hex address>, e.g. debug page 0x400000', 10, 0
 msg_page_va      db 'virtual      = ', 0
 msg_page_pde     db 'PDE index    = ', 0
 msg_page_pte     db 'PTE index    = ', 0
@@ -1876,13 +1929,13 @@ msg_pmem_pages_end db ' pages', 10, 0
 msg_pmem_hi      db 'highest ever: ', 0
 msg_pmem_bitmap  db '   bitmap @ ', 0
 
-msg_pmap_usage   db 'usage: pmap <hex virtual address, 4 KiB aligned>, e.g. pmap 0x8000000', 10, 0
+msg_pmap_usage   db 'usage: debug pmap <hex virtual address, 4 KiB aligned>, e.g. debug pmap 0x8000000', 10, 0
 msg_pmap_head    db 'mapped ', 0
 msg_pmap_arrow   db ' -> physical ', 0
-msg_pmap_ok      db '  (page table created on demand; check with: page <va>)', 10, 0
+msg_pmap_ok      db '  (page table created on demand; check with: debug page <va>)', 10, 0
 msg_pmap_bad     db 'pmap failed (pool empty, or address not 4 KiB aligned)', 10, 0
 
-msg_pumap_usage  db 'usage: pumap <hex virtual address>', 10, 0
+msg_pumap_usage  db 'usage: debug pumap <hex virtual address>', 10, 0
 msg_pumap_head   db 'unmapped, gave back ', 0
 msg_pumap_done   db '  (page returned to the pool; empty page table recycled)', 10, 0
 msg_pumap_none   db 'pumap: that address was not mapped', 10, 0

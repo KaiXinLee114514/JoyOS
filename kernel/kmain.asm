@@ -96,7 +96,7 @@ COL_ERR    equ 0x0C                    ; 亮红
 
 %ifdef USE_CUSTOM_FONT
     ; 中文自检:这一行是从 Unifont 点阵拼出来的
-    mov esi, msg_zh_tag
+    mov esi, msg_utf8_tag
     call term_print
     mov esi, zh_str_2                   ; "这是 JoyOS 的中文显示。"
     call term_print_zh
@@ -696,7 +696,7 @@ msg_fbb     db ' bpp=', 0
 msg_fbmi16  db '  modeinfo: bytesPerScanLine=', 0
 msg_fbmi32  db ' linBytesPerScanLine=', 0
 msg_fbvbe   db ' vbe=0x', 0
-msg_zh_tag  db 'zh  : ', 0
+msg_utf8_tag db 'utf8  : ', 0
 msg_sectors db 'kernel area: ', 0
 msg_equals  db ' sectors = ', 0
 msg_bytes   db ' bytes loaded from disk', 10, 0
@@ -710,7 +710,7 @@ msg_disk_chs db 'CHS fallback (BIOS has no LBA)', 10, 0
 msg_idt     db 'IDT: 256 vectors installed (errors 0-31 have handlers)', 10, 0
 msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-16 MiB (+ VBE LFB high window)', 10, 0
 msg_pmem    db 'pmem: page pool 0x00400000-0x00FFFFFF, ', 0
-msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: pmem / ptest)', 10, 0
+msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: debug pmem / debug ptest)', 10, 0
 msg_kbd     db 'keyboard: PIC remapped to 0x20, IRQ1 enabled', 10, 0
 msg_pit     db 'timer: PIT channel 0 at 100 Hz (IRQ0 0x20; try: uptime / sleep)', 10, 0
 msg_font    db 'font: ', 0

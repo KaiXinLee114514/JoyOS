@@ -15,9 +15,9 @@
 
 ![vi 跑在 JoyOS 上](docs/screenshot-vi.png)
 
-还有图形模式(800×600 VBE)里敲 `info` 和 `zh` 的样子:
+还有图形模式(800×600 VBE)里敲 `info` 和 `run UTF8`(中文 / emoji 演示)的样子:
 
-![JoyOS shell](docs/screenshot.png) ![中文显示](docs/screenshot-zh.png)
+![JoyOS shell](docs/screenshot.png) ![中文显示(run UTF8)](docs/screenshot-zh.png)
 
 一个**从头写的、4000 多行的 x86 操作系统**,能启动、能分页、能读硬盘、
 有自己的文件系统和 shell,还能**跑你写的小程序**。
@@ -69,7 +69,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **多扇区读盘** | 一次读多个扇区把 64 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
 | 保护模式 | GDT(代码段 + 数据段,平坦 4 GiB)、`CR0.PE`、32 位段寄存器全部就位 |
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
-| 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`pmap`),物理页池 = 位图分配器 12 MiB(`pmem` / `ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
+| 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`debug pmap`),物理页池 = 位图分配器 12 MiB(`debug pmem` / `debug ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift)、**Caps Lock**(顺带给键盘发 `0xED` 点灯)、方向键/PgUp 等扩展键、64 字节环形缓冲 |
 | **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);以后做抢占式多任务就从 `pit_irq` 里切栈(见 §6.11) |
 | **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
@@ -88,7 +88,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
 | 中文显示 | ✅ 一个汉字 16×16 直接画在帧缓冲上;文本是标准 **UTF-8**(四字节 emoji、坏字节替换符都处理了) |
 | 终端 | 会滚屏的终端(文本模式走 VGA 文本缓冲,图形模式走帧缓冲),支持 `\n` `\r` `\b` |
-| shell | `help` `echo` `zh` `clear` `info` `page` `fault` `reboot` `ls` `cat` `write` `run` `date` `uptime` `sleep`,带退格的行编辑 |
+| shell | `help` `echo` `clear` `info` `debug` `reboot` `ls` `cat` `write` `run` `date` `uptime` `sleep`,带退格的行编辑 |
 
 ## 2. 快速开始
 
@@ -161,7 +161,7 @@ VirtualBox 不仿真 PC 扬声器,那里是听不见的(记在 [docs/known-issue
 | `test-fda` | 当**软盘**启动 → 走 CHS 退回路径 |
 | `test-hda` | 当**硬盘**启动 → 走 LBA/EDD 路径 |
 | `test-div` | 故意除零 → 0 号异常,panic 屏要出现 |
-| `test-pgfault` | shell 里敲 `fault` → 14 号页错误,CR2 要等于出错地址 |
+| `test-pgfault` | shell 里敲 `debug fault` → 14 号页错误,CR2 要等于出错地址 |
 | `test-kbd` | 用 QEMU monitor 的 `sendkey` **真按键**,验证回显、Shift、回车、退格 |
 | `test-shell` | 敲 `help`/`info`/`page`/`echo`/`clear`,验证命令、滚屏、清屏、中文、UTF-8 边界 |
 | `test-hd-font` | 硬盘镜像:字库从磁盘读、`ls`/`cat`/`write`/`run`、**计算器的八组算式**、**编辑器的敲字/存盘/退出**,最后**离线解析镜像**证明字节真落盘 |
@@ -450,7 +450,7 @@ demand paging: 34 page(s) faulted in (image 2 + heap 32), first page 0x00425000
 ```
 
 `not` 和 `mov` 一样**不影响标志位**。于是 `jnz` 判断的是别人剩下的标志,
-结果全看运气:页池明明 3072 页全空,`ptest` 第一次分配却拿到第 33 页(`0x00420000`),
+结果全看运气:页池明明 3072 页全空,`debug ptest` 第一次分配却拿到第 33 页(`0x00420000`),
 前面 32 页像"已被占用"一样被跳过。换成真正会设标志的指令就好:
 
 ```asm
@@ -547,15 +547,15 @@ slept 10 s (1000 ticks)
 ```
 help          列出命令
 echo <text>   把文字打回来
-zh            显示中文(点阵字库,直接 blit 到帧缓冲)
 clear         清屏
 info          CR0/CR2/CR3/CR4、IDT 基址与限长、段寄存器、读盘方式
-page <hex>    逐级走页表,查虚拟地址映射到哪(例:page 0x400000 / page 0x8000000)
-pmem          物理页池:总页数、已用、空闲、位图地址
-pmap <va>     从页池拿一页,动态建页表映到虚拟地址(玩分页最直接的一条)
-pumap <va>    解掉映射并把页还回池子(页表空了会一起回收)
-ptest         自测:分配→建表→虚拟地址写/物理地址读→解映射→归还,查有没有泄漏
-fault         故意踩没映射的地址,看页错误 panic 屏
+debug <什么>  诊断/自检类命令都在这条下面(演示命令以前散着放,现在收起来了):
+  debug page <hex>   逐级走页表,查虚拟地址映射到哪(例:debug page 0x400000)
+  debug pmem         物理页池:总页数、已用、空闲、位图地址
+  debug pmap <va>    从页池拿一页,动态建页表映到虚拟地址(玩分页最直接的一条)
+  debug pumap <va>   解掉映射并把页还回池子(页表空了会一起回收)
+  debug ptest        自测:分配→建表→虚拟地址写/物理地址读→解映射→归还,查泄漏
+  debug fault        故意踩没映射的地址,看页错误 panic 屏
 reboot        重启(通过 8042 键盘控制器)
 ls            列 FAT16 根目录(名字 + 字节数;硬盘模式才有)
 cat <file>    把文件(UTF-8 文本)打出来,中文能直接看
@@ -596,30 +596,30 @@ RTC: BCD, 24-hour mode (no timezone handling)
 date: unknown format, try ymd / mdy / dmy / time (got: xxx)
 ```
 
-`page` / `pmap` 的输出示例(这就是分页在干的事):
+`debug page` / `debug pmap` 的输出示例(这就是分页在干的事):
 
 ```
-> page 0x400000          ← 恒等映射:虚拟地址 = 物理地址
+> debug page 0x400000    ← 恒等映射:虚拟地址 = 物理地址
 virtual      = 0x00400000
 PDE index    = 0x00000001 [1] = 0x00003003  present + writable
 PTE index    = 0x00000000 [0] = 0x00400003  present
 physical     = 0x00400000
-> page 0x2000000         ← 16 MiB 以外没映射
+> debug page 0x2000000   ← 16 MiB 以外没映射
 virtual      = 0x02000000
 PDE index    = 0x00000008 [8] = 0x00000000  PDE not present -> would page-fault
-> pmap 0x8000000         ← 现建一张页表,拿页池里的物理页映上去
-mapped 0x08000000 -> physical 0x00400000  (page table created on demand; check with: page <va>)
-> page 0x8000000
+> debug pmap 0x8000000   ← 现建一张页表,拿页池里的物理页映上去
+mapped 0x08000000 -> physical 0x00400000  (page table created on demand; check with: debug page <va>)
+> debug page 0x8000000
 virtual      = 0x08000000
 PDE index    = 0x00000020 [32] = 0x00401003  present + writable
 PTE index    = 0x00000000 [0] = 0x00400003  present
 physical     = 0x00400000
-> pumap 0x8000000
+> debug pumap 0x8000000
 unmapped, gave back 0x00400000  (page returned to the pool; empty page table recycled)
 ```
 
 键盘直接给字节、**没有输入法**,所以命令行本身只能打 ASCII;
-想看中文就用 `cat`(文件里是 UTF-8),或者让程序自己打。
+想看中文就用 `cat`(文件里是 UTF-8),或者让程序自己打(`run UTF8` 是现成的演示)。
 
 ## 8. 怎么改
 
@@ -702,10 +702,10 @@ PT_LFB      equ 0x4000     ; VBE 帧缓冲窗口
 想玩"虚拟地址 ≠ 物理地址"不用改代码,shell 里现成有:
 
 ```
-> pmap 0x8000000     ← 从页池拿一页(4 MiB 以上),现建页表映到 128 MiB 那个虚拟地址
-> page 0x8000000     ← 看 PDE/PTE:虚拟 0x08000000、物理 0x00400000
-> pumap 0x8000000    ← 解映射并把页还回去
-> ptest              ← 一个命令跑完整个流程(分配→建表→读写→归还),还会检查页池有没有泄漏
+> debug pmap 0x8000000     ← 从页池拿一页(4 MiB 以上),现建页表映到 128 MiB 那个虚拟地址
+> debug page 0x8000000     ← 看 PDE/PTE:虚拟 0x08000000、物理 0x00400000
+> debug pumap 0x8000000    ← 解映射并把页还回去
+> debug ptest        ← 一个命令跑完整个流程(分配→建表→读写→归还),还会检查页池有没有泄漏
 ```
 
 要加一个"固定的自定义映射",在 `paging_init` 末尾照 LFB 那段写就行;
@@ -745,7 +745,8 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 
 ## 9. 中文与字库(详见 font/README.md)
 
-中文**能正常显示**:图形模式下把 16×16 点阵直接 blit 到帧缓冲,shell 里敲 `zh` 就能看到。
+中文**能正常显示**:图形模式下把 16×16 点阵直接 blit 到帧缓冲,跑 `run UTF8` 就能看到
+(以前这是 shell 里的一条 `zh` 命令,现在搬到磁盘程序 `progs/UTF8.asm` 了)。
 
 数据来源与生成方式见 [font/README.md](font/README.md):`font/` 目录里是 GNU Unifont 抽出的字形
 (入库的是 416 字形的 23 KB `.hex` 子集 + 二进制;完整 40 208 字形的 1.7 MB 字库**放在磁盘镜像里**,

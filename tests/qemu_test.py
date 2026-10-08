@@ -898,7 +898,7 @@ def main() -> int:
                             has("page beyond the file (bss at 0x184000): was zero"),
                             "page beyond the file (bss at 0x184000): was zero, as it should be"))
 
-            run("pmem")
+            run("debug pmem")
             results.append(("程序退出后页池没泄漏", has("free: 3072 pages"),
                             "free: 3072 pages"))
 
@@ -925,8 +925,11 @@ def main() -> int:
             # 注意:两次 uptime 之间还夹着 harness 抓屏/等屏幕稳定的时间(好几秒),
             # 所以别拿 200 当上界 —— 该比的是"guest 数出来的 tick"和"宿主墙钟"一致。
             expect = wall * 100
+            # 注意:QEMU 的 TCG 在这台机器上跑不到实时(实测只有 0.6~0.7 倍速,
+            # 抓屏本身也占时间),所以下界放到 0.4 倍 —— 只要 tick 真的在涨、
+            # 量级对得上就算过;上界留 1.1 倍,免得计时器疯跑也当成"对"。
             results.append(("定时器速度和墙钟一致(sleep 期间 tick 真的在涨)",
-                            delta > 200 and abs(delta - expect) <= expect * 0.35,
+                            delta > 200 and expect * 0.4 <= delta <= expect * 1.1,
                             f"guest 走了 {delta} ticks,宿主墙钟 {wall:.1f} s(≈{expect:.0f} ticks)"))
 
             # ---- CMOS 时钟:date 读的是 RTC 里"现在几点"----
@@ -953,8 +956,9 @@ def main() -> int:
             run("date", wait=0.9)
             second = guest_date()
             step = (second - first).total_seconds() if (first and second) else -1
+            # 上界同样放宽:慢机器上"sleep 2 + 两次抓屏"能拖到十几秒
             results.append(("date 在真的走(sleep 2 之后往后跳)",
-                            second is not None and 1.0 <= step <= 15.0,
+                            second is not None and 1.0 <= step <= 25.0,
                             f"两次 date 相隔 {step:.0f} 秒"))
 
             # ---- date 的格式参数:ymd / mdy / dmy / time ----
@@ -1047,6 +1051,17 @@ def main() -> int:
             calc("q")                           # 退出计算器
             results.append(("计算器退出", "program returned to the shell" in calc(""),
                             "回到 shell"))
+
+            # ---- 中文 / UTF-8 演示:以前是 shell 里的 `zh` 命令,现在是磁盘程序
+            #      UTF8.BIN —— 它打中文长句、4 字节 emoji,还有故意写坏的 UTF-8 ----
+            run("run UTF8", wait=2.5)
+            results.append(("中文显示", has("你好，世界！"), "你好，世界！"))
+            results.append(("中文长句", has("点阵字库来自"), "点阵字库来自"))
+            results.append(("UTF-8 三字节", has("编码统一成 UTF-8"), "编码统一成 UTF-8"))
+            results.append(("UTF-8 四字节 emoji", has("😀"), "😀"))
+            results.append(("坏字节画替换符",
+                            has("broken UTF-8: [") and has("��") and has("still shows"),
+                            "[��](两个替换字符)且后面的字还在"))
 
             # ---- 文本编辑器(EDIT.BIN)----
             run("run edit newfile.txt", wait=1.5)
@@ -1151,7 +1166,6 @@ def main() -> int:
             rescan()
             results.append(("编辑器能存进子目录", has("editor closed."), "editor closed."))
 
-
             # ---- 第二信道:先把 QEMU 关掉(让它把缓存落盘),再自己解析镜像 ----
             qemu.terminate()
             try:
@@ -1174,8 +1188,17 @@ def main() -> int:
                 rescan()
 
             run("help")
-            results.append(("help 列出命令", has("show this list") and has("page <hex>"),
-                            "help 输出里有 show this list / page <hex>"))
+            results.append(("help 列出命令", has("show this list") and has("debug <what>"),
+                            "help 输出里有 show this list / debug <what>"))
+
+            run("debug")
+            results.append(("debug 不带子命令会打用法", has("usage: debug <what>"),
+                            "usage: debug <what>"))
+
+            # zh 已经搬去磁盘程序了(run UTF8),shell 里不该再有这条
+            run("zh")
+            results.append(("zh 不在 shell 里了", has("unknown command: zh"),
+                            "unknown command: zh"))
 
             run("echo hello world")
             results.append(("echo 原样打回", has("hello world"), "hello world"))
@@ -1185,30 +1208,30 @@ def main() -> int:
             results.append(("info 有 IDT 基址", has("base = 0x"), "IDT base"))
 
             # ---- 分页:0~16 MiB 恒等映射(0x400000 不再是"演示映射"那种特例)----
-            run("page 0x400000")
+            run("debug page 0x400000")
             results.append(("page 恒等映射", has("0x00400000") and has("present"),
                             "0x00400000 + present"))
 
             # ---- 物理页池 + 动态建表:pmap 现建页表 → page 复查 → pumap 回收 ----
-            run("pmem")
+            run("debug pmem")
             results.append(("pmem 页池", has("3072 total") and has("12 MiB"),
                             "3072 页 / 12 MiB"))
 
-            run("pmap 0x8000000")
+            run("debug pmap 0x8000000")
             results.append(("pmap 自动建页表", has("mapped") and has("0x08000000"),
                             "mapped 0x08000000"))
-            run("page 0x8000000")
+            run("debug page 0x8000000")
             results.append(("pmap 后 page 查到映射", has("present") and has("0x0040"),
                             "present + 物理页是页池发的"))
 
-            run("pumap 0x8000000")
+            run("debug pumap 0x8000000")
             results.append(("pumap 归还页", has("unmapped") and has("0x0040"),
                             "unmapped + 归还的物理地址"))
-            run("page 0x8000000")
+            run("debug page 0x8000000")
             results.append(("pumap 后 page 报未映射", has("PDE not present"),
                             "PDE not present"))
 
-            run("ptest")
+            run("debug ptest")
             results.append(("ptest 自测通过", has("ptest: all good") and has("3072 / 3072"),
                             "translate 对得上 + 页池没泄漏"))
 
@@ -1230,16 +1253,8 @@ def main() -> int:
             results.append(("clear 清屏", not has("JoyOS - stage 5") and not has("echo n29"),
                             "屏幕上只剩提示符"))
 
-            # ---- 中文(图形模式才画得出来:直接往帧缓冲 blit 16×16 点阵)----
-            run("zh", wait=1.0)
-            results.append(("中文显示", has("你好，世界！"), "你好，世界！"))
-            results.append(("中文长句", has("点阵字库来自"), "点阵字库来自"))
-            # 编码相关的三个用例:UTF-8 三字节(汉字)、四字节(emoji)、坏字节(替换字符)
-            results.append(("UTF-8 三字节", has("编码统一成 UTF-8"), "编码统一成 UTF-8"))
-            results.append(("UTF-8 四字节 emoji", has("😀"), "😀"))
-            results.append(("坏字节画替换符",
-                            has("broken UTF-8: [") and has("��") and has("still shows"),
-                            "[��](两个替换字符)且后面的字还在"))
+            # 中文的完整演示(点阵汉字/emoji/坏字节)搬到了磁盘程序 UTF8.BIN,
+            # 由 hd 套件跑 —— 这个套件用的是软盘镜像,上面没有程序和字库盘。
             return report(results)
 
         if fault_mode:
@@ -1253,8 +1268,9 @@ def main() -> int:
                 ("停机提示",        "system halted"),
             ]
         elif pgfault_mode:
-            # shell 里敲 fault:访问恒等映射(16 MiB)之外 → 14 号页错误,CR2 应记下那个地址
-            mon.type_text("fault")
+            # shell 里敲 debug fault:访问恒等映射(16 MiB)之外 → 14 号页错误,
+            # CR2 应记下那个地址(以前是裸的 `fault`,现在收进 debug 子命令了)
+            mon.type_text("debug fault")
             mon.sendkey("ret")
             time.sleep(1.0)
             rescan()
