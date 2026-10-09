@@ -160,6 +160,13 @@ COL_ERR    equ 0x0C                    ; 亮红
     mov esi, msg_pmem2
     call term_print
 
+    ; ---- 调度器:线程表清干净,0 号登记成"现在这个上下文"(shell 自己)----
+    ; 轮转不在这儿开:开机流程本身也被 IRQ0 打着,现在就换人会把启动信息打得
+    ; 七零八落。真正开是 shell 起来之前那一句 sched_enable。
+    call sched_init
+    mov esi, msg_sched
+    call term_print
+
     ; (帧缓冲终端在开头已经初始化过 —— 它自带清屏,调两次会把前面的输出擦掉)
 
     ; ---- 报一下字库用了哪个 ----
@@ -270,6 +277,9 @@ COL_ERR    equ 0x0C                    ; 亮红
     div ecx                              ; 除零 → 0 号异常
 %endif
 
+
+    ; ---- 开调度:从这句起 shell 会被 IRQ0 定期打断,时间片轮转开始 ----
+    call sched_enable
 
     jmp shell_main                       ; 进 shell(不返回)
 
@@ -713,6 +723,7 @@ msg_pmem    db 'pmem: page pool 0x00400000-0x00FFFFFF, ', 0
 msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: debug pmem / debug ptest)', 10, 0
 msg_kbd     db 'keyboard: PIC remapped to 0x20, IRQ1 enabled', 10, 0
 msg_pit     db 'timer: PIT channel 0 at 100 Hz (IRQ0 0x20; try: uptime / sleep)', 10, 0
+msg_sched   db 'sched: round-robin kernel threads, 6 slots, 20 ms slice (try: ps / spawn)', 10, 0
 msg_font    db 'font: ', 0
 msg_font_disk    db 'loaded from disk (ATA), ', 0
 msg_font_builtin db 'built-in subset, ', 0

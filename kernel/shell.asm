@@ -1676,6 +1676,218 @@ cmd_sleep:
     ret
 
 ; ---------------------------------------------------------------------------
+;  cmd_ps:列出所有线程(0 号是 shell 自己)
+;  数字直接读调度器的 TCB:ticks = 它一共拿到过几个 tick,runs = 被调度上去过
+;  几次 —— 两个都在涨,就说明这个线程真的在跑(不只是"存在")。
+;  循环下标放在内存里:term_print / term_print_dec 会碰寄存器,不能指望 edi 活下来。
+; ---------------------------------------------------------------------------
+cmd_ps:
+    pushad
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_ps_head
+    call term_print
+    mov eax, [sched_live]
+    call term_print_dec
+    mov esi, msg_ps_head2
+    call term_print
+    mov eax, SCHED_MAX
+    call term_print_dec
+    mov esi, msg_ps_head3
+    call term_print
+    mov eax, [sched_ticks]
+    call term_print_dec
+    mov esi, msg_ps_head4
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+
+    mov dword [ps_i], 0
+.next:
+    mov eax, [ps_i]
+    cmp eax, SCHED_MAX
+    jae .done
+    shl eax, 5
+    add eax, tcb_table
+    cmp dword [eax + TCB_STATE], ST_EMPTY
+    je .skip
+
+    mov esi, msg_ps_id
+    call term_print
+    mov eax, [ps_i]
+    call term_print_dec
+    mov esi, msg_ps_name
+    call term_print
+    mov eax, [ps_i]
+    shl eax, 5
+    add eax, tcb_table
+    mov esi, [eax + TCB_NAME]
+    call term_print
+    mov esi, msg_ps_ticks
+    call term_print
+    mov eax, [ps_i]
+    shl eax, 5
+    add eax, tcb_table
+    mov eax, [eax + TCB_TICKS]
+    call term_print_dec
+    mov esi, msg_ps_runs
+    call term_print
+    mov eax, [ps_i]
+    shl eax, 5
+    add eax, tcb_table
+    mov eax, [eax + TCB_RUNS]
+    call term_print_dec
+    mov al, 10
+    call term_putc
+.skip:
+    inc dword [ps_i]
+    jmp .next
+.done:
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  cmd_spawn:起一个演示线程 —— spawn / spawn alpha / spawn beta
+;  不带参数时 alpha、beta 轮流起,这样两条命令就能看到"两个东西同时在跑"。
+; ---------------------------------------------------------------------------
+cmd_spawn:
+    pushad
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .default
+    mov edi, esi                          ; 参数词开头
+    xor ecx, ecx
+.len:
+    cmp byte [esi], 0
+    je .len_done
+    cmp byte [esi], ' '
+    je .len_done
+    inc esi
+    inc ecx
+    jmp .len
+.len_done:
+    test ecx, ecx
+    jz .default                           ; 只有空格也当没参数
+    mov esi, edi
+    mov edx, n_alpha
+    call str_eq
+    test eax, eax
+    jnz .alpha
+    mov esi, edi
+    mov edx, n_beta
+    call str_eq
+    test eax, eax
+    jnz .beta
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_spawn_usage
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
+    ret
+.default:
+    cmp dword [sched_next_demo], 0
+    jne .beta
+.alpha:
+    mov eax, thread_alpha
+    mov ebx, n_alpha
+    mov dword [sched_next_demo], 1
+    jmp .do
+.beta:
+    mov eax, thread_beta
+    mov ebx, n_beta
+    mov dword [sched_next_demo], 0
+.do:
+    call sched_spawn
+    jc .full
+    mov [spawn_id], eax
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_spawn_ok
+    call term_print
+    mov eax, [spawn_id]
+    call term_print_dec
+    mov esi, msg_spawn_lp
+    call term_print
+    mov eax, [spawn_id]
+    call sched_name
+    call term_print
+    mov esi, msg_spawn_rp
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
+    ret
+.full:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_spawn_full
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  cmd_kill:kill <线程号> —— 杀掉一个线程,它的栈还给物理页池
+;  0 号杀不掉:那就是 shell 自己,它还在那条栈上走路。
+; ---------------------------------------------------------------------------
+cmd_kill:
+    pushad
+    call parse_dec
+    jc .usage
+    mov [kill_id], eax
+    test eax, eax
+    jz .self
+    cmp eax, SCHED_MAX
+    jae .none
+    mov ebx, eax
+    shl ebx, 5
+    add ebx, tcb_table
+    cmp dword [ebx + TCB_STATE], ST_ALIVE
+    jne .none
+
+    mov eax, [kill_id]
+    call sched_name
+    mov [kill_name], esi                  ; 名字先记下来(杀完槽就空了)
+    mov eax, [kill_id]
+    call sched_kill
+    jc .none
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_kill_ok
+    call term_print
+    mov eax, [kill_id]
+    call term_print_dec
+    mov esi, msg_kill_lp
+    call term_print
+    mov esi, [kill_name]
+    call term_print
+    mov esi, msg_kill_rp
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
+    ret
+.self:
+    mov esi, msg_kill_self
+    jmp .err
+.none:
+    mov esi, msg_kill_none
+.err:
+    mov al, COL_ERR
+    call term_set_color
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
+    ret
+.usage:
+    mov esi, msg_kill_usage
+    jmp .err
+
+; ---------------------------------------------------------------------------
 ;  parse_hex:把 [cmd_arg] 当十六进制数解析(可以带 0x),返 eax + CF
 ; ---------------------------------------------------------------------------
 parse_hex:
@@ -1809,6 +2021,9 @@ n_ptest  db 'ptest', 0
 n_uptime db 'uptime', 0
 n_sleep  db 'sleep', 0
 n_date   db 'date', 0
+n_ps     db 'ps', 0
+n_spawn  db 'spawn', 0
+n_kill   db 'kill', 0
 n_fmt_ymd  db 'ymd', 0
 n_fmt_mdy  db 'mdy', 0
 n_fmt_dmy  db 'dmy', 0
@@ -1833,6 +2048,9 @@ cmd_table:
     dd n_uptime, cmd_uptime
     dd n_sleep,  cmd_sleep
     dd n_date,   cmd_date
+    dd n_ps,     cmd_ps
+    dd n_spawn,  cmd_spawn
+    dd n_kill,   cmd_kill
     dd 0, 0
 
 ; ---------------------------------------------------------------------------
@@ -1843,6 +2061,10 @@ msg_prompt      db '> ', 0
 cwd_str         times 64 db 0          ; 当前目录(cd 用,空 = 根)
 saved_dir       dd 0                   ; 命令借用目录时的"还回去"的值
 dbg_arg         dd 0                   ; debug 子命令后面那截参数的指针
+ps_i            dd 0                   ; ps 的循环下标(调用会碰寄存器,只能放内存)
+spawn_id        dd 0                   ; 刚起的线程号
+kill_id         dd 0                   ; 要杀的线程号
+kill_name       dd 0                   ; 杀之前先记下的名字
 msg_mkdir_ok    db 'created directory ', 0
 msg_mkdir_bad   db 'mkdir failed (already exists or disk full)', 10, 0
 msg_mkdir_use   db 'usage: mkdir <dir>', 10, 0
@@ -1865,6 +2087,26 @@ msg_sleep_usage db 'usage: sleep <seconds>, e.g. sleep 2 (max 3600)', 10, 0
 msg_sleep_long  db 'sleep: too long (max 3600 seconds)', 10, 0
 
 msg_debug_usage db 'usage: debug <what>  (what = page / pmem / pmap / pumap / ptest / fault)', 10, 0
+msg_ps_head    db 'ps: ', 0
+msg_ps_head2   db ' alive / ', 0
+msg_ps_head3   db ' slots, scheduled ticks ', 0
+msg_ps_head4   db 10, 0
+msg_ps_id      db '  [', 0
+msg_ps_name    db '] ', 0
+msg_ps_ticks   db '  ticks=', 0
+msg_ps_runs    db '  runs=', 0
+msg_spawn_ok   db 'spawned thread ', 0
+msg_spawn_lp   db ' (', 0
+msg_spawn_rp   db ')', 10, 0
+msg_spawn_full db 'spawn: no free thread slot / out of physical pages', 10, 0
+msg_spawn_usage db 'usage: spawn [alpha|beta]  (no arg = alpha, then beta)', 10, 0
+msg_kill_ok    db 'killed thread ', 0
+msg_kill_lp    db ' (', 0
+msg_kill_rp    db ')', 10, 0
+msg_kill_self  db 'kill: thread 0 is the shell itself, cannot kill that', 10, 0
+msg_kill_none  db 'kill: no such thread', 10, 0
+msg_kill_usage db 'usage: kill <id>  (get ids from ps)', 10, 0
+
 msg_help db \
     'help          show this list', 10, \
     'echo <text>   print the text back', 10, \
@@ -1874,6 +2116,9 @@ msg_help db \
     'uptime        how long the PIT has been ticking', 10, \
     'sleep <sec>   sleep N seconds (hlt while waiting, max 3600)', 10, \
     'date [fmt]    read the CMOS clock: no arg = full, or ymd / mdy / dmy / time', 10, \
+    'ps            list scheduler threads (id / name / ticks / runs)', 10, \
+    'spawn [who]   start a demo kernel thread (no arg = alpha, then beta)', 10, \
+    'kill <id>     kill a thread, give its stack back to the page pool', 10, \
     'reboot        restart the machine', 10, \
     'ls            list files on the FAT16 disk', 10, \
     'cat <file>    print a text file (UTF-8)', 10, \

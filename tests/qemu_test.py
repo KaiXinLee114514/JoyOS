@@ -1063,6 +1063,57 @@ def main() -> int:
                             has("broken UTF-8: [") and has("��") and has("still shows"),
                             "[��](两个替换字符)且后面的字还在"))
 
+            # ---- 内核线程 + 抢占式轮转(kernel/sched.asm)----
+            #      注意:演示线程每秒往屏幕上打一行,和 shell 抢同一个光标 ——
+            #      屏幕上的字会被插花(功能不受影响,只是显示乱)。所以这里
+            #      1) 断言只认"效果"(ps 表里的 ticks 在涨),不信回显;
+            #      2) 解析 ps 输出时允许重试(clear + ps 重来一次)。
+            run("clear")
+            run("spawn", wait=0.6)              # alpha
+            run("spawn", wait=0.6)              # beta
+            time.sleep(2.0)
+
+            def ps_rows(tries=4):
+                """抓 ps:[编号] 名字 ticks=N。被线程插花了就 clear 重来。"""
+                got, head = [], False
+                for _ in range(tries):
+                    run("clear")
+                    run("ps", wait=1.0)
+                    rescan()
+                    txt = ("\n".join(screen_text(shot, glyphs)) if graphics
+                           else "\n".join(mon.screen()))
+                    got = re.findall(r"\[(\d)\] (alpha|beta)\s+ticks=(\d+)", txt)
+                    head = "alive / 6 slots" in txt
+                    if len(got) >= 2 and head:
+                        break
+                    time.sleep(0.8)
+                return got, head
+
+            rows, header_ok = ps_rows()
+            ids = sorted(int(i) for i, _, _ in rows)
+            ticks = [int(t) for _, _, t in rows]
+            results.append(("ps 里两个线程都在拿 tick",
+                            len(rows) >= 2 and ids == [1, 2] and all(t > 0 for t in ticks),
+                            f"ps 表头 alive/6 slots={header_ok},alpha/beta 行与 ticks:{rows}"))
+
+            run("kill 1", wait=0.6)
+            run("kill 2", wait=0.8)
+            time.sleep(0.5)
+            run("clear")
+            run("ps", wait=1.0)
+            results.append(("kill 之后只剩 shell",
+                            has("1 alive / 6 slots") and not has("alpha"),
+                            "两个线程都杀掉了,ps 里只剩 shell 自己"))
+            run("kill 0", wait=0.8)
+            results.append(("kill 0 被拒", has("cannot kill"),
+                            "0 号是 shell 自己,杀不掉"))
+            run("debug pmem", wait=1.2)
+            results.append(("线程栈还回页池", has("free: 3072 pages"),
+                            "kill 完页池还是 3072 页空闲"))
+            run("echo after-sched", wait=0.8)
+            results.append(("调度器没弄死 shell", has("after-sched"),
+                            "线程起起落落之后 shell 照常响应"))
+
             # ---- 文本编辑器(EDIT.BIN)----
             run("run edit newfile.txt", wait=1.5)
             screen_now = screen_lines()
@@ -1293,6 +1344,7 @@ def main() -> int:
                 ("分页开启",        "paging: CR0.PG=1"),
                 ("键盘就绪",        "keyboard: PIC remapped to 0x20, IRQ1 enabled"),
                 ("定时器就绪",      "timer: PIT channel 0 at 100 Hz"),
+                ("调度器",          "sched: round-robin kernel threads"),
                 ("RTC 时钟",        "rtc: CMOS clock"),
                 ("阶段完成提示",    "OK - stage 5"),
                 ("shell 就绪",      'type "help" for commands.'),

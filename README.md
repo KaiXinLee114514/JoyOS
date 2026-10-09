@@ -71,7 +71,8 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
 | 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`debug pmap`),物理页池 = 位图分配器 12 MiB(`debug pmem` / `debug ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift)、**Caps Lock**(顺带给键盘发 `0xED` 点灯)、方向键/PgUp 等扩展键、64 字节环形缓冲 |
-| **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);以后做抢占式多任务就从 `pit_irq` 里切栈(见 §6.11) |
+| **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);**抢占式多任务就是在 IRQ0 里切栈**(见 §5「线程与调度」) |
+| **内核线程 + 抢占式轮转** | 6 个线程槽、每个线程 **20 ms 时间片**(`kernel/sched.asm`):IRQ0 里存 esp/CR3、轮转、换栈;`ps` 看线程表、`spawn` 起演示线程(alpha / beta 每秒各打一行)、`kill` 杀掉并把栈还给物理页池(见 §5) |
 | **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
@@ -188,6 +189,7 @@ kernel/paging.asm      页目录 + 页表 + 开分页 + 按需分页(缺页补�
 kernel/keyboard.asm    8259A 重映射、IRQ1 键盘中断、扫描码翻译、环形缓冲
 kernel/pit.asm         8254 定时器:通道 0 按 100 Hz 发 IRQ0,只加 tick 计数(uptime/sleep 靠它)
 kernel/rtc.asm         CMOS 实时时钟:等 UIP、读两遍比对、BCD/12 小时制换算、日期格式化(date 靠它)
+kernel/sched.asm       内核线程 + 抢占式轮转:TCB 表、20 ms 时间片、IRQ0 里换栈、spawn/kill 的栈管理(ps 靠它)
 kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
 kernel/ata.asm         ATA(IDE)PIO 驱动:读扇区 + 写扇区 + FLUSH CACHE
@@ -344,6 +346,48 @@ demand paging: 34 page(s) faulted in (image 2 + heap 32), first page 0x00425000
 - 暂时**不给程序自己长栈**:栈还是 shell 的栈(内核那套页表里);
 - 内核窗口继续恒等映射,所以 `int 0x30` 照旧能用 —— **不需要 ring 3**,
   程序传给内核的指针也照旧解得开(那会儿用的就是程序这套页表)。
+
+### 线程与调度(内核线程 + 抢占式轮转)
+
+`kernel/sched.asm` 里 6 个线程槽,每槽是一个 32 字节的 TCB:esp / cr3 / 状态 /
+拿到过多少 tick / 被调度过几次 / 栈的物理页 / 名字。**0 号线程永远是 shell 自己** ——
+它不是被谁创建的,而是开机时把当前上下文直接填进去。
+
+抢占点在 **IRQ0(PIT,100 Hz)**:`irq0_stub` 先发 EOI,然后判断调度器开没开,开了就把
+当前 esp 交给 `sched_pick` 决定下一个该跑谁,再 `mov esp, eax` 换栈,接着 `popad` +
+`iret` 就"回到"另一个线程里去了。**换栈这件事只能在中断入口这一层做**:`iret` 要从
+栈上弹 EIP/CS/EFLAGS,在普通函数里换完 esp 再 `ret` 是回不去的(理由见 §6.13)。
+
+新线程的"现场"由 `sched_spawn` 在它自己的栈上手工摆出来:按 `irq0_stub` 的格式摆好
+EFLAGS / CS / EIP / 错误码 / 向量号 / pushad 的八个寄存器,esp 指向这摞东西的最底下。
+于是它第一次被 `iret` 上去时,看起来就像"刚被中断打断过",函数体从头开始跑。
+
+局限(玩具级别的诚实说明):
+- 没有优先级、没有阻塞/唤醒原语,纯轮转;时间片固定 20 ms(2 个 tick)
+- 每个线程 2 页栈(8 KiB),`spawn` 时从物理页池要,`kill` 时还回去
+- 内核不可重入的那些部分靠"大家都很老实"避开:线程各跑各的栈,但终端是全局状态,
+  两个线程一起打印、或者你正在敲命令时线程打印,屏幕上的字都会被插花 ——
+  看得见、不崩,输入缓冲区也不受影响(命令照常执行),只是显示乱。想打干净得先有锁
+- 还是**内核态**线程:没有 ring 3、没有 TSS、也还没做到"一个线程一套地址空间"
+
+自己试试:
+
+```
+> spawn            # 不带参数:第一次 alpha,第二次 beta
+spawned thread 1 (alpha)
+> spawn
+spawned thread 2 (beta)
+> ps
+ps: 3 alive / 6 slots, scheduled ticks 1169
+  [0] shell  ticks=893  runs=85
+  [1] alpha  ticks=170  runs=85
+  [2] beta   ticks=110  runs=56
+> kill 1
+killed thread 1 (alpha)
+```
+
+`ticks` 和 `runs` 都在涨,说明这几个线程是**真的轮流在 CPU 上跑**,而不是"登记了一下
+躺在那儿";`kill` 完再 `debug pmem`,空闲页数会回到 3072 —— 栈是借的,还得还。
 
 ## 6. 踩过的坑(这部分才是精华)
 
@@ -542,6 +586,16 @@ slept 10 s (1000 ticks)
   (`'...' is not a valid char driver`)。`-monitor` 不用带前缀,`-qmp` 必须带 ——
   排查时还顺手发现一个上次没杀干净的 QEMU 一直占着 `build/joyos-hd.img`。
 
+### 6.13 换栈只能在中断入口做(设计时就得想清楚"换完从哪继续")
+
+做抢占时最危险的一步是"把 esp 换成另一个线程的栈"。如果让 `sched_pick` 自己在函数里换
+esp 再 `ret`,那就完蛋了:被弹出的返回地址是从**新栈**上取的,而那里躺着的是新线程的
+现场 —— 一 `ret` 就跳到别人的寄存器值上当代码跑。所以这里分工是死的:`sched_pick`
+只负责"下一个是谁"并把它**返回**,换 esp 的动作由 `irq0_stub` 这条中断入口自己做;
+入口这层没有 `ret`(而是 `popad` + `add esp,8` + `iret`),换完栈正好接着把新线程的现场
+弹回寄存器、`iret` 过去。
+一句话:esp 一改,栈上所有东西的含义就全变了 —— 谁改 esp,谁就必须负责"换完从哪继续"。
+
 ## 7. shell 命令
 
 ```
@@ -565,6 +619,9 @@ run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不
 date [fmt]    读 CMOS 时钟:裸 date 打日期+时间+星期,加 ymd / mdy / dmy / time 换格式
 uptime        开机到现在多久(内含 tick 数,例:up 4 s (432 ticks at 100 Hz))
 sleep <秒>    用 hlt 睡这么多秒(空闲不烧 CPU;上限 3600 秒)
+ps            列出内核线程(编号 / 名字 / 拿到过多少 tick / 被调度过几次)
+spawn [who]   起一个演示线程(alpha / beta 每秒各打一行;不带参数就轮流起)
+kill <id>     杀掉一个线程,把它的栈还给物理页池(0 号是 shell 自己,杀不掉)
 ```
 
 `uptime` / `sleep` 的样子(定时器就是靠 100 Hz 的 IRQ0 数出来的):
@@ -757,15 +814,18 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 `db '你好,世界!', 0` 写进内核,程序里也一样;坏字节会画成替换字符 `�` 而不是卡死。
 细节(包括之前那套"码位数组"的历史)见 [docs/encoding.md](docs/encoding.md)。
 
-## 10. 下一步:抢占式多任务
+## 10. 下一步:该玩点啥
 
-**刚刚落地:**`date` 读 CMOS 实时时钟(格式参数、中文星期、12/24 小时制都能认,见第 7 节)
-—— 想让屏幕上的光标一闪一闪、或者加个 `settime`,现在都有料可用了。
+**刚刚落地:**内核线程 + 抢占式轮转 —— PIT 的 IRQ0 里存现场、换栈,6 个线程槽轮着跑
+(`ps` / `spawn` / `kill`,见第 5 节和 §7)。顺手把 `date` 也做了(读 CMOS 实时时钟)。
 
-定时器(PIT / IRQ0)也已经落地,`uptime` 和 `sleep` 都在用它。下一步是**抢占式内核线程**:
-在 `pit_irq` 里把现场存下来、换到另一个栈上继续跑,让内核同时"跑"几段代码。
-难点:内核现在是**不可重入**的(全局变量共享、`hlt` 等键、`space_live` 这类状态机),
-所以得先把"能被抢的地方"划出来,再谈抢占 —— 计划写在 [docs/known-issues.md](docs/known-issues.md)。
+往下可以挑的:
+- **闪烁光标**:现在光标常亮,有了 100 Hz 的 tick,在 `pit_irq` 里翻转一下就行
+- **`settime`**:往 CMOS 写时间(得先关 NMI 位、还得避开时钟更新,见
+  [docs/known-issues.md](docs/known-issues.md) 第 8 节)
+- **用户态进程(ring 3)**:这才是"真正的"进程 —— 给每个线程一套自己的地址空间、
+  建 TSS、用系统调用门(int 0x30 那套已经有雏形了),把内核从程序能碰的窗口里挪出去。
+  难点都写在 [docs/known-issues.md](docs/known-issues.md) 里
 
 ## 11. 还没做的(想练手就从这里挑)
 
@@ -776,9 +836,8 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 - **虚拟内存的下一层**:按需分页已经有了(碰到哪页才给哪页),但还没有
   **页置换 / swap / 写时复制**,也**不给程序自己长栈**(栈还是内核那套);
   窗口里的空洞也会给页(按访问给,不是按"真的要用"给)
-- **抢占式多任务(内核线程)**:定时器已经有了(100 Hz 的 IRQ0),下一步是在 `pit_irq` 里
-  保存现场、换栈,让内核同时"跑"几段代码 —— 难点在内核目前不可重入(全局变量共享、
-  `hlt` 等待),得先把"可以被抢的地方"划出来(见 `kernel/pit.asm` 里那段注释)
+- **调度器的下一层**:现在是纯轮转、没有优先级/阻塞唤醒/锁,线程共用一个地址空间,
+  也还是内核态;要往"真进程"走就得动 ring 3 + TSS + 每线程一套页目录(上面那条)
 - **闪烁光标**:有定时器就能做(现在光标是常亮的;`pit_irq` 里翻转一下就行)
 - **`sleep` 的更细粒度**:现在按秒睡(tick 粒度已经到 10 ms,只是 shell 只认整秒)
 - **ELF 加载**:现在程序是平铺二进制读到固定地址(没有段、没有重定位),也不会
