@@ -1,4 +1,4 @@
-# JoyOS(胡闹OS)
+# JoyOS(胡闹OS · 演示版)
 
 ![JoyOS 硬盘模式:字库从磁盘读、FAT16 列目录、跑磁盘上的程序](docs/screenshot-fat.png)
 
