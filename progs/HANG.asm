@@ -1,11 +1,11 @@
 ; ============================================================================
-;  HANG.BIN:把这条 shell 占住的"死循环"程序(每秒打一行,约 8 秒后自己退出)
+;  HANG.BIN:把这条 shell 占住的"死循环"程序(开头报一行,约 20 秒后自己退出)
 ;
 ;  用途:演示"一个 shell 里程序卡住了,别的 shell 照样能干活"
 ;  —— 切过去用 Ctrl+Right,或者敲 shell 2;顺便演示"一次只让一个程序跑"
 ;  (在别的 shell 里再 run 会被拒)。
 ;
-;  ★ 为什么是 8 秒而不是真的死循环:测试套件要在它跑完之后接着用这条 shell,
+;  ★ 为什么是有限圈数而不是真的死循环:测试套件要在它跑完之后接着用这条 shell,
 ;  真死循环会把线程 0 永远占住(线程 0 = 第一条 shell,不可 kill),后面的用例
 ;  就没法跑了。真想看"永远回不来",把 HANG_ROUNDS 改大、或者把 `dec/ jnz`
 ;  两行删掉即可 —— 那时候只能 reboot。
@@ -25,6 +25,11 @@ start:
     mov dword [rounds], HANG_ROUNDS
 .loop:
     inc dword [counter]
+    ; ★ 只在第 1 圈报一次进度,后面几圈一声不吭:以前每圈打两行,屏幕上每两秒
+    ;   多两行,把别的 shell 的输出挤得七零八落 —— 测试套件里
+    ;   "另一个 shell 照样能用"(echo 的那行被 HANG 的输出切成两截)就是这么挂的。
+    cmp dword [counter], 1
+    jne .quiet
     mov bl, 0x07
     mov eax, 4
     int 0x30
@@ -34,11 +39,16 @@ start:
     call print_dec
     mov esi, msg_tail
     call print
-    ; ---- 睡大约 1 秒:hlt 一次 ≈ 一个 tick(10 ms)----
-    mov ecx, 100
+.quiet:
+    ; ---- 睡大约 1 秒 ----
+    ; ★ 这里以前是 hlt(一次 ≈ 一个 tick,10 ms)。程序现在跑在 ring 3,
+    ;   hlt 是特权指令 —— 执行到就直接 #GP 被内核干掉,演示程序自己先死了。
+    ;   改成空转忙等:反正定时器每 20 ms 抢占一次,别的 shell 照样能干活,
+    ;   "占住这条 shell"的效果一模一样。
+    mov ecx, BUSY_WAIT
 .wait:
-    hlt
-    loop .wait
+    dec ecx
+    jnz .wait
     dec dword [rounds]                  ; 转够圈数就收工(见文件头的说明)
     jnz .loop
     mov bl, 0x0A                        ; 亮绿:回来了
@@ -83,8 +93,10 @@ print_dec:
 counter dd 0
 rounds  dd 0
 digits  dd 0
-HANG_ROUNDS equ 8                       ; 8 轮 ≈ 8 秒
-msg_head db 'HANG.BIN: I am spinning for 8 seconds, this shell is stuck now.', 10, 0
+HANG_ROUNDS equ 8                       ; 8 轮 ≈ 20 秒(实测每轮 ≈2.5 秒)
+BUSY_WAIT   equ 100000000               ; 忙等一圈 ≈ 1.5 秒(估算:6 条线程轮转时
+                                        ; 实测 24,000,000 一圈只要 0.4 秒,所以放大)
+msg_head db 'HANG.BIN: I am spinning for a while, this shell is stuck now.', 10, 0
 msg_tick db 'still spinning... ', 0
 msg_tail db '  (go to another shell with Ctrl+Right)', 10, 0
 msg_done db 'HANG.BIN: done spinning, the shell is back.', 10, 0

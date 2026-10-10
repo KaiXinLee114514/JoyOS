@@ -129,6 +129,19 @@ idt_install:
     pop edi
     ret
 
+; 同上,但门的 DPL=3 —— ring 3 的程序也能 int 进来(只有 int 0x30 用这个)
+;  DPL 是"谁有资格用这条门"的闸:硬件中断门必须 DPL=0(不然用户能伪造定时器),
+;  系统调用门才是 DPL=3。这是有意开的一个口子,别的口子一个都不留。
+idt_install_user:
+    push edi
+    mov edi, idt
+    shl eax, 3
+    add edi, eax
+    mov eax, ebx
+    call idt_set_user
+    pop edi
+    ret
+
 ; edi = 表项地址,eax = 处理程序地址(会改 eax)
 idt_set:
     mov [edi], ax                      ; 地址低 16 位
@@ -137,6 +150,15 @@ idt_set:
     mov byte [edi + 5], 0x8E           ; P=1 DPL=0 32 位中断门
     shr eax, 16
     mov [edi + 6], ax                  ; 地址高 16 位
+    ret
+
+idt_set_user:
+    mov [edi], ax
+    mov word [edi + 2], CODE_SEL
+    mov byte [edi + 4], 0
+    mov byte [edi + 5], 0xEE           ; P=1 DPL=3 32 位中断门
+    shr eax, 16
+    mov [edi + 6], ax
     ret
 
 ; ---------------------------------------------------------------------------
@@ -160,6 +182,20 @@ isr_common:
     test eax, eax
     jnz .resume
 .no_demand:
+
+    ; ---- 这次异常是从 ring 3(用户程序)来的吗?----
+    ;  是的话"弄死程序、系统活着"才是正经行为:内核 panic 屏是给内核自己
+    ;  犯错用的,不能让一个乱写地址的玩具程序把整台机器按死。
+    ;  取异常现场的 CS(位 0-1 = CPL):ring 3 的段选择子 CPL 就是 3。
+    mov eax, [ebp + 44]
+    and eax, 3
+    cmp eax, 3
+    jne .not_user
+    cmp dword [space_live], 0
+    je .not_user                        ; 没有程序在跑(理论上到不了)→ 老实 panic
+    mov ebx, ebp                        ; 异常现场的帧指针交给它
+    call prog_kill_from_fault           ; 不返回:干掉程序、回到 shell
+.not_user:
 
     mov al, 10                           ; 先换行,免得和半行输出粘在一起
     call term_putc

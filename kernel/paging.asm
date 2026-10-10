@@ -43,6 +43,7 @@ PT_ID3      equ 0x7000                 ; 页表:恒等 0xC00000-0xFFFFFF
 
 PAGE_P      equ 1                      ; bit0 present
 PAGE_RW     equ 2                      ; bit1 writable
+PAGE_USER   equ 4                      ; bit2 ring 3 也能碰(U/S)。内核页故意不设这一位
 
 ; 注意:帧缓冲地址用 kmain.asm 里的 fb_phys 变量(内核启动时从 BOOTINFO 抄过来的)
 
@@ -299,6 +300,19 @@ SPACE_IMG_VA     equ 0x120000          ; 程序镜像窗口(shell.asm 的 PROG_A
 SPACE_IMG_PAGES  equ 0x80              ; 512 KiB(0x120000-0x19FFFF,见 include/joyos.h)
 SPACE_HEAP_VA    equ 0x1A0000          ; 堆窗口(JOY_HEAP_START)
 SPACE_HEAP_PAGES equ 0x50              ; 320 KiB(0x1A0000-0x1EFFFF)
+; ---- ring 3 专用的两块页(都在窗口的最后一页,程序照样能用前面的部分)----
+SPACE_TRAMP_VA   equ SPACE_IMG_VA + (SPACE_IMG_PAGES - 1) * 4096   ; 0x19F000 弹床
+SPACE_STACK_VA   equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 1) * 4096 ; 0x1EF000 用户栈
+SPACE_USER_STACK_TOP equ SPACE_STACK_VA + 4092                      ; 0x1EFFFC
+
+; 参数页:ring 3 程序读不到内核里的参数缓冲区(PROG_ARG_ADDR 在 0x11F000,
+; 那是"supervisor only"的页),所以装载器把 4 字节魔数 + 参数字符串
+; 整个拷进程序自己空间的这一页,API 12 返回的是这儿的地址。
+SPACE_ARGS_VA    equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 2) * 4096 ; 0x1EE000 参数页
+SPACE_ARGS_COPY  equ (4 + 2048 + 3) / 4                            ; 拷贝长度(dword 数)
+; ★ 栈顶那 4 字节(0x1EFFFC)就是 space_prepare_user 写进去的弹床地址:
+;   程序 `ret` 时 [esp] 正是这里。**别**把 ESP 设成 0x1F0000(窗口外、内核临时缓冲):
+;   程序第一次 ret 就会撞上"内核的页",错误码 bit0=1 —— 这个坑踩过一次。
 ; 两个窗口在 0x120000-0x1EFFFF 里是**连着**的(128 + 80 = 208 页),
 ; 所以在私有页表里清/扫这两个窗口用一段连续下标就够:
 ;   下标 = 0x120000>>12 = 288 起,共 208 项 → 0x120000-0x1EFFFF
@@ -342,7 +356,10 @@ space_create:
     mov ecx, 1024
     rep movsd
     mov eax, [space_pt]
-    or  eax, PAGE_P | PAGE_RW
+    or  eax, PAGE_P | PAGE_RW | PAGE_USER
+    ; ★ 这一级也必须带 U/S —— 页表是"逐级查权限"的:PD 项说"用户不许",
+    ;   下面页表项写得再漂亮,ring 3 一访问还是保护违规(#PF,错误码 bit0=1)。
+    ;   这里踩过:程序第一条指令就挂在 0x120000,错误码 bit0=1 而不是"没有页"。
     mov edi, [space_pd]
     mov [edi], eax
 
@@ -470,8 +487,14 @@ page_fault_try_handle:
     cmp byte [pf_is_img], 0
     je .install
     ; ---- 镜像页:文件里有的部分从暂存区拷过来 ----
+    ; ★ 这里必须**按页对齐**算偏移:缺页的地址不一定在页开头
+    ;   (ring 3 用 call 跳进函数,取指就直接落在页中间 0x121C10)。
+    ;   以前程序从 0x120000 顺序往下跑,缺页总是发生在页边界上,
+    ;   拿"出错地址"当拷贝起点也看不出问题 —— 一旦从页中间进代码,
+    ;   整页就会错位,程序跑的就是别人家的字节(踩过:CHELLO.BIN 崩在 0x0)。
     mov eax, [pf_va]
     sub eax, SPACE_IMG_VA
+    and eax, 0xFFFFF000
     mov [pf_off], eax
     cmp eax, [space_img_bytes]
     jae .install                       ; 文件之外 → 就是 `.bss`,留零
@@ -507,7 +530,7 @@ page_fault_try_handle:
     and eax, 0x3FF
     mov edi, [space_pt]
     mov edx, [pf_new_pa]
-    or  edx, PAGE_P | PAGE_RW
+    or  edx, PAGE_P | PAGE_RW | PAGE_USER ; U/S=1:程序自己要用这些页(ring 3)
     mov [edi + eax * 4], edx
     mov eax, [pf_va]
     invlpg [eax]
@@ -623,6 +646,159 @@ space_free_window:
     pop eax
     ret
 
+; ---------------------------------------------------------------------------
+;  space_user_page:给程序空间里某个虚拟地址**先**映射一页(带 U/S=1)
+;    eax = 虚拟地址 → eax = 这页的物理地址(0 = 页池空了)
+;  ring 3 有两块页不能等缺页:弹床页(程序 ret 回去执行 int 0x30 的地方)和用户
+;  栈页(程序在 ring 3 用的栈)。写内容直接用返回的物理地址 —— 页池在 0x400000
+;  以上是恒等映射的,内核视角里物理地址就是虚拟地址。
+; ---------------------------------------------------------------------------
+space_user_page:
+    push ebx
+    push ecx
+    push edx
+    push edi
+    mov [sup_va], eax
+    mov ecx, 1
+    call pmem_alloc_pages
+    test eax, eax
+    jz .out
+    mov [sup_pa], eax
+    mov edi, eax                        ; 新页清零(栈页里除了返回地址都该是 0)
+    xor eax, eax
+    mov ecx, 1024
+    rep stosd
+    ; 装进私有页表 —— 这里**必须**带 PAGE_USER:没有这一位,ring 3 一碰就是
+    ; "页在,但你没资格"(错误码 bit0=1)的保护违规,而不是缺页。
+    mov ebx, [sup_va]
+    shr ebx, 12
+    and ebx, 0x3FF                      ; 页表项下标
+    mov edi, [space_pt]
+    mov edx, [sup_pa]
+    or edx, PAGE_P | PAGE_RW | PAGE_USER
+    mov [edi + ebx * 4], edx
+    inc dword [space_pages]             ; 这两页不是"按需补的",跟着空间一起收摊
+    mov eax, [sup_va]
+    invlpg [eax]
+    mov eax, [sup_pa]
+.out:
+    pop edi
+    pop edx
+    pop ecx
+    pop ebx
+    ret
+
+; ---------------------------------------------------------------------------
+;  space_prepare_user:准备 ring 3 的两块页
+;    · 弹床页(镜像窗口最后一页 0x19F000)写三条指令:mov eax,15 / int 0x30 / jmp $
+;    · 用户栈页(堆窗口最后一页 0x1EF000)的栈顶放一个返回地址 = 弹床
+;  返回 eax = 弹床虚拟地址;0 = 页池不够(调用方按 OOM 处理)
+;  为什么要弹床:现有程序的结尾都是 `ret`(汇编写的,C 那套也是),而 ret 的目标
+;  地址是我们压进用户栈的。压内核地址没用 —— ring 3 一跳过去就是 #PF。所以压
+;  一段"用户态里的小代码",它替程序喊一声"我退出"(int 0x30 功能号 15)。
+;  好处:HELLO/TOUCH/EDIT/CALC/UTF8/HANG 一个字节都不用改。
+; ---------------------------------------------------------------------------
+space_prepare_user:
+    pushad
+    mov eax, SPACE_TRAMP_VA
+    call space_user_page
+    test eax, eax
+    jz .fail
+    mov edi, eax                        ; 往弹床页写那三条指令
+    mov esi, tramp_code
+    mov ecx, tramp_code_end - tramp_code
+    rep movsb
+    mov eax, SPACE_STACK_VA
+    call space_user_page
+    test eax, eax
+    jz .fail
+    mov edi, eax
+    add edi, 4096 - 4                   ; 栈顶往下 4 字节:弹床的地址
+    mov dword [edi], SPACE_TRAMP_VA
+    popad
+    mov eax, SPACE_TRAMP_VA
+    ret
+.fail:
+    popad
+    xor eax, eax
+    ret
+
+; ---------------------------------------------------------------------------
+;  prog_kill_from_fault:ring 3 的程序犯错了(页错误/特权指令)→ 干掉它,系统活着
+;    ebx = isr_common 的帧指针([+32] 向量 [+36] 错误码 [+40] EIP [+44] CS)
+;  不返回:把内核现场恢复成"程序还没跑"的样子(和 api.asm 的 exit 门同一条路),
+;  直接跳回 cmd_run。这正是 ring 3 的意义:玩具程序乱写地址,内核不受影响。
+; ---------------------------------------------------------------------------
+prog_kill_from_fault:
+    pushad
+    mov [pk_frame], ebx
+    mov eax, EV_PROG_CRASH              ; 事件账本:程序崩了(附带出错处的 EIP)
+    mov ebx, [ebx + 40]
+    call evt_log
+    call rc_on_crash                    ; on_crash="reboot" 的话,这里就去重启
+    mov al, 10
+    call term_putc
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_pk_head
+    call term_print
+    mov eax, [pk_frame]
+    cmp dword [eax + 32], 14
+    jne .other
+    ; ---- 14 号页错误:报 CR2(碰了哪儿)和 EIP(哪条指令碰的)----
+    mov esi, msg_pk_pf
+    call term_print
+    mov eax, cr2
+    call term_print_hex
+    mov esi, msg_pk_eip
+    call term_print
+    mov eax, [pk_frame]
+    mov eax, [eax + 40]
+    call term_print_hex
+    mov eax, [pk_frame]
+    ; 错误码:bit0=页存在(1)/不存在(0),bit1=写操作,bit2=ring 3 访问。
+    ;  bit0=1 = "页在,但没你的份"(碰内核内存就是这种);bit0=0 = 压根没映射。
+    test dword [eax + 36], 1
+    jz .notmapped
+    mov esi, msg_pk_notyours
+    call term_print
+    jmp .done
+.notmapped:
+    mov esi, msg_pk_umapped
+    call term_print
+    jmp .done
+.other:
+    ; ---- 别的异常(#GP/#UD…):多半是碰了只有内核能用的指令 ----
+    mov esi, msg_pk_exc
+    call term_print
+    mov eax, [pk_frame]
+    mov eax, [eax + 32]
+    call term_print_dec
+    mov esi, msg_pk_eip
+    call term_print
+    mov eax, [pk_frame]
+    mov eax, [eax + 40]
+    call term_print_hex
+    mov esi, msg_pk_priv
+    call term_print
+.done:
+    mov al, 10
+    call term_putc
+    mov al, COL_NORMAL
+    call term_set_color
+
+    ; ---- 回 shell 的内核现场 ----
+    mov dword [run_status], 1           ; 1 = 不是正常退出,是"被干掉的"
+    mov esp, [run_esp]
+    mov ax, GDT_KDATA
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov eax, PD_ADDR
+    mov cr3, eax                        ; 换回内核页目录
+    jmp run_resume_kernel
+
 lfb_pde_idx  dd 0
 lfb_base     dd 0
 map_va       dd 0
@@ -649,3 +825,20 @@ pf_saved_cr3   dd 0                    ; 临时切内核页目录前的 CR3
 pf_ret         dd 0                    ; page_fault_try_handle 的返回值
 pf_is_img      db 0                    ; 出错的是镜像窗口(1)还是堆窗口(0)
 msg_pf_oom     db 'out of physical pages while faulting in a page', 10, 0
+
+sup_va         dd 0                    ; space_user_page:要映的虚拟地址
+sup_pa         dd 0                    ; space_user_page:拿到的物理页
+pk_frame       dd 0                    ; prog_kill_from_fault:异常现场的帧指针
+; 弹床页里的三条指令:mov eax,15(退出) / int 0x30 / jmp $。程序 `ret` 到这里。
+tramp_code:
+    db 0xB8, 15, 0x00, 0x00, 0x00
+    db 0xCD, 0x30
+    db 0xEB, 0xFE
+tramp_code_end:
+msg_pk_head    db 'program crashed: ', 0
+msg_pk_pf      db 'page fault at ', 0
+msg_pk_exc     db 'exception ', 0
+msg_pk_eip     db ' (EIP ', 0
+msg_pk_notyours db ') -- that page belongs to the kernel, not to you', 10, 0
+msg_pk_umapped  db ') -- that address is not mapped in your memory', 10, 0
+msg_pk_priv    db ') -- that is a privileged instruction, only the kernel may run it', 10, 0

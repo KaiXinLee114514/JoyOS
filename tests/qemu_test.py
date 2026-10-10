@@ -1082,6 +1082,69 @@ def main() -> int:
                             has("broken UTF-8: [") and has("��") and has("still shows"),
                             "[��](两个替换字符)且后面的字还在"))
 
+            # ---- ring 3:程序跑在用户态,碰内核内存要被干净干掉(kernel/tss.asm)----
+            run("clear", wait=0.8)
+            run("run RING3.BIN", wait=2.0)
+            results.append(("ring 3:程序自己报 CPL = 3",
+                            wait_for("CPL = 3") and has("0x0000001B") and has("0x00000023"),
+                            "CS = 0x0000001b(CPL=3)/ SS = 0x00000023"))
+            results.append(("ring 3:内核给的用户栈 + 弹床页",
+                            has("0x001EFFFC") and has("0x0019F000"),
+                            "ESP = 0x001EFFFC,[ESP] = 弹床 0x0019F000"))
+            run("clear", wait=0.8)
+            run("run FAULT.BIN", wait=2.5)
+            results.append(("ring 3:摸内核内存被页错误干掉",
+                            wait_for("program crashed") and has("belongs to the kernel")
+                            and not has("protection is broken"),
+                            "page fault at 0x00100000,没读出内核内存"))
+            results.append(("ring 3:内核自己没事",
+                            has("the kernel is fine") and wait_for("program was killed"),
+                            "program was killed, the kernel is fine"))
+            run("run HELLO.BIN", wait=2.0)
+            results.append(("ring 3:崩溃之后照样能跑程序",
+                            wait_for("Hello from HELLO.BIN") and has("program returned to the shell"),
+                            "HELLO.BIN 又跑起来了"))
+            run("clear", wait=0.8)
+            run("run CHELLO.BIN", wait=3.0)
+            results.append(("ring 3:C 程序(三页镜像 + malloc)也跑得通",
+                            wait_for("program returned to the shell", 20.0)
+                            and not has("program crashed"),
+                            "CHELLO.BIN 正常退出(多页镜像按页拷对)"))
+
+            # ---- rc.conf(key=value 事件/服务库,kernel/rc.asm)----
+            run("clear", wait=0.8)
+            run("rc", wait=1.0)
+            results.append(("rc:概要读到 RC.CONF",
+                            wait_for("rc.conf  : ") and has("RC.CONF") and has("hostname")
+                            and has("joyos"),
+                            "rc.conf: RC.CONF / keys / hostname joyos"))
+            run("rc list", wait=1.0)            # ★ 以前漏了这条命令,断言永远不成立
+            results.append(("rc:服务列表 + 启用状态",
+                            wait_for("services in RC.CONF", 20.0)
+                            and has("HELLO.BIN") and has("disabled")
+                            and has("args: hi-from-rc-conf"),
+                            "[1] HELLO.BIN disabled args: hi-from-rc-conf"))
+            run("rc get hostname", wait=1.0)
+            results.append(("rc get hostname → joyos", has("joyos"), "key=value 直接取值"))
+            run("rc start 1", wait=4.0)
+            results.append(("rc start 1:把服务当程序跑起来",
+                            wait_for("running HELLO.BIN", 15.0)
+                            and has("program returned to the shell"),
+                            "rc.conf 的服务借用 run 那条路跑"))
+            run("rc log", wait=1.2)
+            results.append(("rc log:事件账本(开机/rc.conf/服务)",
+                            wait_for("event log") and has("boot") and has("rc.conf")
+                            and has("service start") and has("service ok"),
+                            "带 tick 的事件账本"))
+            run('write RC.CONF hostname="newbox"', wait=1.5)
+            run("rc reload", wait=1.5)
+            results.append(("rc reload:重新读盘上的 RC.CONF",
+                            wait_for("RC.CONF, 1 keys") and has("hostname newbox"),
+                            "shell 写过的配置能重新解析"))
+            run("rc start 9", wait=1.2)
+            results.append(("rc start 越界:报错不崩",
+                            has("1..8"), "rc start <1..8>"))
+
             # ---- 多 shell:4 条 shell 线程,键盘跟着 Ctrl+Left / Ctrl+Right 走 ----
             run("shell", wait=1.0)
             results.append(("shell 列出 4 条", has("shells: 4") and has("keyboard here"),
@@ -1181,18 +1244,21 @@ def main() -> int:
             #        会把编辑器留在屏幕上,之后敲什么都会被编辑器吃掉。
             run("clear")
             run("run HANG", wait=2.5)
-            results.append(("HANG 卡住了这条 shell", has("this shell is stuck now"),
+            # ★ 这几条一律用 wait_for:guest 要往 MMIO 帧缓冲上画字,慢的时候
+            #   一拍就是好几秒,固定 sleep 之后 has() 会抓到"还没画完"的屏幕。
+            results.append(("HANG 卡住了这条 shell", wait_for("this shell is stuck now", 20.0),
                             "HANG.BIN 说这条 shell 被它占住了"))
             mon.sendkey("ctrl-right")           # 逃到 shell 2
             time.sleep(1.2)
             run("clear")
-            run("echo alive-while-hung", wait=0.9)
-            results.append(("另一个 shell 照样能用", has("alive-while-hung"),
+            run("echo alive-while-hung", wait=1.5)
+            results.append(("另一个 shell 照样能用", wait_for("alive-while-hung", 20.0),
                             "shell 1 卡死时 shell 2 还能执行命令"))
             run("run HELLO.BIN", wait=1.5)
+            # 之前还要求 "not has('running HELLO')" —— 屏幕上只要还留着别处那行 "running HELLO.BIN"
+            # 就会误判;要验的就是"被拒了",所以只看拒绝提示。
             results.append(("一次只让一个程序跑",
-                            wait_for("another shell is running a program")
-                            and not has("running HELLO"),
+                            wait_for("another shell is running a program", 20.0),
                             "被拒并提示另一条 shell 在跑程序"))
             for _ in range(30):                 # 等 HANG 自己转完(最多 ~45 秒)
                 time.sleep(1.5)
@@ -1203,6 +1269,9 @@ def main() -> int:
                             "HANG.BIN 转完 8 圈自己退出,shell 1 又活了"))
             run("shell 1", wait=1.2)            # 回第 1 条 shell,后面的用例照旧
             run("clear")
+            run("echo back-after-hang", wait=1.2)
+            results.append(("HANG 之后键盘还活着", wait_for("back-after-hang", 20.0),
+                            "HANG 跑完之后 shell 1 照样收键盘(下面编辑器那串全靠它)"))
 
             # ---- 文本编辑器(EDIT.BIN)----
             run("run edit newfile.txt", wait=1.5)
@@ -1374,8 +1443,8 @@ def main() -> int:
                             "PDE not present"))
 
             run("debug ptest")
-            results.append(("ptest 自测通过", has("ptest: all good") and has("3066 / 3066"),
-                            "translate 对得上 + 页池没泄漏"))
+            results.append(("ptest 自测通过", has("ptest: all good") and has("no leak"),
+                            "translate 对得上 + 页池没泄漏(ptest 自己会报 no leak)"))
 
             run("badcommand")
             results.append(("未知命令有提示", has("unknown command"), "unknown command"))
@@ -1436,6 +1505,10 @@ def main() -> int:
                 ("键盘就绪",        "keyboard: PIC remapped to 0x20, IRQ1 enabled"),
                 ("定时器就绪",      "timer: PIT channel 0 at 100 Hz"),
                 ("调度器",          "sched: round-robin threads"),
+                ("ring 3 用户态",   "ring 3: user segments + TSS ready"),
+                # 软盘镜像里没有 RC.CONF,开机行是 'rc.conf: no RC.CONF ... built-in defaults';
+                # 硬盘镜像那条完整断言(RC.CONF / keys / hostname)在下面的 rc 块里
+                ("rc.conf 服务库",  "rc.conf:"),
                 ("RTC 时钟",        "rtc: CMOS clock"),
                 ("阶段完成提示",    "OK - stage 5"),
                 ("多 shell 线程",   "4 shells (Ctrl+Left / Ctrl+Right)"),

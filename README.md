@@ -66,7 +66,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | 功能 | 说明 |
 |---|---|
 | 启动 | 512 字节引导扇区,BIOS 传统 MBR 方式加载到 `0x7C00` |
-| **多扇区读盘** | 一次读多个扇区把 64 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
+| **多扇区读盘** | 一次读多个扇区把 128 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
 | 保护模式 | GDT(代码段 + 数据段,平坦 4 GiB)、`CR0.PE`、32 位段寄存器全部就位 |
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
 | 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`debug pmap`),物理页池 = 位图分配器 12 MiB(`debug pmem` / `debug ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
@@ -74,6 +74,8 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);**抢占式多任务就是在 IRQ0 里切栈**(见 §5「线程与调度」) |
 | **内核线程 + 抢占式轮转** | 6 个线程槽、每个线程 **20 ms 时间片**(`kernel/sched.asm`):IRQ0 里存 esp/CR3、轮转、换栈;`ps` 看线程表、`spawn` 起演示线程(alpha / beta 每秒各打一行)、`kill` 杀掉并把栈还给物理页池(见 §5) |
 | **多 shell(4 条)** | 4 条 shell 各是一条内核线程,**Ctrl+←/→ 换键盘焦点**(在键盘中断里切,所以卡在程序里的那条也能被换走);`shell` 列出、`shell 3` 直接跳;每条 shell 有自己的行缓冲和当前目录,切换时没敲完的半行会跟着走;**一次只让一个程序跑**(别人在跑就拒绝),shell 线程本身杀不掉(见 §5) |
+| **ring 3 用户态** | 程序不再由内核 `call` 进去,而是 `iret` 到 **CPL=3**:内核运行时重建 GDT(0x1B 用户代码 / 0x23 用户数据 / 0x28 TSS)+ `ltr` 装 TSS(从 ring 3 掉回内核的栈只能从 TSS 取);程序页表项带 U/S 位,**内核的页它碰不到** —— 故意读内核内存会被页错误干掉、内核自己接着用(`run FAULT` 现场演示);程序结尾照旧 `ret`:内核在用户栈顶压了**弹床页**(0x19F000,三条指令 `int 0x30` 功能号 15 退出),所以现有程序一行都不用改(见 §5) |
+| **rc.conf 服务 / 事件库** | 根目录的 `RC.CONF` 是**纯 `key=value`**(BSD / OpenRC 那种,不是 systemd 段):`hostname` / `boot_msg` / `autostart` / `on_crash` + `service_N`(程序、参数、启用开关)。`rc` 一条命令管起来:`rc list` 看服务、`rc get KEY` 取值、`rc start N` **把服务当程序跑**(借 `run` 那条路:ring 3 + 按需分页)、`rc reload` 重读刚写的配置;另有**事件账本**:开机 / 读配置 / 服务起停 / 程序跑完 / 程序崩了 / 线程被 kill / 换 shell,每种连 100 Hz 的 tick 一起记 16 条(`rc log`);`autostart=YES` 就是开机按配置跑服务,`on_crash=reboot` 则程序崩了直接重启(见 [docs/rc-conf.md](docs/rc-conf.md)) |
 | **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
@@ -186,11 +188,14 @@ kernel/start.asm       内核镜像入口:拼装 stub 之后的 32 位部分(顺
 kernel/kmain.asm       内核入口 + 终端驱动(滚屏、光标、十六进制/十进制打印)
 kernel/utf8.asm        UTF-8 解码(坏字节 → U+FFFD,防溢出/代理区都拦了)
 kernel/idt.asm         IDT、32 个异常入口、panic 屏,idt_install 负责装门
-kernel/paging.asm      页目录 + 页表 + 开分页 + 按需分页(缺页补页、程序私有空间)
+kernel/paging.asm      页目录 + 页表 + 开分页 + 按需分页(缺页补页、程序私有空间、
+                       用户页 U/S 位、弹床页 / 用户栈页 / 参数页)
+kernel/tss.asm         ring 3 的地基:运行时重建 GDT(用户代码/数据段)+ TSS + ltr
 kernel/keyboard.asm    8259A 重映射、IRQ1 键盘中断、扫描码翻译、环形缓冲
 kernel/pit.asm         8254 定时器:通道 0 按 100 Hz 发 IRQ0,只加 tick 计数(uptime/sleep 靠它)
 kernel/rtc.asm         CMOS 实时时钟:等 UIP、读两遍比对、BCD/12 小时制换算、日期格式化(date 靠它)
 kernel/sched.asm       内核线程 + 抢占式轮转:TCB 表、20 ms 时间片、IRQ0 里换栈、spawn/kill 的栈管理(ps 靠它)
+kernel/rc.asm          rc.conf 服务/事件库:读根目录 RC.CONF、就地拆 key=value、按配置跑服务(借 shell 的 run)、16 条事件账本(rc 靠它)
 kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
 kernel/ata.asm         ATA(IDE)PIO 驱动:读扇区 + 写扇区 + FLUSH CACHE
@@ -239,7 +244,7 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 0x006000              页池位图(384 字节)      (pmem.asm,PMEM_BITMAP)
 0x007000              页表:恒等 12-16 MiB      (PT_ID3)
 0x007C00              引导扇区(512 字节)
-0x010000 - 0x02FFFF   内核区(128 KiB = 256 扇区,实到约 48 KiB)
+0x010000 - 0x02FFFF   内核区(128 KiB = 256 扇区,实到约 70 KiB)
 0x090000              内核栈(往下长)
 0x0B8000              VGA 文本缓冲(80×25,每格 2 字节:字符 + 颜色)
 0x100000              FAT 扇区缓冲           (fat.asm 的 FAT_BUF)
@@ -348,6 +353,52 @@ demand paging: 34 page(s) faulted in (image 2 + heap 32), first page 0x00425000
 - 内核窗口继续恒等映射,所以 `int 0x30` 照旧能用 —— **不需要 ring 3**,
   程序传给内核的指针也照旧解得开(那会儿用的就是程序这套页表)。
 
+### 程序跑在 ring 3:内核的内存它碰不到
+
+程序从 `0x120000` 跑起来,但**不是内核 `call` 进去的** —— 内核用 `iret` 把它丢进用户态
+(CPL=3),它的代码段是 0x1B、栈段是 0x23。它自己能看到这件事:
+
+```
+> run RING3.BIN
+running RING3.BIN
+address space: CR3 = 0x00406000  (own page directory + demand paging)
+RING3.BIN: asking the CPU where I am running
+  CS  = 0x0000001B  (CPL = 3), SS = 0x00000023  ESP = 0x001EFFFC, [ESP] = 0x0019F000
+if CS is 0x001b and CPL is 3, this program is not the kernel any more.
+
+program returned to the shell
+```
+
+`[ESP]` 那个 `0x19F000` 是内核替它压进去的**弹床页**:程序最后一句 `ret` 会跳到那儿,
+弹床里就三条指令(`mov eax,15 / int 0x30 / jmp $`)—— 喊一声"我退出了"就回 shell。
+**现成程序一个都不用改**(C 程序的 crt0 也是 `ret`)。
+
+想去碰内核的地盘呢:
+
+```
+> run FAULT.BIN
+FAULT.BIN: now reading kernel memory at 0x00100000 ...
+
+program crashed: page fault at 0x00100000 (EIP 0x0012000C) -- that page belongs to the
+kernel, not to you
+
+program was killed, the kernel is fine
+```
+
+页表是**逐级**查权限的:内核恒等映射的那些页(0~16 MiB)U/S=0,程序页才是 U/S=1,
+所以 `mov ebx,[0x100000]` 直接页错误;内核的处理是**把程序干掉、自己接着跑**
+(以前是 panic,现在是 `program was killed`)。用户态异常也不再是内核 panic:
+`isr_common` 先看错误码里的 CS(CPL),是 3 就交给 `prog_kill_from_fault`。
+
+程序自己那几块地(都在它自己的地址空间里,按需补页):
+
+| 地址 | 干什么 |
+| --- | --- |
+| `0x120000`-`0x19EFFF` | 程序镜像(弹床占最后一页 0x19F000) |
+| `0x1A0000`-`0x1EDFFF` | 堆(`malloc` 从这儿长) |
+| `0x1EE000` | 参数页:内核里那份参数(0x11F000)对 ring 3 是"别人家的内存",装载器整块拷过来 |
+| `0x1EF000` | 用户栈(栈顶 0x1EFFFC,那 4 字节是弹床地址) |
+
 ### 线程与调度(内核线程 + 抢占式轮转)
 
 `kernel/sched.asm` 里 6 个线程槽,每槽是一个 32 字节的 TCB:esp / cr3 / 状态 /
@@ -422,7 +473,7 @@ Ctrl+Left / Ctrl+Right switches, or: shell <n>
 3> 
 ```
 
-想亲眼看"卡死也不影响别人":`run HANG`(每秒打一行、**转 8 圈约 8 秒后自己退出**的演示
+想亲眼看"卡死也不影响别人":`run HANG`(开头报一行、**转 8 圈约 20 秒后自己退出**的演示
 程序),趁它占着这条 shell 的时候 `Ctrl+→` 逃到别的 shell,`echo` 照样有响应 —— 这就是多
 shell 的意义。
 
@@ -435,6 +486,15 @@ shell 的意义。
 `shell` 列出来,`Ctrl+→` 切到 2 号敲命令,`3> date time` 是 3 号在跑;
 最后那两行是"半行命令"的演示:在 1 号敲了 `echo half-typed line survives` 没回车就跑掉了,
 切回来时它还在(提示符下面那行),回车就能执行。
+
+### rc.conf:开机读配置、按配置跑服务
+
+根目录的 `RC.CONF` 就是一行行 `key=value`(BSD / OpenRC 那种写法,不是 systemd 的段)。
+开机时内核读它、把 `boot_msg` 打出来、按 `autostart` 决定要不要把启用的服务跑起来;
+`rc` 一条命令就能看配置、看服务、起服务、重读刚写下的文件,还有一本带 PIT tick 的
+事件账本。细节和全部 key 见 [docs/rc-conf.md](docs/rc-conf.md)。
+
+![rc.conf 服务列表与事件账本](docs/screenshot-rc.png)
 
 ## 6. 踩过的坑(这部分才是精华)
 
@@ -676,6 +736,91 @@ shell 而且缓冲区里真有键"时才调 `kbd_getchar`,否则 `hlt` 睡在**�
 `wait_for("要看到的字")` 轮询到出现为止。教训:**测屏幕内容的用例,永远不要赌一个固定的
 等待时间** —— 要么等"屏幕不再变",要么等"某个字真的出现了"。
 
+### 6.17 页表是**逐级**查权限的:PD 那级忘了 U/S,程序第一条指令就死
+
+给程序页表项加了 `PAGE_USER` 还是不行,程序在 0x120000 就吃 `page fault at 0x00120000`
+(错误码 bit0=1 = "页在,但没你的份")。原因:权限不只看最后一级 PTE,**PD 那一项也算** ——
+`space_create` 里挂私有页表时 `or eax, PAGE_P|PAGE_RW` 少了 `PAGE_USER`。两级都加才对。
+
+### 6.18 缺页补页要**按页对齐**地拷
+
+镜像页缺页时从暂存区拷数据,原来是这样写的:`pf_off = 出错地址 - SPACE_IMG_VA`,
+然后从 `SPACE_IMG_VA + pf_off` 拷一整页。**顺序执行的程序永远看不出问题** ——
+它总是走到页边界才缺页,`pf_off` 正好是页首。直到 ring 3 出现"从页中间进代码"的
+`call`:第一次取指落在 `0x121C10`,于是把 `0x121C10` 往后的字节拷到了页首 ——
+整页错位,程序跑的是"别人家的字节"(现象是崩在一个莫名其妙的地址上)。
+正确的写法是先 `and eax, 0xFFFFF000` 再当偏移。
+
+### 6.19 `hlt` 是特权指令:演示程序自己先死了
+
+`HANG.BIN` 原来用 `hlt` 当"睡 10 ms"(ring 0 时没问题)。程序搬进 ring 3 之后,
+执行到 `hlt` 直接 #GP,被内核按"异常"处理掉 —— 演示"卡住一条 shell"的程序自己先崩了。
+改成空转忙等(`dec ecx / jnz`),反正定时器每 20 ms 抢占一次,别的 shell 照样能干活。
+
+### 6.20 内核指针不能交给 ring 3 程序
+
+API 12(取参数)以前返回内核里那个参数缓冲区 `0x11F004`。ring 0 时天经地义,
+ring 3 里程序一读就吃页错误(C 程序 `CHELLO.BIN` 崩在 `0x00012D72`,那正是内核里
+那个空串 `api_empty`)。修法:在程序自己的堆窗口里留一页当参数页,装载器把
+"魔数 + 参数字符串"整块拷进去,API 12 返回那儿的地址。**凡是返回指针的 API,
+都要问一句"这个地址在程序自己空间里吗"**。
+
+### 6.21 nasm 三个小坑(`-f bin` 写 ring 3 时踩的)
+
+- 对**标签**做 `&` / `>>` 会直接报 `` `&' operator may only be applied to scalar values ``
+  (`dd label` 可以,那只是把地址当数据写)—— GDT 里 TSS 描述符的 base 改成开机运行时回填。
+- `xxx.yyy:` 这种"带前缀的局部标签"会把**后面**的局部标签前缀改成 `xxx.yyy`,
+  于是一整片 `cmd_run.nomem` 都变成未定义。落点要用全局标签(`run_resume_kernel`)。
+- 单引号字符串里 `''` 不是转义(`'the kernel''s'` 会报 `comma expected`)。
+
+### 6.22 读配置的缓冲区压在了 FAT 的扇区缓冲里(读回来 0 字节)
+
+`rc_load` 得先把 `RC.CONF` 读进内存再解析。第一版图省事,挑了个看着"空着"的固定地址
+`0x10C000` —— 那地方**在 `FAT_BUF`(0x100000~0x10FFFF)里面**。`fat_read_file` 是一边读扇区
+一边往 `FAT_BUF` 拷、再复制到目的地的,目的地就在它自己那块缓冲里,于是内容被踩烂,
+解析出来 0 个 key。
+
+症状很能骗人:开机那次读得到 9 个 key(那时还没人动过 `FAT_BUF`),`write RC.CONF ...` 之后
+再 `rc reload` 就变成 `RC.CONF, 0 keys`。
+
+教训:内核里挑缓冲区要**先看内存布局注释**(`kernel/kmain.asm` 文件头那张表),
+别自己"看着空"就填;更稳的是干脆用内核自己的静态缓冲(`kernel/rc.asm` 里 `rc_buf times RC_MAX db 0`)。
+
+### 6.23 循环里 `push` 没配对 `pop`:`ret` 跳到了 `0x00000007`
+
+`rc list` 列完两个服务就 `KERNEL PANIC`,`EIP = 0x00000007`。原因:循环体里为了保住 `ecx`
+先 `push ecx`,列完这一项却直接 `jmp .loop` 回去 —— 每一项多压 4 字节,`popad` 从**错位**的
+栈上恢复寄存器,`ret` 自然飞到野地址。改成**循环下标放内存变量**(`rc_lst_i`),栈一个字节都不动,
+这类 bug 就绝迹了。
+
+顺带一条:`pushad` 里改返回值要写 `[esp + 28]`(eax 在 pushad 帧里的偏移),
+这种"约定"一定要写在函数注释里,不然下一个人照样踩。
+
+### 6.24 两个"看不见的约定":偷改寄存器 + `strip_name` 把第一个空格改 0
+
+一个早上抓到两个同类的坑,都出在"小工具函数"上:
+
+* `rc_streq_nocase`(比字符串)内部用 `bl` 存字符,却**没保住 ebx**。`rc_get` 拿 ebx 存
+  "要找的 key 指针",于是只有第 1 个 key 能查到 —— 症状是 `hostname` 有值,`autostart` /
+  `on_crash` 全显示"(没设)",`services 0 (0)`。
+* `rc` 的 `cmd_rc` 调了 `strip_name`(shell 里"去掉参数尾巴空格"的老函数)。它实际干的是
+  **把第一个空格改成 0** —— 那是给"只吃一个参数"的命令(`cat FILE`、`run PROG`)准备的,
+  于是 `rc get hostname` 里的 `hostname` 被吃掉、掉进了 `.bad_arg` 分支。
+
+教训:工具函数要么写清"我改哪些寄存器",要么进出门 `push`/`pop` 全包;
+调用别人写的老函数前,先把它的**注释和实现**都读一遍(名字描述的往往不是全部事实)。
+
+### 6.25 中断门会清 IF,而 `jmp` 不会替你恢复它
+
+程序是**走中断门**进内核的(`int 0x30`、14 号页错误都算),而 x86 的中断门这条硬件路径会
+**把 EFLAGS.IF 清 0**。程序退出后内核走的是 `jmp run_resume_kernel`(不是 `iret`),于是
+IF=0 一路回到了 shell —— 后果特别唬人:定时器(IRQ0)和键盘(IRQ1)的中断被 8259 挂着没人取
+(`info pic` 里 `pic0: irr=03 imr=fc isr=00`),shell 那句 `hlt` 一进去就永远等不到人叫醒它,
+整个系统看着像死机,但 CPU 好端端停在 `hlt`、PIC 掩码也是好的。
+排查招式:`info registers` 看 `EFL` 里有没有 `0x200`(`00000206` 有 = 中断开着,`00000097` 没有
+= 中断被关了),再 `info pic` 看 `irr` 有没有挂着 —— 两者一对就能分清"真死机"和"只是中断关了"。
+修法:`run_resume_kernel` 在换回内核页目录之后补一条 `sti`。
+
 ## 7. shell 命令
 
 ```
@@ -704,6 +849,13 @@ spawn [who]   起一个演示线程(alpha / beta 每秒各打一行;不带参数
 kill <id>     杀掉一个线程,把它的栈还给物理页池(0~3 号是 shell 自己人,杀不掉)
 shell [n]     列出 4 条 shell(标出键盘现在归谁),或者 shell 3 直接跳过去;
               随时 Ctrl+Left / Ctrl+Right 换成隔壁那条(卡死的 shell 也能被换走)
+rc [什么]     rc.conf(key=value 的服务/事件库,见 docs/rc-conf.md):
+  rc                概要:配置文件名、几个 key、hostname、autostart / on_crash
+  rc list           列出服务(编号 / 程序 / enabled-disabled / 参数)
+  rc get <key>      取一个 key 的值(key 不分大小写)
+  rc start <n>      把第 n 号服务当程序跑一遍(和 run 同一条路)
+  rc log            事件账本:开机/读配置/服务起停/程序跑完/崩了/kill/换 shell,各带 tick
+  rc reload         重新读磁盘上的 RC.CONF(shell 里 write 过就能立刻生效)
 ```
 
 `uptime` / `sleep` 的样子(定时器就是靠 100 Hz 的 IRQ0 数出来的):
@@ -898,8 +1050,9 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 
 ## 10. 下一步:该玩点啥
 
-**刚刚落地:多 shell** —— 4 条 shell 各是一条内核线程,`Ctrl+←/→` 在键盘中断里换焦点,
-所以一条 shell 卡在 `run HANG` 里时,另一条照样能干活(见 §5「多 shell」)。
+**刚刚落地:ring 3 用户态 + rc.conf 服务/事件库** —— 程序跑在 CPL=3,内核的页它碰不到,碰了就死、内核不慌
+(见 §5「程序跑在 ring 3」)。再往前是**多 shell**:4 条 shell 各是一条内核线程,
+`Ctrl+←/→` 在键盘中断里换焦点,一条卡在 `run HANG` 里时另一条照样能干活(见 §5「多 shell」)。
 再往前一步是内核线程 + 抢占式轮转(PIT 的 IRQ0 里存现场、换栈,`ps`/`spawn`/`kill`)
 和 `date`(读 CMOS 实时时钟)。
 
@@ -907,16 +1060,18 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 - **闪烁光标**:现在光标常亮,有了 100 Hz 的 tick,在 `pit_irq` 里翻转一下就行
 - **`settime`**:往 CMOS 写时间(得先关 NMI 位、还得避开时钟更新,见
   [docs/known-issues.md](docs/known-issues.md) 第 8 节)
-- **用户态进程(ring 3)**:这才是"真正的"进程 —— 给每个线程一套自己的地址空间、
-  建 TSS、用系统调用门(int 0x30 那套已经有雏形了),把内核从程序能碰的窗口里挪出去。
-  难点都写在 [docs/known-issues.md](docs/known-issues.md) 里
+- **每个线程一套地址空间**:ring 3 有了,但地址空间那套状态还是全局的(一次只让一条
+  shell 跑程序),`space_*` 得挂到线程上才能同时跑几个进程
+- **rc.conf 的下一层**:`RC.CONF`(key=value)已经能管「开机跑哪些程序」和事件账本了
+  (见 [docs/rc-conf.md](docs/rc-conf.md));还没有依赖关系(`after=` / `requires=`)、
+  没有 `stop`(服务是跑一遍就走的程序)、没有失败重试
 
 ## 11. 还没做的(想练手就从这里挑)
 
 - **删文件 / 长文件名**:`mkdir` / `rmdir` / 子目录已经能用了,还缺 `rm`
   (目录项首字节写 `0xE5` + 把簇链标回空闲)和长文件名(VFAT,那是另一个故事)
-- **保护程序搞坏内核**:现在程序和内核平起平坐,能直接改内核内存 ——
-  真正的下一步是 ring 3 + TSS + 系统调用门,把"内核窗口"从程序地址空间里挪走
+- ~~保护程序搞坏内核~~:已经做了(ring 3 + TSS + U/S 位,见 §5)—— 下一步是让内核窗口
+  彻底不出现在程序页目录里(现在还是拷一份内核页目录,只是 U/S=0)
 - **虚拟内存的下一层**:按需分页已经有了(碰到哪页才给哪页),但还没有
   **页置换 / swap / 写时复制**,也**不给程序自己长栈**(栈还是内核那套);
   窗口里的空洞也会给页(按访问给,不是按"真的要用"给)

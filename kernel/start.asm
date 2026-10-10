@@ -27,6 +27,7 @@ kmain:                                  ; 32 位内核入口(stub 里 jmp 0x1000
 %include "api.asm"                       ; 程序接口 int 0x30                  ; 从磁盘加载完整字库                      ; UTF-8 解码
 %include "speaker.asm"                   ; PC 蜂鸣器(beep,忙等标定见文件开头)
 %include "idt.asm"                       ; IDT / 异常 / panic 屏
+%include "tss.asm"                       ; 用户段 + TSS(ring 3 的地基)
 %include "paging.asm"                    ; 页目录 / 页表
 %include "pmem.asm"                      ; 物理页池(位图分配器,paging_map 会找它要页)
 %include "fbterm.asm"                   ; 帧缓冲终端(图形模式)
@@ -35,7 +36,10 @@ kmain:                                  ; 32 位内核入口(stub 里 jmp 0x1000
 %include "pit.asm"                       ; PIT 定时器(IRQ0,100 Hz 心跳)
 %include "rtc.asm"                       ; CMOS 实时时钟(日期 / 时间)
 %include "sched.asm"                     ; 调度器(内核线程 + 抢占式轮转)
+%include "rc.asm"                        ; rc.conf 配置 + 事件账本(控制程序事件)
 %include "shell.asm"                     ; shell
 
-; 内核区补到 64 KiB(128 扇区)—— 图形模式的帧缓冲终端和字库都要地方
-times (128 * 512) - ($ - $$) db 0
+; 内核区补到 128 KiB(256 扇区,和 tools/mkimg.py 的 KERNEL_SECTS 一致)——
+; 引导扇区本来就读 256 个扇区,所以这里只是把文件补够,顺便当"超出就报错"的尺子。
+; (以前补到 64 KiB;加了 ring 3 + rc.conf 之后内容过 64 KiB 了,改成对齐真正的上限。)
+times (256 * 512) - ($ - $$) db 0

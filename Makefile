@@ -52,7 +52,8 @@ KERNEL_SRCS := $(wildcard kernel/*.asm)
 # 不然 make 会说"无事可做",你改了字库却看到的还是老字模(这个坑踩过一次)
 FONT_DEPS   := font/vga-font.bin font/vga-zh-map.asm font/vga-zh-strings.asm
 # asm 写的程序(progs/*.asm → nasm → 平铺二进制)
-PROGS       := HELLO.BIN COUNT.BIN CALC.BIN EDIT.BIN TOUCH.BIN UTF8.BIN HANG.BIN
+PROGS       := HELLO.BIN COUNT.BIN CALC.BIN EDIT.BIN TOUCH.BIN UTF8.BIN HANG.BIN \
+               RING3.BIN FAULT.BIN
 
 # ---- C 写的程序(progs/*.c):有 gcc 的多架构支持就编,没有就跳过 ----
 # 为什么单独探测:gcc -m32 需要 gcc-multilib,没装的话不该让整个 make 挂掉 ——
@@ -168,6 +169,7 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
+	    RC.CONF=progs/RC.CONF \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
@@ -189,6 +191,7 @@ $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-jo
 	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
+	    RC.CONF=progs/RC.CONF \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd32: $(HD32IMG)

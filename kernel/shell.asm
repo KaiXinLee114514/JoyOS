@@ -165,6 +165,9 @@ shell_switch_to:
     mov ecx, SH_DIR_SZ
     rep movsb
     mov dword [sh_switch_flag], 1
+    mov eax, EV_SHELL                   ; 事件账本:换 shell 了(rc log 里能看到)
+    mov ebx, [sh_target]
+    call evt_log
 
     ; ---- 3) 叫醒可能正睡在 kbd_getchar 里的那条 ----
     xor al, al
@@ -1171,7 +1174,8 @@ cmd_run:
     cmp eax, -1
     je .notfound
     mov [prog_size], eax
-    cmp eax, SPACE_IMG_PAGES * 4096     ; 镜像窗口只有 512 KiB(128 页)
+    cmp eax, (SPACE_IMG_PAGES - 1) * 4096
+                                        ; 窗口 512 KiB,最后一页留给 ring 3 的弹床
     ja .toobig
     mov esi, [prog_name_ptr]
     mov edi, PROG_ADDR
@@ -1212,13 +1216,44 @@ cmd_run:
     mov al, COL_NORMAL
     call term_set_color
 
-    ; ---- 切到程序自己的页目录,跳进去跑;它 ret 回来后再切回内核的 ----
-    ; (按需分页的开关和 CR3 是在 space_activate / space_deactivate 里成对切的)
+    ; ---- 切到程序自己的页目录,iret 进 ring 3 ----
+    ;  程序从这之后跑在 CPL=3:看得见的只有这个空间里 U/S=1 的页(镜像 + 堆),
+    ;  内核的内存一律 U/S=0 —— 碰了就是保护违规,由 idt.asm 转给 prog_kill_from_fault。
+    ;  它正常跑完会 `ret` 到弹床页 → int 0x30 功能号 15 → api_exit 回到这儿。
     pushad
     call space_activate                 ; ★ 从这里开始,0x120000 是"空的"
-    call PROG_ADDR                      ; ← 程序在这里跑,它 ret 就回来
+    call space_prepare_user             ; 弹床页 + 用户栈页;返回弹床地址(0 = 页池空)
+    test eax, eax
+    jz .nomem_user
+    ; 参数页:内核里的 PROG_ARG_ADDR(0x11F000)对 ring 3 是"别人家的内存",
+    ; 所以先现拿一页挂进程序空间,再把整个参数块原样搬过去(现在还是 ring 0,
+    ; 程序页表和内核的恒等映射都在,两边的地址都看得见)。
+    mov eax, SPACE_ARGS_VA
+    call space_user_page
+    test eax, eax
+    jz .nomem_user
+    mov esi, PROG_ARG_ADDR
+    mov edi, SPACE_ARGS_VA
+    mov ecx, SPACE_ARGS_COPY
+    rep movsd
+    mov [run_esp], esp                  ; ★ 记住内核现场:正常退出/被杀都回到这儿
+    mov dword [run_status], 0
+    mov ax, USER_DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    push dword USER_DATA_SEG            ; SS3
+    push dword SPACE_USER_STACK_TOP     ; ESP3(栈顶那 4 字节就是弹床地址)
+    push dword EFLAGS_IF                ; IF=1:新程序一上来就能被定时器打断
+    push dword USER_CODE_SEG            ; CS3
+    push dword PROG_ADDR                ; EIP = 程序入口
+    iret                                ; ★ 这一句之后就进 ring 3 了(再也不会往下走)
+.nomem_user:                            ; 页池不够连弹床/用户栈都建不出来
     call space_deactivate
     popad
+    jmp .nomem
+.after_prog:                            ; ← run_resume_kernel 从文件末尾跳回这里
 
     mov al, 10
     call term_putc
@@ -1226,9 +1261,16 @@ cmd_run:
     call space_destroy
     mov [space_freed], eax
     mov al, COL_OK
-    call term_set_color
     mov esi, msg_prog_done
+    cmp dword [run_status], 0
+    je .done_msg
+    mov al, COL_ERR                     ; 不是正常退出:上面已经打过崩溃原因
+    mov esi, msg_prog_killed
+.done_msg:
+    call term_set_color
     call term_print
+    mov al, COL_OK
+    call term_set_color
     mov esi, msg_space_gone
     call term_print
     mov eax, [space_freed]
@@ -1262,8 +1304,12 @@ cmd_run:
     mov al, COL_NORMAL
     call term_set_color
     mov dword [prog_owner], -1          ; 程序跑完了:别的 shell 也能跑了
+    mov eax, EV_PROG_EXIT               ; 事件账本:跑完了(附带按需补了几页)
+    mov ebx, [space_pf_run]
+    call evt_log
     ret
 .nomem:
+    mov dword [prog_owner], -1          ; 没跑起来也算"没人跑",别把别的 shell 锁住
     mov al, COL_ERR
     call term_set_color
     mov esi, msg_space_nomem
@@ -2168,6 +2214,9 @@ cmd_kill:
     call sched_kill
     jc .none
     ; 它要是正在跑程序,把"一次一个"的锁放掉(那套地址空间就漏了,见 known-issues)
+    mov eax, EV_KILL                    ; 事件账本:谁被杀了
+    mov ebx, [kill_id]
+    call evt_log
     mov eax, [kill_id]
     cmp eax, [prog_owner]
     jne .not_owner
@@ -2347,6 +2396,7 @@ n_shell  db 'shell', 0
 n_ps     db 'ps', 0
 n_spawn  db 'spawn', 0
 n_kill   db 'kill', 0
+n_rc     db 'rc', 0
 n_fmt_ymd  db 'ymd', 0
 n_fmt_mdy  db 'mdy', 0
 n_fmt_dmy  db 'dmy', 0
@@ -2375,6 +2425,7 @@ cmd_table:
     dd n_ps,     cmd_ps
     dd n_spawn,  cmd_spawn
     dd n_kill,   cmd_kill
+    dd n_rc,     cmd_rc
     dd 0, 0
 
 ; ---------------------------------------------------------------------------
@@ -2458,6 +2509,7 @@ msg_help db \
     'spawn [who]   start a demo kernel thread (no arg = alpha, then beta)', 10, \
     'kill <id>     kill a thread, give its stack back to the page pool', 10, \
     'shell [n]     list the 4 shells, or jump to one (Ctrl+Left / Ctrl+Right)', 10, \
+    'rc <what>     rc.conf: list / get KEY / start N / log / reload (event log)', 10, \
     'reboot        restart the machine', 10, \
     'ls            list files on the FAT16 disk', 10, \
     'cat <file>    print a text file (UTF-8)', 10, \
@@ -2551,6 +2603,7 @@ msg_write_usage db 'usage: write <name> <text>', 10, 0
 msg_write_fail  db 'write failed (disk full?)', 10, 0
 msg_running     db 'running ', 0
 msg_prog_done   db 'program returned to the shell', 10, 0
+msg_prog_killed db 'program was killed, the kernel is fine', 10, 0
 msg_prog_toobig db 'program too big for the load area', 10, 0
 msg_space_head  db 'address space: CR3 = ', 0
 msg_space_tail  db '  (own page directory + demand paging)', 10, 0
@@ -2574,6 +2627,8 @@ name_buf   times 64 db 0              ; 名字里可能带目录(DOCS/NOTE.TXT),
 prog_name_ptr dd 0                      ; run 用的:去掉目录部分之后的程序名
 prog_size   dd 0                        ; run 用的:程序文件多大(按它往私有页里拷)
 space_freed dd 0                        ; run 用的:收摊时还回去的页数
+run_esp     dd 0                        ; run 用的:进 ring 3 前的内核栈(退出/被杀都回它)
+run_status  dd 0                        ; run 用的:0 = 程序正常 ret,1 = 被内核干掉了
 cat_name_ptr dd 0                       ; cat 用的:去掉目录部分之后的文件名
 file_size  dd 0
 
@@ -2615,3 +2670,20 @@ page_pte_idx dd 0
 idtr_buf   times 6 db 0
 empty_idt  dw 0
            dd 0
+
+; ---------------------------------------------------------------------------
+;  run_resume_kernel:程序"退出"的统一落脚点(api_exit / prog_kill_from_fault 跳过来)
+;  进来时:esp 已经换回 cmd_run 在进 ring 3 前存下的内核栈,段寄存器/CR3 也都换回来了
+;  —— 所以这里只剩"关掉按需分页开关 + popad 恢复 cmd_run 的寄存器现场"。
+;  放在文件最后,是为了不和 cmd_run 里的局部标签抢 nasm 的前缀。
+; ---------------------------------------------------------------------------
+run_resume_kernel:
+    call space_deactivate               ; 关按需分页 + 换回内核页目录
+    ; ★ 必须补这一句:程序是**走中断门**进来的(int 0x30、或者 14 号页错误),
+    ;   中断门硬件会把 IF 清 0;而这条返回路是 `jmp` 不是 `iret`,没人替我们恢复 IF。
+    ;   不补的话,shell 回来以后 IF=0:定时器和键盘的中断全被压着(8259 那边 irr=03 挂着、
+    ;   没人来取),`hlt` 一进去就永远醒不过来 —— 表现出来就是"跑完一个程序整台机器死了",
+    ;   连 4 条 shell 都跟着没反应。踩过一次,别删。
+    sti
+    popad                               ; 恢复 cmd_run 开头 pushad 的现场
+    jmp cmd_run.after_prog

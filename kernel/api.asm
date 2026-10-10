@@ -123,6 +123,8 @@ api_dispatch:
     je .puts_at
     cmp eax, 14
     je .beep
+    cmp eax, 15
+    je .exit
     ret
 .print_str:
     call term_print
@@ -199,11 +201,11 @@ api_dispatch:
     call term_size
     ret
 .get_arg:
-    mov esi, PROG_ARG_STR
-    cmp dword [PROG_ARG_ADDR], 'JARG'
-    je .arg_ok
-    mov esi, api_empty                  ; 没有参数:给个空串,程序不用自己判空
-.arg_ok:
+    ; ★ ring 3 的坑:以前这里返回内核里的 PROG_ARG_STR(0x11F004),那是
+    ;   supervisor only 的页 —— 程序一读就吃页错误(CHELLO.BIN 就这么崩的)。
+    ;   现在返回的是装载器拷进**程序自己空间**的那一页(SPACE_ARGS_VA),
+    ;   布局一样:前面 4 字节魔数,后面跟着以 0 结尾的字符串(没参数就是空串)。
+    mov esi, SPACE_ARGS_VA + 4
     ret
 .puts_at:
     call term_puts_at
@@ -214,12 +216,33 @@ api_dispatch:
 .beep:
     call speaker_beep
     ret
+; ---- 退出(ring 3 的弹床页用它,不返回)----
+.exit:
+    jmp api_exit
 
 api_install:
     mov eax, API_VECTOR
     mov ebx, api_stub
-    call idt_install
+    call idt_install_user               ; DPL=3:ring 3 的程序也只能从这一条门进来
     ret
+
+; ---------------------------------------------------------------------------
+;  api_exit(功能号 15):程序说"我跑完了"
+;  ring 3 的程序没法用 `ret` 回内核(栈上那个返回地址是内核的,跳不过去),
+;  所以弹床页里那条 int 0x30 走这儿。把内核现场恢复成"程序还没跑"的样子
+;  (esp / 段寄存器 / CR3),直接跳回 cmd_run —— 和"程序犯错被杀"同一条路。
+;  不返回。
+; ---------------------------------------------------------------------------
+api_exit:
+    mov esp, [run_esp]                  ; cmd_run 进程序前存下的内核栈
+    mov ax, GDT_KDATA
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov eax, PD_ADDR
+    mov cr3, eax                        ; 换回内核页目录(程序空间留给 cmd_run 收摊)
+    jmp run_resume_kernel
 
 ; 给程序用的说明文件(裸敲 run 就能看到;progs/README.TXT 里也抄了一份)
 api_usage:
@@ -236,6 +259,7 @@ api_usage:
     db ' 12 program arg    -> esi (run MYPROG hello 里的 hello)', 10
     db ' 13 puts at        esi str, ebx row, ecx col, edx max cells', 10
     db ' 14 beep           ebx freq hz, ecx ms (freq<=0: silent wait)', 10
+    db ' 15 exit           (programs in ring 3: just `ret` does this for you)', 10
     db 10, 'Build:  nasm -f bin prog.asm -o PROG.BIN   ([BITS 32] [ORG 0x120000])', 10
     db 'Install: tools/mkfat.py build/joyos-hd.img 6144 8 PROG.BIN=PROG.BIN', 10
     db 'Run:    run PROG          (more in progs/, docs/programs.md)', 10, 0

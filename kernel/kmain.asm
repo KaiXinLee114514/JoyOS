@@ -145,6 +145,13 @@ COL_ERR    equ 0x0C                    ; 亮红
     mov esi, msg_idt
     call term_print
 
+    ; ---- ring 3 的地基:换一张带用户段的 GDT + 建 TSS + ltr ----
+    ;  必须赶在开中断之前(函数自己也 pushfd/cli)。TSS 是 CPU 从 ring 3 掉回
+    ;  ring 0 时唯一的"内核栈在哪"来源,没它就三重故障重启。
+    call gdt_tss_init
+    mov esi, msg_ring3
+    call term_print
+
     ; ---- 开分页 ----
     call paging_init
     mov esi, msg_paging
@@ -262,6 +269,17 @@ COL_ERR    equ 0x0C                    ; 亮红
     ; 只读不写:这颗芯片会一直走到电池没电,我们不去改它
     call rtc_get
     call rtc_print_boot
+
+    ; ---- rc.conf(磁盘根目录的 RC.CONF)+ 事件账本 ----
+    ; 为啥是 rc.conf 而不是 systemd 的 unit:玩具 OS 要的是"一行一个 key=value",
+    ; 用 shell 的 write 就能改,改完 rc reload 立刻生效。详见 kernel/rc.asm 文件头。
+    mov eax, EV_BOOT                     ; 开机这件事本身也记一笔
+    xor ebx, ebx
+    call evt_log
+    call rc_load                         ; 读 + 解析 + 报一行
+    call rc_print_bootmsg                ; 配置里写了的开机提示
+    call rc_autostart                    ; autostart=YES 就把启用的服务跑一遍
+                                         ; (放在 sched_enable 之前:跑服务时还没别的东西抢 CPU)
 
     mov al, COL_OK
     call term_set_color
@@ -719,6 +737,7 @@ msg_disk    db 'boot disk: ', 0
 msg_disk_lba db 'LBA (EDD multi-sector read)', 10, 0
 msg_disk_chs db 'CHS fallback (BIOS has no LBA)', 10, 0
 msg_idt     db 'IDT: 256 vectors installed (errors 0-31 have handlers)', 10, 0
+msg_ring3   db 'ring 3: user segments + TSS ready (programs run at CPL=3)', 10, 0
 msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-16 MiB (+ VBE LFB high window)', 10, 0
 msg_pmem    db 'pmem: page pool 0x00400000-0x00FFFFFF, ', 0
 msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: debug pmem / debug ptest)', 10, 0
