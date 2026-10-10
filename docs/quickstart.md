@@ -108,7 +108,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 * 顺便:大小写用 **Shift 或 Caps Lock** 都行(字母是 `Shift XOR Caps Lock`,
   两个都开反而是小写);Caps Lock 按一下还会给键盘发 `0xED`,把灯点对;
 * **Ctrl+← / Ctrl+→ 换 shell**:开机有 4 条 shell,键盘归"当前活动"那条。一条 shell 卡在
-  `run HANG`(开头报一行、约 20 秒后自己退出)这种占着不放的程序里时,按 `Ctrl+→` 就能换到
+  `run HANG`(开头报一行、约 40 秒后自己退出)这种占着不放的程序里时,按 `Ctrl+→` 就能换到
   隔壁继续干活(切换是在键盘中断里做的,
   所以卡住的那条也能被换走);`shell` 列出 4 条,`shell 3` 直接跳过去;
 * 多字节字符在 shell 里是**整个字符一起回显、退格也整个删**(按字节画的话

@@ -355,6 +355,11 @@ demand paging: 34 page(s) faulted in (image 2 + heap 32), first page 0x00425000
 
 ### 程序跑在 ring 3:内核的内存它碰不到
 
+`RING3.BIN` 会直接问 CPU"我现在是谁"(`CS = 0x1B`、`CPL = 3`),`FAULT.BIN` 则故意去读内核内存 ——
+被内核抓住、打印原因、把这个程序干掉,机器继续跑:
+
+![ring 3:程序在 CPL=3 跑,摸内核内存会被干掉](docs/screenshot-ring3.png)
+
 程序从 `0x120000` 跑起来,但**不是内核 `call` 进去的** —— 内核用 `iret` 把它丢进用户态
 (CPL=3),它的代码段是 0x1B、栈段是 0x23。它自己能看到这件事:
 
@@ -473,7 +478,7 @@ Ctrl+Left / Ctrl+Right switches, or: shell <n>
 3> 
 ```
 
-想亲眼看"卡死也不影响别人":`run HANG`(开头报一行、**转 8 圈约 20 秒后自己退出**的演示
+想亲眼看"卡死也不影响别人":`run HANG`(开头报一行、**转 16 圈约 40 秒后自己退出**的演示
 程序),趁它占着这条 shell 的时候 `Ctrl+→` 逃到别的 shell,`echo` 照样有响应 —— 这就是多
 shell 的意义。
 

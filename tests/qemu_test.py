@@ -1250,6 +1250,14 @@ def main() -> int:
                             "HANG.BIN 说这条 shell 被它占住了"))
             mon.sendkey("ctrl-right")           # 逃到 shell 2
             time.sleep(1.2)
+            # ★ 切换偶尔会漏一拍(前面敲的命令字还压在键盘队列里):补按,等 shell 2
+            #   的提示符真的出现在屏幕上再往下 —— 不然后面的命令全敲进卡住的 shell 1。
+            for _ in range(6):
+                rescan()
+                if has("--- shell 2 ---") or has("2>"):
+                    break
+                mon.sendkey("ctrl-right")
+                time.sleep(1.5)
             run("clear")
             run("echo alive-while-hung", wait=1.5)
             results.append(("另一个 shell 照样能用", wait_for("alive-while-hung", 20.0),
@@ -1260,7 +1268,7 @@ def main() -> int:
             results.append(("一次只让一个程序跑",
                             wait_for("another shell is running a program", 20.0),
                             "被拒并提示另一条 shell 在跑程序"))
-            for _ in range(30):                 # 等 HANG 自己转完(最多 ~45 秒)
+            for _ in range(50):                 # 等 HANG 自己转完(最多 ~75 秒;HANG 转 16 圈 ≈40 秒)
                 time.sleep(1.5)
                 rescan()
                 if has("done spinning"):

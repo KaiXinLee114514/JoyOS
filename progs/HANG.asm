@@ -93,7 +93,7 @@ print_dec:
 counter dd 0
 rounds  dd 0
 digits  dd 0
-HANG_ROUNDS equ 8                       ; 8 轮 ≈ 20 秒(实测每轮 ≈2.5 秒)
+HANG_ROUNDS equ 16                  ; 16 轮 ≈ 40 秒(套件那段要在这段时间里跑完)                       ; 8 轮 ≈ 20 秒(实测每轮 ≈2.5 秒)
 BUSY_WAIT   equ 100000000               ; 忙等一圈 ≈ 1.5 秒(估算:6 条线程轮转时
                                         ; 实测 24,000,000 一圈只要 0.4 秒,所以放大)
 msg_head db 'HANG.BIN: I am spinning for a while, this shell is stuck now.', 10, 0
