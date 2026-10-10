@@ -52,7 +52,7 @@ KERNEL_SRCS := $(wildcard kernel/*.asm)
 # 不然 make 会说"无事可做",你改了字库却看到的还是老字模(这个坑踩过一次)
 FONT_DEPS   := font/vga-font.bin font/vga-zh-map.asm font/vga-zh-strings.asm
 # asm 写的程序(progs/*.asm → nasm → 平铺二进制)
-PROGS       := HELLO.BIN COUNT.BIN CALC.BIN EDIT.BIN TOUCH.BIN UTF8.BIN
+PROGS       := HELLO.BIN COUNT.BIN CALC.BIN EDIT.BIN TOUCH.BIN UTF8.BIN HANG.BIN
 
 # ---- C 写的程序(progs/*.c):有 gcc 的多架构支持就编,没有就跳过 ----
 # 为什么单独探测:gcc -m32 需要 gcc-multilib,没装的话不该让整个 make 挂掉 ——

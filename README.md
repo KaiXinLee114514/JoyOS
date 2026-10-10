@@ -73,6 +73,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift)、**Caps Lock**(顺带给键盘发 `0xED` 点灯)、方向键/PgUp 等扩展键、64 字节环形缓冲 |
 | **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);**抢占式多任务就是在 IRQ0 里切栈**(见 §5「线程与调度」) |
 | **内核线程 + 抢占式轮转** | 6 个线程槽、每个线程 **20 ms 时间片**(`kernel/sched.asm`):IRQ0 里存 esp/CR3、轮转、换栈;`ps` 看线程表、`spawn` 起演示线程(alpha / beta 每秒各打一行)、`kill` 杀掉并把栈还给物理页池(见 §5) |
+| **多 shell(4 条)** | 4 条 shell 各是一条内核线程,**Ctrl+←/→ 换键盘焦点**(在键盘中断里切,所以卡在程序里的那条也能被换走);`shell` 列出、`shell 3` 直接跳;每条 shell 有自己的行缓冲和当前目录,切换时没敲完的半行会跟着走;**一次只让一个程序跑**(别人在跑就拒绝),shell 线程本身杀不掉(见 §5) |
 | **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
@@ -374,20 +375,66 @@ EFLAGS / CS / EIP / 错误码 / 向量号 / pushad 的八个寄存器,esp 指向
 
 ```
 > spawn            # 不带参数:第一次 alpha,第二次 beta
-spawned thread 1 (alpha)
+spawned thread 4 (alpha)
 > spawn
-spawned thread 2 (beta)
+spawned thread 5 (beta)
 > ps
-ps: 3 alive / 6 slots, scheduled ticks 1169
-  [0] shell  ticks=893  runs=85
-  [1] alpha  ticks=170  runs=85
-  [2] beta   ticks=110  runs=56
-> kill 1
-killed thread 1 (alpha)
+ps: 6 alive / 6 slots, scheduled ticks 1169
+  [0] shell   ticks=893  runs=85
+  [1] shell2  ticks=790  runs=80
+  [2] shell3  ticks=700  runs=78
+  [3] shell4  ticks=690  runs=77
+  [4] alpha   ticks=170  runs=85
+  [5] beta    ticks=110  runs=56
+> kill 4
+killed thread 4 (alpha)
 ```
 
 `ticks` 和 `runs` 都在涨,说明这几个线程是**真的轮流在 CPU 上跑**,而不是"登记了一下
-躺在那儿";`kill` 完再 `debug pmem`,空闲页数会回到 3072 —— 栈是借的,还得还。
+躺在那儿";`kill` 完再 `debug pmem`,空闲页数会回到 3066 —— 栈是借的,还得还。
+(3066 而不是 3072,是因为 4 条 shell 各占 2 页栈;0 号用的是开机栈,不占池子。)
+
+### 多 shell:卡死一条,还有三条
+
+4 条 shell 就是 4 条内核线程(0 号是开机那条,另外 3 条在 `kmain` 里 `spawn` 出来)。
+键盘归谁用一个 `sh_active` 记着,**Ctrl+← / Ctrl+→ 的切换是在键盘中断处理里直接做的** ——
+这点很关键:如果切换要靠"活动 shell 自己响应",那条正卡在 `run HANG` 里的 shell 就永远
+换不走了;放在中断里,谁来按键谁就能把键盘交给别人。
+
+每条 shell 有自己的行缓冲和当前目录,切换时:
+- 打一条 `--- shell N ---` 当分隔,再把提示符和**你没敲完的那半行**重新画出来
+- 半行输入跟着 shell 走:1 号敲一半 → 切到 2 号干点别的 → 切回来,那半行还在,回车就执行
+- **一次只让一个程序跑**(地址空间那套状态还是全局的):别的 shell 里 `run` 会被拒绝,提示
+  "另一条 shell 正在跑程序(线程 N)";想去就 `Ctrl+←/→`,或者 `kill` 掉那个线程
+- shell 线程**杀不掉**(`kill 0`~`kill 3` 会被拒):键盘挂在它们身上,杀了没人收键
+
+```
+> shell
+shells: 4
+(you are in shell 1)
+  [0] shell    <- keyboard here
+  [1] shell2
+  [2] shell3
+  [3] shell4
+Ctrl+Left / Ctrl+Right switches, or: shell <n>
+> shell 3
+--- shell 3 ---
+3> 
+```
+
+想亲眼看"卡死也不影响别人":`run HANG`(每秒打一行、**转 8 圈约 8 秒后自己退出**的演示
+程序),趁它占着这条 shell 的时候 `Ctrl+→` 逃到别的 shell,`echo` 照样有响应 —— 这就是多
+shell 的意义。
+
+> `run HANG` 为什么不是真死循环:线程 0(=第 1 条 shell)杀不掉,真死循环会把后面的
+> 测试用例全堵死。想看"永远回不来",把 `progs/HANG.asm` 的 `HANG_ROUNDS` 改大、或者删掉
+> `dec dword [rounds]` / `jnz .loop` 两行 —— 那就只能 reboot 了。
+
+![4 条 shell 互相切换](docs/screenshot-shells.png)
+
+`shell` 列出来,`Ctrl+→` 切到 2 号敲命令,`3> date time` 是 3 号在跑;
+最后那两行是"半行命令"的演示:在 1 号敲了 `echo half-typed line survives` 没回车就跑掉了,
+切回来时它还在(提示符下面那行),回车就能执行。
 
 ## 6. 踩过的坑(这部分才是精华)
 
@@ -596,6 +643,39 @@ esp 再 `ret`,那就完蛋了:被弹出的返回地址是从**新栈**上取的,
 弹回寄存器、`iret` 过去。
 一句话:esp 一改,栈上所有东西的含义就全变了 —— 谁改 esp,谁就必须负责"换完从哪继续"。
 
+### 6.14 把一个函数插进了"顺序落下"的代码路径中间(第一行输入被吞)
+
+`shell_readline` 和 `shell_readline_resume` 是**故意连着写的**:前者只清一下长度,然后
+顺序落进后者的循环体,共用一个函数体(前者是"新的一行",后者是"接着编辑原来那半行")。
+我后来把新写的 `shell_wait_key` 插在了这两段中间,编译一点问题没有 —— 但 `shell_readline`
+落到的地方从"读行循环"变成了"等一个键然后 `ret`",表现出来是:**第一条命令打得进屏幕、
+却不执行任何命令**(每个键都被当成"这一行读完了",字符全丢)。教训:往汇编里插函数时
+挑 `ret` / 注释块那种干净边界,别插进"上一个函数体靠 fall-through 接着往下走"的地方。
+
+### 6.15 非活动 shell 睡在 `kbd_getchar` 里会抢走"叫醒字节"
+
+换 shell 时,我是往键盘环形缓冲里塞一个 `0x00` 当闹钟,把睡在 `kbd_getchar` 内部的
+`hlt` 上的那条线程叫醒。问题是:**只有一条线程能拿到这个字节** —— 要是被另一条非活动
+shell 抢了,它就继续在里面等真正的按键,换回来时既不重画提示符、还会把本该给活动 shell
+的按键吃掉。改法是在 shell 这层自己包一个等键循环(`shell_wait_key`):只有"我是活动
+shell 而且缓冲区里真有键"时才调 `kbd_getchar`,否则 `hlt` 睡在**自己**的循环里(定时器
+一响就醒,顺便重查自己还是不是活动的)。
+
+### 6.16 测试别用固定 `sleep` 等屏幕:字是"画"出来的,不是瞬间出现的
+
+多 shell 落地之后,hd 套件突然多了 8 条失败:文件明明写进去了,`ls` 里却"看不到" `TEST.TXT`;
+`run` 的接口说明、`address space destroyed`、`demand paging: 34 page(s)` 也全都"消失"。
+代码一条没坏 —— 我把同一串命令在干净虚拟机上慢慢敲,全都对。
+
+真相在截图里:抓屏那一刻,`ls` 的**最后一行才画了一半**(末尾是半个 `CHELL…`),
+`TEST.TXT` 还在下面没轮到。内核往 VBE 帧缓冲画字走的是 MMIO,一屏要好几秒;而测试的
+`run()` 敲完命令只 `sleep(0.9)` 就抓屏断言。4 条 shell 线程和 100 Hz 定时器把 guest 拖慢
+一点,这 0.9 秒就不够用了。
+
+改法有两层:`run()` 敲完命令先等屏幕"静下来"(连续两次抓屏一模一样),断言则改用
+`wait_for("要看到的字")` 轮询到出现为止。教训:**测屏幕内容的用例,永远不要赌一个固定的
+等待时间** —— 要么等"屏幕不再变",要么等"某个字真的出现了"。
+
 ## 7. shell 命令
 
 ```
@@ -621,7 +701,9 @@ uptime        开机到现在多久(内含 tick 数,例:up 4 s (432 ticks at 100
 sleep <秒>    用 hlt 睡这么多秒(空闲不烧 CPU;上限 3600 秒)
 ps            列出内核线程(编号 / 名字 / 拿到过多少 tick / 被调度过几次)
 spawn [who]   起一个演示线程(alpha / beta 每秒各打一行;不带参数就轮流起)
-kill <id>     杀掉一个线程,把它的栈还给物理页池(0 号是 shell 自己,杀不掉)
+kill <id>     杀掉一个线程,把它的栈还给物理页池(0~3 号是 shell 自己人,杀不掉)
+shell [n]     列出 4 条 shell(标出键盘现在归谁),或者 shell 3 直接跳过去;
+              随时 Ctrl+Left / Ctrl+Right 换成隔壁那条(卡死的 shell 也能被换走)
 ```
 
 `uptime` / `sleep` 的样子(定时器就是靠 100 Hz 的 IRQ0 数出来的):
@@ -816,8 +898,10 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 
 ## 10. 下一步:该玩点啥
 
-**刚刚落地:**内核线程 + 抢占式轮转 —— PIT 的 IRQ0 里存现场、换栈,6 个线程槽轮着跑
-(`ps` / `spawn` / `kill`,见第 5 节和 §7)。顺手把 `date` 也做了(读 CMOS 实时时钟)。
+**刚刚落地:多 shell** —— 4 条 shell 各是一条内核线程,`Ctrl+←/→` 在键盘中断里换焦点,
+所以一条 shell 卡在 `run HANG` 里时,另一条照样能干活(见 §5「多 shell」)。
+再往前一步是内核线程 + 抢占式轮转(PIT 的 IRQ0 里存现场、换栈,`ps`/`spawn`/`kill`)
+和 `date`(读 CMOS 实时时钟)。
 
 往下可以挑的:
 - **闪烁光标**:现在光标常亮,有了 100 Hz 的 tick,在 `pit_irq` 里翻转一下就行
@@ -836,6 +920,9 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 - **虚拟内存的下一层**:按需分页已经有了(碰到哪页才给哪页),但还没有
   **页置换 / swap / 写时复制**,也**不给程序自己长栈**(栈还是内核那套);
   窗口里的空洞也会给页(按访问给,不是按"真的要用"给)
+- **多 shell 的下一层**:现在**一次只让一条 shell 跑程序**(地址空间那套状态还是全局的),
+  被 `kill` 掉的线程也不会回收地址空间(见 [docs/known-issues.md](docs/known-issues.md) 第 9 节)。
+  想让 4 条 shell 同时跑程序,得把 `space_*` 挂到线程上,再给线程加"退出时清理"
 - **调度器的下一层**:现在是纯轮转、没有优先级/阻塞唤醒/锁,线程共用一个地址空间,
   也还是内核态;要往"真进程"走就得动 ring 3 + TSS + 每线程一套页目录(上面那条)
 - **闪烁光标**:有定时器就能做(现在光标是常亮的;`pit_irq` 里翻转一下就行)

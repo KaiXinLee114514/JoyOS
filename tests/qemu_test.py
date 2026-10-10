@@ -813,7 +813,25 @@ def main() -> int:
                 time.sleep(wait)
                 if idle:
                     wait_idle()
+                else:
+                    # ★ 还要再等"画完":内核往 VBE 帧缓冲写字是 MMIO,一屏要好几秒。
+                    #   只 sleep 固定时间的话,抓屏那一刻命令还在画 —— 断言就会假失败
+                    #   (多 shell 挤进来把 guest 拖慢之后,TEST.TXT 就是这么"消失"的)。
+                    wait_idle(8.0)
                 rescan()
+
+            def wait_for(text, timeout=15.0, step=0.4):
+                """轮询到屏幕上真的出现这段文字为止(画笔慢的时候固定 sleep 靠不住)。
+
+                返回 True/False;断言用它就不会因为"字还没画完"而假失败。
+                """
+                t0 = time.time()
+                while time.time() - t0 < timeout:
+                    rescan()
+                    if has(text):
+                        return True
+                    time.sleep(step)
+                return False
 
             run("ls")
             results.append(("ls 列目录",
@@ -836,14 +854,14 @@ def main() -> int:
             results.append(("write 写文件", has("wrote test.txt"), "wrote test.txt"))
 
             run("ls")
-            results.append(("新文件进了目录", has("TEST.TXT"), "TEST.TXT"))
+            results.append(("新文件进了目录", wait_for("TEST.TXT"), "TEST.TXT"))
 
             run("cat test.txt")
-            results.append(("写进去的读得回来", has("hello-from-fat16"), "hello-from-fat16"))
+            results.append(("写进去的读得回来", wait_for("hello-from-fat16"), "hello-from-fat16"))
 
             run("run", wait=0.8)
             results.append(("裸 run 打印程序接口",
-                            has("JoyOS program API") and has("[ORG 0x120000]"),
+                            wait_for("JoyOS program API") and has("[ORG 0x120000]"),
                             "int 0x30 的说明(裸敲 run 时打出来)"))
 
             run("run hello", wait=1.1)
@@ -869,10 +887,11 @@ def main() -> int:
                             has("address space: CR3 = 0x") and has("own page directory"),
                             "address space: CR3 = 0x… (own page directory + demand paging)"))
             results.append(("跑完地址空间收摊归还页",
-                            has("address space destroyed:") and has("page(s) back to the pool"),
+                            wait_for("address space destroyed:")
+                            and has("page(s) back to the pool"),
                             "address space destroyed: N page(s) back to the pool"))
             results.append(("按需分页只补碰到的页(HELLO 只要 1 页)",
-                            has("demand paging: 1 page(s) faulted in (image 1 + heap 0)"),
+                            wait_for("demand paging: 1 page(s) faulted in (image 1 + heap 0)"),
                             "demand paging: 1 page(s) faulted in (image 1 + heap 0)"))
 
             first_space = space_line()
@@ -886,7 +905,7 @@ def main() -> int:
             run("run touch", wait=1.4)
             results.append(("TOUCH 跑通(按需分页补了 34 页)",
                             has("touch test: asking for memory the kernel never handed me")
-                            and has("demand paging: 34 page(s) faulted in (image 2 + heap 32)"),
+                            and wait_for("demand paging: 34 page(s) faulted in (image 2 + heap 32)"),
                             "demand paging: 34 page(s) faulted in (image 2 + heap 32)"))
             results.append(("补进来的页都是干净的零页",
                             has("pages that were NOT zero before my write: 0"),
@@ -899,8 +918,8 @@ def main() -> int:
                             "page beyond the file (bss at 0x184000): was zero, as it should be"))
 
             run("debug pmem")
-            results.append(("程序退出后页池没泄漏", has("free: 3072 pages"),
-                            "free: 3072 pages"))
+            results.append(("程序退出后页池没泄漏", has("free: 3066 pages"),
+                            "free: 3066 pages"))
 
             # ---- 定时器(PIT):tick 在涨、uptime 读得到、sleep 真的等够 ----
             def uptime_ticks() -> int:
@@ -1063,6 +1082,38 @@ def main() -> int:
                             has("broken UTF-8: [") and has("��") and has("still shows"),
                             "[��](两个替换字符)且后面的字还在"))
 
+            # ---- 多 shell:4 条 shell 线程,键盘跟着 Ctrl+Left / Ctrl+Right 走 ----
+            run("shell", wait=1.0)
+            results.append(("shell 列出 4 条", has("shells: 4") and has("keyboard here"),
+                            "shells: 4 + 标出键盘在哪条"))
+            mon.sendkey("ctrl-right")           # → shell 2
+            time.sleep(1.2)
+            rescan()
+            results.append(("Ctrl+Right 切到 shell 2", has("--- shell 2 ---"),
+                            "--- shell 2 ---"))
+            run("echo from-two", wait=0.9)
+            results.append(("切过去就能直接敲命令", has("from-two"), "from-two"))
+            mon.type_text("echo half-typed")
+            time.sleep(0.4)
+            mon.sendkey("ctrl-right")           # → shell 3
+            time.sleep(1.0)
+            mon.sendkey("ctrl-left")            # 回 shell 2
+            time.sleep(1.0)
+            rescan()
+            results.append(("半行跟着 shell 一起回来", has("echo half-typed"),
+                            "换回来时把那半行重新打了出来"))
+            mon.sendkey("ret")
+            time.sleep(0.8)
+            rescan()
+            results.append(("回来的半行还能执行", has("half-typed"), "echo half-typed 的结果"))
+            run("clear")
+            run("shell 3", wait=1.2)
+            results.append(("shell 3 直接跳过去", has("--- shell 3 ---"), "--- shell 3 ---"))
+            run("clear")
+            run("shell 1", wait=1.2)
+            results.append(("shell 1 跳回来", has("--- shell 1 ---"), "--- shell 1 ---"))
+            run("clear")
+
             # ---- 内核线程 + 抢占式轮转(kernel/sched.asm)----
             #      注意:演示线程每秒往屏幕上打一行,和 shell 抢同一个光标 ——
             #      屏幕上的字会被插花(功能不受影响,只是显示乱)。所以这里
@@ -1079,6 +1130,14 @@ def main() -> int:
                 for _ in range(tries):
                     run("clear")
                     run("ps", wait=1.0)
+                    # ps 那几行也是画出来的:轮询到 alpha/beta 两行都落屏为止
+                    for _ in range(15):
+                        rescan()
+                        txt = ("\n".join(screen_text(shot, glyphs)) if graphics
+                               else "\n".join(mon.screen()))
+                        if len(re.findall(r"\[(\d)\] (alpha|beta)\s+ticks=(\d+)", txt)) >= 2:
+                            break
+                        time.sleep(0.4)
                     rescan()
                     txt = ("\n".join(screen_text(shot, glyphs)) if graphics
                            else "\n".join(mon.screen()))
@@ -1093,26 +1152,57 @@ def main() -> int:
             ids = sorted(int(i) for i, _, _ in rows)
             ticks = [int(t) for _, _, t in rows]
             results.append(("ps 里两个线程都在拿 tick",
-                            len(rows) >= 2 and ids == [1, 2] and all(t > 0 for t in ticks),
+                            len(rows) >= 2 and ids == [4, 5] and all(t > 0 for t in ticks),
                             f"ps 表头 alive/6 slots={header_ok},alpha/beta 行与 ticks:{rows}"))
 
-            run("kill 1", wait=0.6)
-            run("kill 2", wait=0.8)
+            run("kill 4", wait=0.6)
+            run("kill 5", wait=0.8)
             time.sleep(0.5)
             run("clear")
             run("ps", wait=1.0)
             results.append(("kill 之后只剩 shell",
-                            has("1 alive / 6 slots") and not has("alpha"),
-                            "两个线程都杀掉了,ps 里只剩 shell 自己"))
+                            has("4 alive / 6 slots") and not has("alpha"),
+                            "两个演示线程都杀掉了,ps 里只剩 4 条 shell"))
             run("kill 0", wait=0.8)
             results.append(("kill 0 被拒", has("cannot kill"),
                             "0 号是 shell 自己,杀不掉"))
             run("debug pmem", wait=1.2)
-            results.append(("线程栈还回页池", has("free: 3072 pages"),
-                            "kill 完页池还是 3072 页空闲"))
+            results.append(("线程栈还回页池", has("free: 3066 pages"),
+                            "kill 完页池还是 3066 页空闲"))
             run("echo after-sched", wait=0.8)
             results.append(("调度器没弄死 shell", has("after-sched"),
                             "线程起起落落之后 shell 照常响应"))
+
+            # ---- 卡住的 shell 不拖累别的 shell ----
+            #      演示程序 HANG.BIN 转 8 圈(≈8 秒)后自己 ret。真死循环会永远
+            #      占住线程 0,而 shell 线程不可 kill,后面的用例就没法再用这条
+            #      shell —— 所以演示用有限圈数(见 progs/HANG.asm 的说明)。
+            #      ★ 必须排在"编辑器能存进子目录"那个已知失败用例之前:它失败时
+            #        会把编辑器留在屏幕上,之后敲什么都会被编辑器吃掉。
+            run("clear")
+            run("run HANG", wait=2.5)
+            results.append(("HANG 卡住了这条 shell", has("this shell is stuck now"),
+                            "HANG.BIN 说这条 shell 被它占住了"))
+            mon.sendkey("ctrl-right")           # 逃到 shell 2
+            time.sleep(1.2)
+            run("clear")
+            run("echo alive-while-hung", wait=0.9)
+            results.append(("另一个 shell 照样能用", has("alive-while-hung"),
+                            "shell 1 卡死时 shell 2 还能执行命令"))
+            run("run HELLO.BIN", wait=1.5)
+            results.append(("一次只让一个程序跑",
+                            wait_for("another shell is running a program")
+                            and not has("running HELLO"),
+                            "被拒并提示另一条 shell 在跑程序"))
+            for _ in range(30):                 # 等 HANG 自己转完(最多 ~45 秒)
+                time.sleep(1.5)
+                rescan()
+                if has("done spinning"):
+                    break
+            results.append(("HANG 转完把 shell 还回来了", has("done spinning"),
+                            "HANG.BIN 转完 8 圈自己退出,shell 1 又活了"))
+            run("shell 1", wait=1.2)            # 回第 1 条 shell,后面的用例照旧
+            run("clear")
 
             # ---- 文本编辑器(EDIT.BIN)----
             run("run edit newfile.txt", wait=1.5)
@@ -1152,7 +1242,7 @@ def main() -> int:
                             "目录里不显示 . / .."))
 
             run("cat docs/note.txt", wait=1.3)
-            results.append(("cat 带路径读子目录文件", has("看看存进去的样子"),
+            results.append(("cat 带路径读子目录文件", wait_for("看看存进去的样子"),
                             "DOCS/NOTE.TXT 的内容"))
 
             run("run docs/hello.bin", wait=1.1)
@@ -1172,10 +1262,10 @@ def main() -> int:
                             "回到根目录(提示符没有目录名)"))
 
             run("mkdir testdir")
-            results.append(("mkdir 建目录", has("created directory testdir"),
+            results.append(("mkdir 建目录", wait_for("created directory testdir"),
                             "created directory testdir"))
             run("ls")
-            results.append(("新目录出现在列表里", has("TESTDIR"), "TESTDIR"))
+            results.append(("新目录出现在列表里", wait_for("TESTDIR"), "TESTDIR"))
             run("cd testdir")
             run("write inner.txt hello-in-subdir")
             run("cd ..")
@@ -1216,6 +1306,7 @@ def main() -> int:
             time.sleep(0.6)
             rescan()
             results.append(("编辑器能存进子目录", has("editor closed."), "editor closed."))
+
 
             # ---- 第二信道:先把 QEMU 关掉(让它把缓存落盘),再自己解析镜像 ----
             qemu.terminate()
@@ -1283,7 +1374,7 @@ def main() -> int:
                             "PDE not present"))
 
             run("debug ptest")
-            results.append(("ptest 自测通过", has("ptest: all good") and has("3072 / 3072"),
+            results.append(("ptest 自测通过", has("ptest: all good") and has("3066 / 3066"),
                             "translate 对得上 + 页池没泄漏"))
 
             run("badcommand")
@@ -1344,9 +1435,10 @@ def main() -> int:
                 ("分页开启",        "paging: CR0.PG=1"),
                 ("键盘就绪",        "keyboard: PIC remapped to 0x20, IRQ1 enabled"),
                 ("定时器就绪",      "timer: PIT channel 0 at 100 Hz"),
-                ("调度器",          "sched: round-robin kernel threads"),
+                ("调度器",          "sched: round-robin threads"),
                 ("RTC 时钟",        "rtc: CMOS clock"),
                 ("阶段完成提示",    "OK - stage 5"),
+                ("多 shell 线程",   "4 shells (Ctrl+Left / Ctrl+Right)"),
                 ("shell 就绪",      'type "help" for commands.'),
             ]
         for name, needle in checks:

@@ -18,15 +18,27 @@
 ;  想看中文就用 cat(文件里存的是 UTF-8),或者让程序自己打(run UTF8)。
 ;
 ;  结构:读一行(shell_readline)→ 切成"命令 + 参数"(shell_execute)→ 查表跳转。
+;  多 shell:4 条 shell 各是一条内核线程(见 shell_main / shell_switch_to),
+;  Ctrl+←/→ 在键盘中断里换手,活动的那条才读键盘;换过去会重画半行。
 ;  行编辑只有退格和回车 —— 光标键要先处理 0xE0 前缀,留给你自己加。
 ; ============================================================================
 
 SHELL_LINE_MAX equ 64
 
+SH_MAX         equ 4                    ; 一共几条 shell(每条 = 一条内核线程,0 号就是主线程)
+SH_BUF_SZ      equ SHELL_LINE_MAX + 4   ; 每条 shell 备份一整个输入缓冲(多留几字节放结尾 0)
+SH_DIR_SZ      equ 64                   ; 和 cwd_str 一样大
+
 ; ---------------------------------------------------------------------------
-;  shell_main:打招呼 → 循环(提示符 → 读一行 → 执行)
+;  shell_main:打招呼 → 循环(等轮到我 → 提示符 → 读一行 → 执行)
+;
+;  多 shell:每条 shell 就是一条内核线程,入口都是这里。键盘归谁由 [sh_active]
+;  说了算(Ctrl+←/→ 或 shell <n> 改它)。没轮到的线程在下面 hlt 睡着;被切过去
+;  的时候状态由中断装好,醒来的这条只负责把标题 / 提示符 / 没敲完的半行重画一遍。
 ; ---------------------------------------------------------------------------
 shell_main:
+    cmp dword [sched_cur], 0            ; 欢迎词只让 1 号 shell 打
+    jne .loop
     mov al, 10
     call term_putc
     mov al, COL_HEADER
@@ -34,29 +46,269 @@ shell_main:
     mov esi, msg_shell_hello
     call term_print
 
-.prompt:
+.loop:
+    ; ---- 等轮到我:不是活动 shell 就睡着,让中断把 CPU 收走 ----
+    mov eax, [sched_cur]
+    cmp eax, [sh_active]
+    je .mine
+    hlt
+    jmp .loop
+
+.mine:
+    ; ---- 刚被切过来:印标题 + 提示符,再把没敲完的那半行恢复出来 ----
+    cmp dword [sh_switch_flag], 0
+    je .fresh
+    mov dword [sh_switch_flag], 0
+    mov al, 10
+    call term_putc                        ; 先换行:标题别接在上一条 shell 的半行后面
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_sh_switch
+    call term_print
+    mov eax, [sh_active]
+    inc eax
+    call term_print_dec
+    mov esi, msg_sh_switch2
+    call term_print
+    call shell_print_prompt
+    mov esi, shell_buf                  ; 恢复出来的半行(备份时补过结尾 0)
+    call term_print
+    call shell_readline_resume
+    jmp .after_line
+.fresh:
+    call shell_print_prompt
+    call shell_readline
+.after_line:
+    ; ---- 读到的这行还是我的吗?中途被换走就丢掉,回上面接着等 ----
+    mov eax, [sched_cur]
+    cmp eax, [sh_active]
+    jne .loop
+    call shell_execute
+    ; 这行已经执行完了,清掉:换回来时不该把上一条命令重新印出来
+    ; (不清的话提示符后面挂着一截旧命令,接着打字就串成怪命令 —— 踩过)
+    mov dword [shell_len], 0
+    mov byte [shell_buf], 0
+    jmp .loop
+
+; ---------------------------------------------------------------------------
+;  shell_print_prompt:活动 shell 的提示符(1 号是 "> ",别的打 "2> ")
+; ---------------------------------------------------------------------------
+shell_print_prompt:
     mov al, COL_HEADER
     call term_set_color
     cmp byte [cwd_str], 0
-    je .prompt_arrow
+    je .arrow
     mov esi, cwd_str
     call term_print
-.prompt_arrow:
+.arrow:
+    mov eax, [sh_active]
+    test eax, eax
+    jz .plain
+    inc eax
+    call term_print_dec
+.plain:
     mov esi, msg_prompt
     call term_print
-    call shell_readline
-    call shell_execute
-    jmp .prompt
+    ret
+
+; ---------------------------------------------------------------------------
+;  shell_switch_to:把键盘交给 eax 号 shell(0..SH_MAX-1)
+;
+;  这是**在键盘中断里**跑的,所以绝对不能打印、不能阻塞:
+;    1. 把当前活动 shell 的 输入缓冲 / 长度 / 当前目录 备份进它自己的格子
+;    2. 改 [sh_active],并把新活动 shell 的那份装回全局
+;       (立刻装:连按两下 Ctrl+→ 也不会把状态串到别人身上)
+;    3. 立 [sh_switch_flag]:它醒来时知道要重画
+;    4. 往键盘缓冲塞一个 0x00 —— 还在 kbd_getchar 里睡着的那条会被叫醒,
+;       醒来先看"我还是活动的吗",不是就回主循环接着睡(0x00 是控制字符,行编辑会丢)
+; ---------------------------------------------------------------------------
+shell_switch_to:
+    cmp eax, [sh_active]
+    je .done                            ; 本来就归它
+    pushad
+    mov [sh_target], eax
+
+    ; ---- 1) 备份当前活动 shell ----
+    mov ebx, [sh_active]
+    mov edi, ebx
+    imul edi, SH_BUF_SZ
+    add edi, sh_nbuf
+    mov esi, shell_buf
+    mov ecx, SHELL_LINE_MAX
+    rep movsb
+    mov byte [edi], 0                   ; 槽比行大 4 字节,顺手补上结尾
+    mov eax, [shell_len]
+    mov [sh_nlen + ebx * 4], eax
+    mov edi, ebx
+    imul edi, SH_DIR_SZ
+    add edi, sh_ndir
+    mov esi, cwd_str
+    mov ecx, SH_DIR_SZ
+    rep movsb
+
+    ; ---- 2) 换主人,把它的状态装回全局 ----
+    mov eax, [sh_target]
+    mov [sh_active], eax
+    mov ebx, eax
+    mov esi, ebx
+    imul esi, SH_BUF_SZ
+    add esi, sh_nbuf
+    mov edi, shell_buf
+    mov ecx, SHELL_LINE_MAX
+    rep movsb
+    mov eax, [sh_nlen + ebx * 4]
+    mov [shell_len], eax
+    mov esi, ebx
+    imul esi, SH_DIR_SZ
+    add esi, sh_ndir
+    mov edi, cwd_str
+    mov ecx, SH_DIR_SZ
+    rep movsb
+    mov dword [sh_switch_flag], 1
+
+    ; ---- 3) 叫醒可能正睡在 kbd_getchar 里的那条 ----
+    xor al, al
+    call kbd_push
+    popad
+.done:
+    ret
+
+; ---------------------------------------------------------------------------
+;  shell_switch_step:al = ±1 → 从当前这条往前/往后挪一条(热键用)
+; ---------------------------------------------------------------------------
+shell_switch_step:
+    movsx eax, al
+    add eax, [sh_active]
+    and eax, SH_MAX - 1                 ; SH_MAX 是 2 的幂,直接绕圈
+    jmp shell_switch_to
+
+; ---------------------------------------------------------------------------
+;  shell_spawn_extra:开机时再起 SH_MAX-1 条 shell 线程(0 号就是主线程)
+; ---------------------------------------------------------------------------
+shell_spawn_extra:
+    pushad
+    mov ebp, 1
+.next:
+    cmp ebp, SH_MAX
+    jae .done
+    mov eax, shell_main
+    mov ebx, sh_names
+    mov ebx, [ebx + ebp * 4]
+    call sched_spawn
+    jc .done                            ; 页池空了就只能少起几条
+    inc ebp
+    jmp .next
+.done:
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  cmd_shell:不带参数 → 列一下;带编号 → 直接跳过去
+; ---------------------------------------------------------------------------
+cmd_shell:
+    pushad
+    call strip_name
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .list
+    call parse_dec
+    jc .usage
+    cmp eax, 1
+    jb .usage
+    cmp eax, SH_MAX
+    ja .usage
+    dec eax
+    cmp eax, [sh_active]
+    je .same
+    ; 这条命令本身已经用掉了,先清掉,免得备份进我的格子再被印出来
+    mov dword [shell_len], 0
+    mov byte [shell_buf], 0
+    call shell_switch_to                ; 交出去:这条马上会回主循环睡着
+    popad
+    ret
+.same:
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_shell_same
+    call term_print
+    popad
+    ret
+.list:
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_shell_list
+    call term_print
+    mov eax, SH_MAX
+    call term_print_dec
+    mov esi, msg_shell_list2
+    call term_print
+    mov eax, [sh_active]
+    inc eax
+    call term_print_dec
+    mov esi, msg_shell_list3
+    call term_print
+    xor ebp, ebp
+.row:
+    cmp ebp, SH_MAX
+    jae .rows_done
+    mov al, COL_NORMAL
+    call term_set_color
+    mov esi, msg_shell_row
+    call term_print
+    mov eax, ebp
+    inc eax
+    call term_print_dec
+    mov esi, msg_shell_row2
+    call term_print
+    mov eax, ebp
+    call sched_name
+    call term_print
+    mov al, COL_HEADER
+    call term_set_color
+    cmp ebp, [sh_active]
+    jne .row_next
+    mov esi, msg_shell_active
+    call term_print
+.row_next:
+    mov al, 10
+    call term_putc
+    inc ebp
+    jmp .row
+.rows_done:
+    mov al, COL_NORMAL
+    call term_set_color
+    mov esi, msg_shell_hint
+    call term_print
+    popad
+    ret
+.usage:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_shell_usage
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
+    ret
 
 ; ---------------------------------------------------------------------------
 ;  shell_readline:读一行到 shell_buf(带退格),回车结束
 ; ---------------------------------------------------------------------------
 shell_readline:
     mov dword [shell_len], 0
+; ---------------------------------------------------------------------------
+;  shell_readline_resume:接着编辑已经躺在 shell_buf 里的那半行(换回来时用)
+; ---------------------------------------------------------------------------
+shell_readline_resume:
     mov al, COL_NORMAL
     call term_set_color
 .next:
-    call kbd_getchar                      ; 没有按键就睡着等
+    ; ---- 中途被换走了?这一行就不归我了:立刻退出,别碰全局状态 ----
+    ;      (全局的 shell_buf/shell_len 此刻已经是新活动 shell 的了)
+    mov eax, [sched_cur]
+    cmp eax, [sh_active]
+    jne .yield
+    call shell_wait_key                   ; 只为活动 shell 等键(见上面的说明)
     cmp al, 13                            ; Enter
     je .done
     cmp al, 8                             ; Backspace
@@ -123,6 +375,9 @@ shell_readline:
     call term_putc
     jmp .next
 
+.yield:
+    ret                                 ; 换 shell 了:缓冲区现在是别人的,直接走
+
 .done:
     mov ebx, [shell_len]
     mov byte [shell_buf + ebx], 0         ; 补个结尾,方便当字符串用
@@ -171,7 +426,10 @@ shell_read_mb:
     mov eax, [mb_got]
     cmp eax, [mb_len]
     jae .echo
-    call kbd_getchar                      ; 续字节(Alt 码位输入是一次性推进来的)
+    call shell_wait_key                   ; 续字节(Alt 码位输入是一次性推进来的)
+    mov ecx, [sched_cur]                  ; 收到一半被换走了:这个字符就不要了
+    cmp ecx, [sh_active]
+    jne .done
     mov ebx, [shell_len]
     mov [shell_buf + ebx], al
     inc dword [shell_len]
@@ -190,6 +448,37 @@ shell_read_mb:
     pop ecx
     pop ebx
     pop eax
+    ret
+
+; ---------------------------------------------------------------------------
+;  shell_wait_key:等一个字符 —— 但只为"当前活动的那条 shell"等
+;   · 不是活动 shell   → 立刻返回(al = 0,调用方查了活动状态就会走人)
+;   · 是活动的,但没键 → hlt 睡着(定时器一响就醒,绝不会卡死在一个键上)
+;   · 有键             → 才真的调 kbd_getchar 取走
+;  为什么要自己包一层:如果让非活动 shell 睡在 kbd_getchar 内部的 hlt 上,
+;  它会跟活动 shell 抢"叫醒用的那个字节",抢到就继续在里面等键 —— 结果
+;  换回来时不重画提示符,还会把本该给别人的按键吃掉(踩过)。
+; ---------------------------------------------------------------------------
+shell_wait_key:
+    mov eax, [sched_cur]
+    cmp eax, [sh_active]
+    jne .gone
+    call kbd_avail
+    test eax, eax
+    jz .sleep
+    call kbd_getchar                      ; 确实有货,取了就走,不会卡在里面
+    push eax
+    mov eax, [sched_cur]                  ; 取键那一瞬间被换走?这个键就不要了,
+    cmp eax, [sh_active]                  ; 免得写进别人的行缓冲(窗口极窄但真会发生)
+    pop eax
+    jne .drop
+    ret
+.sleep:
+    hlt                                   ; 键盘/定时器中断都会把这里叫醒
+    jmp shell_wait_key
+.gone:
+.drop:
+    xor al, al
     ret
 
 ; ---------------------------------------------------------------------------
@@ -782,6 +1071,26 @@ cmd_write:
 cmd_run:
     cmp byte [fat_ok], 0
     je cmd_ls.nomount
+    ; ---- 一次只让一条 shell 跑程序:space_* 那套地址空间状态还是全局的 ----
+    mov eax, [prog_owner]
+    cmp eax, -1
+    je .owner_ok
+    cmp eax, [sched_cur]
+    je .owner_ok
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_run_busy
+    call term_print
+    mov eax, [prog_owner]
+    call term_print_dec
+    mov esi, msg_run_busy2
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    ret
+.owner_ok:
+    mov eax, [sched_cur]
+    mov [prog_owner], eax
     ; ★ 这里**不能**调 strip_name:它会把第一个空格改成 0,而空格后面的那截
     ;   正是要传给程序的参数(`run EDIT NOTES.TXT`)—— 一改参数就没了(踩过)。
     ;   文件名在下面抄进 name_buf,到空格自然就停了。
@@ -952,6 +1261,7 @@ cmd_run:
     call term_putc
     mov al, COL_NORMAL
     call term_set_color
+    mov dword [prog_owner], -1          ; 程序跑完了:别的 shell 也能跑了
     ret
 .nomem:
     mov al, COL_ERR
@@ -1840,6 +2150,9 @@ cmd_kill:
     mov [kill_id], eax
     test eax, eax
     jz .self
+    ; shell 线程(0..SH_MAX-1)不能杀:键盘就挂在它们身上,杀了没人接手
+    cmp eax, SH_MAX
+    jb .is_shell
     cmp eax, SCHED_MAX
     jae .none
     mov ebx, eax
@@ -1854,6 +2167,12 @@ cmd_kill:
     mov eax, [kill_id]
     call sched_kill
     jc .none
+    ; 它要是正在跑程序,把"一次一个"的锁放掉(那套地址空间就漏了,见 known-issues)
+    mov eax, [kill_id]
+    cmp eax, [prog_owner]
+    jne .not_owner
+    mov dword [prog_owner], -1
+.not_owner:
     mov al, COL_OK
     call term_set_color
     mov esi, msg_kill_ok
@@ -1872,6 +2191,9 @@ cmd_kill:
     ret
 .self:
     mov esi, msg_kill_self
+    jmp .err
+.is_shell:
+    mov esi, msg_kill_shell
     jmp .err
 .none:
     mov esi, msg_kill_none
@@ -2021,6 +2343,7 @@ n_ptest  db 'ptest', 0
 n_uptime db 'uptime', 0
 n_sleep  db 'sleep', 0
 n_date   db 'date', 0
+n_shell  db 'shell', 0
 n_ps     db 'ps', 0
 n_spawn  db 'spawn', 0
 n_kill   db 'kill', 0
@@ -2048,6 +2371,7 @@ cmd_table:
     dd n_uptime, cmd_uptime
     dd n_sleep,  cmd_sleep
     dd n_date,   cmd_date
+    dd n_shell,  cmd_shell
     dd n_ps,     cmd_ps
     dd n_spawn,  cmd_spawn
     dd n_kill,   cmd_kill
@@ -2087,6 +2411,20 @@ msg_sleep_usage db 'usage: sleep <seconds>, e.g. sleep 2 (max 3600)', 10, 0
 msg_sleep_long  db 'sleep: too long (max 3600 seconds)', 10, 0
 
 msg_debug_usage db 'usage: debug <what>  (what = page / pmem / pmap / pumap / ptest / fault)', 10, 0
+msg_sh_switch   db '--- shell ', 0
+msg_sh_switch2  db ' ---', 10, 0
+msg_shell_list  db 'shells: ', 0
+msg_shell_list2 db ' (you are in shell ', 0
+msg_shell_list3 db ')', 10, 0
+msg_shell_row   db '  [', 0
+msg_shell_row2  db '] ', 0
+msg_shell_active db '   <- keyboard here', 0
+msg_shell_hint  db 'Ctrl+Left / Ctrl+Right switches, or: shell <n>', 10, 0
+msg_shell_same  db 'already here', 10, 0
+msg_shell_usage db 'usage: shell [1-4]  (no argument = list them)', 10, 0
+msg_run_busy    db 'another shell is running a program (thread ', 0
+msg_run_busy2   db ') - Ctrl+Left/Right to switch there, or kill it', 10, 0
+msg_kill_shell  db 'shell threads cannot be killed: the keyboard lives on them', 10, 0
 msg_ps_head    db 'ps: ', 0
 msg_ps_head2   db ' alive / ', 0
 msg_ps_head3   db ' slots, scheduled ticks ', 0
@@ -2119,6 +2457,7 @@ msg_help db \
     'ps            list scheduler threads (id / name / ticks / runs)', 10, \
     'spawn [who]   start a demo kernel thread (no arg = alpha, then beta)', 10, \
     'kill <id>     kill a thread, give its stack back to the page pool', 10, \
+    'shell [n]     list the 4 shells, or jump to one (Ctrl+Left / Ctrl+Right)', 10, \
     'reboot        restart the machine', 10, \
     'ls            list files on the FAT16 disk', 10, \
     'cat <file>    print a text file (UTF-8)', 10, \
@@ -2237,6 +2576,21 @@ prog_size   dd 0                        ; run 用的:程序文件多大(按它�
 space_freed dd 0                        ; run 用的:收摊时还回去的页数
 cat_name_ptr dd 0                       ; cat 用的:去掉目录部分之后的文件名
 file_size  dd 0
+
+; ---- 多 shell:每条自己的状态格子 + 两个全局 ----
+;  全局的 shell_buf / shell_len / cwd_str 永远是"当前活动 shell 的",换手时由
+;  shell_switch_to(键盘中断里)整份搬进 / 搬出下面这些格子。
+sh_active      dd 0                     ; 键盘现在归哪条 shell(线程号)
+sh_switch_flag dd 0                     ; 1 = 刚换过来,醒来要重画标题和半行
+sh_target      dd 0                     ; shell_switch_to 的临时变量
+prog_owner     dd -1                    ; 正在跑程序的线程号,-1 = 没人跑
+sh_nbuf        times SH_MAX * SH_BUF_SZ db 0
+sh_nlen        times SH_MAX dd 0
+sh_ndir        times SH_MAX * SH_DIR_SZ db 0
+nm_sh2         db 'shell2', 0
+nm_sh3         db 'shell3', 0
+nm_sh4         db 'shell4', 0
+sh_names       dd nm_main, nm_sh2, nm_sh3, nm_sh4
 
 shell_buf  times SHELL_LINE_MAX db 0
 shell_len  dd 0

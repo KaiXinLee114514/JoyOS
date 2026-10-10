@@ -229,11 +229,29 @@ keyboard_irq:
     test al, al
     jz .done                           ; 表里是 0 = 这个扩展键我们不管
     mov [ext_code], al
+    ; ---- Ctrl + ←/→ :换 shell(编号 3 = 左、4 = 右,见 sc_ext)----
+    ;      在键盘中断里直接切:活动的 shell 就算正卡在程序里,键盘也照样能换手。
+    ;      不压 ESC+编号 —— 不然等着读方向键的代码会当成方向键吃掉。
+    test byte [ctrl_down], 1
+    jz .ext_normal
+    cmp al, 3
+    je .ext_shell_left
+    cmp al, 4
+    je .ext_shell_right
+.ext_normal:
     mov al, 27                         ; 先塞 ESC …
     call kbd_push
     mov al, [ext_code]
     or al, 0x80                        ; … 再塞 0x80|编号
     call kbd_push
+    jmp .done
+.ext_shell_left:
+    mov al, -1
+    call shell_switch_step
+    jmp .done
+.ext_shell_right:
+    mov al, 1
+    call shell_switch_step
     jmp .done
 
 .prefix:
