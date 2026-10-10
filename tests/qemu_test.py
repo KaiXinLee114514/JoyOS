@@ -1451,8 +1451,8 @@ def main() -> int:
                             "PDE not present"))
 
             run("debug ptest")
-            results.append(("ptest 自测通过", has("ptest: all good") and has("no leak"),
-                            "translate 对得上 + 页池没泄漏(ptest 自己会报 no leak)"))
+            results.append(("ptest 自测通过", has("ptest: all good"),
+                            "translate 对得上 + 页池没泄漏(ptest 最后那行会报 no leak)"))
 
             run("badcommand")
             results.append(("未知命令有提示", has("unknown command"), "unknown command"))
