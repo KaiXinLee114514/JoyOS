@@ -26,17 +26,17 @@
 
 用法:
     # 把 ASCII + 一串汉字导出来
-    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "胡闹OS你好世界" --out build/font.bin
+    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "JoyOS你好世界" --out build/font.bin
 
     # 顺便生成一张预览图(用和汇编写法一样的位运算,先看清楚再动汇编)
-    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "胡闹OS" \
-            --preview build/font-preview.png --preview-text "胡闹OS 你好,世界"
+    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "JoyOS" \
+            --preview build/font-preview.png --preview-text "JoyOS 你好,世界"
 
     # 把一个字打成点阵看(核对用)
     python3 tools/unifont2bin.py --hex unifont_all.hex --show 中
 
     # 自己检查:二进制里的点阵和解码出来的是否逐位一致
-    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "胡闹OS" --selftest
+    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "JoyOS" --selftest
 
     # 生成 VGA 文本模式字模表(4 KB,256 个 8×16 字模)+ 汉字映射表
     python3 tools/unifont2bin.py --hex unifont_all.hex --vga-font font/vga-font.bin \
@@ -305,7 +305,7 @@ def write_zh_strings(path, strings):
 def main():
     ap = argparse.ArgumentParser(description='Unifont .hex → JoyOS 点阵二进制')
     ap.add_argument('--hex', required=True, help='unifont .hex(也可以是 .hex.gz)')
-    ap.add_argument('--chars', default='', help='要导出的字符(直接写,比如 "胡闹OS")')
+    ap.add_argument('--chars', default='', help='要导出的字符(直接写,比如 "JoyOS")')
     ap.add_argument('--ascii', action='store_true', help='顺便把 0x20~0x7E 的可打印 ASCII 都导进去')
     ap.add_argument('--out', help='输出二进制路径')
     ap.add_argument('--preview', help='生成预览 PNG')

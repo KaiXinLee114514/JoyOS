@@ -1,0 +1,22 @@
+pre-release 0.9
+
+内部代号(MC 式阶段名,自己看的,不对外宣传):
+
+  rd-         引导扇区能把内核读进内存
+  classic     保护模式 + IDT + shell 能敲命令
+  indev       键盘 IRQ、FAT16 读盘、能 run 程序
+  infdev      分页 + 按需分页(名字对上了:无限)
+  alpha       ring 3 用户态、中文点阵字库(有"世界"了)
+  beta        多 shell 内核线程 + rc.conf 服务/事件库(有"服务/多人"了)
+  pre-release 现在:还在加东西,bug 还在冒
+  release     哪天不 panic 了就算毕业
+
+规则:
+  · 版本号 = 阶段名 + 数字,比如 `infdev 0.1`、`beta 0.7`;
+  · 换阶段的时候只改上面第一行,git tag 跟着用 `beta-0.7` 这种写法;
+  · 项目名依旧叫 JoyOS(这张表只管版本),以后真要改名再说,两件事别搅在一起。
+
+毕业条件(自己给自己定的,到了就换阶段):
+  alpha       系统能跑图形界面
+  beta        4 条 shell 各自同时跑程序(把 space_* 挂到线程上)
+  release 1.0 连续跑一小时不 panic,并且能跑一个游戏

@@ -1,4 +1,4 @@
-# JoyOS(胡闹OS · 演示版)
+# JoyOS(演示版)
 
 ![JoyOS 硬盘模式:字库从磁盘读、FAT16 列目录、跑磁盘上的程序](docs/screenshot-fat.png)
 
@@ -182,6 +182,7 @@ python3 tests/qemu_test.py build/joyos-hd.img --hda --dump   # 只把屏幕打�
 ## 3. 源码地图
 
 ```
+current_version.txt    当前版本号 + 内部阶段代号(rd- / classic / indev / infdev / alpha / beta / pre-release / release)
 boot/boot.asm          引导扇区(512 字节内):探 LBA/CHS 读盘 → 跳 stub
 kernel/stub.asm        实模式 stub(搬到 0x500):问 VBE 要图形模式 → GDT → 保护模式
 kernel/start.asm       内核镜像入口:拼装 stub 之后的 32 位部分(顺序有讲究,见注释)
