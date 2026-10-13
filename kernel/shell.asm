@@ -2392,6 +2392,7 @@ n_ptest  db 'ptest', 0
 n_uptime db 'uptime', 0
 n_sleep  db 'sleep', 0
 n_date   db 'date', 0
+n_pci    db 'pci', 0
 n_shell  db 'shell', 0
 n_ps     db 'ps', 0
 n_spawn  db 'spawn', 0
@@ -2421,6 +2422,7 @@ cmd_table:
     dd n_uptime, cmd_uptime
     dd n_sleep,  cmd_sleep
     dd n_date,   cmd_date
+    dd n_pci,    cmd_pci
     dd n_shell,  cmd_shell
     dd n_ps,     cmd_ps
     dd n_spawn,  cmd_spawn
@@ -2505,6 +2507,7 @@ msg_help db \
     'uptime        how long the PIT has been ticking', 10, \
     'sleep <sec>   sleep N seconds (hlt while waiting, max 3600)', 10, \
     'date [fmt]    read the CMOS clock: no arg = full, or ymd / mdy / dmy / time', 10, \
+    'pci [b:s.f]   list the PCI devices on bus 0, or show one in detail', 10, \
     'ps            list scheduler threads (id / name / ticks / runs)', 10, \
     'spawn [who]   start a demo kernel thread (no arg = alpha, then beta)', 10, \
     'kill <id>     kill a thread, give its stack back to the page pool', 10, \

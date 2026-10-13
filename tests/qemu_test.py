@@ -643,6 +643,13 @@ def main() -> int:
     qemu = subprocess.Popen(
         ["qemu-system-i386", *drive,
          "-display", "none", "-no-reboot",
+         # 挂一个 USB 控制器给 PCI 枚举断言用(以后 USB 驱动也用它)。
+         # 用 `-usb` 而不是 `-device piix3-usb-uhci`:前者把机器自带的 UHCI 挂在
+         # 00:01.2(和 QEMU 的 info pci / 真实 PIIX3 一样),后者会另起一个 00:04.0 的,
+         # `pci 0:1.2` 那组断言就对不上了。
+         # ⚠️ 别在这里插 usb-kbd:QEMU 的 sendkey 会改投 USB 键盘,
+         #    整套 PS/2 键盘用例(还有 shell 打字)会全部失灵。
+         "-usb",
          "-monitor", f"unix:{sock},server,nowait",
          "-qmp", f"unix:{qmp_sock},server,nowait"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
@@ -1006,6 +1013,27 @@ def main() -> int:
             results.append(("date 参数写错会提示",
                             has("unknown format") and has("(got: xxx)"),
                             "打红字说明支持哪些格式,并把手写的那个词带出来"))
+
+            # ---- PCI 枚举:机器上有什么设备,得能自己数出来(这是 USB 的前置工作)
+            run("pci", idle=True)
+            results.append(("pci 列得出设备表", has("PCI devices on bus 0"), "表头在"))
+            results.append(("pci 看得到 IDE 控制器",
+                            has("8086:7010") and has("IDE controller"), "QEMU 的 piix IDE"))
+            results.append(("pci 看得到 USB 控制器",
+                            has("8086:7020") and has("UHCI 1.1"), "QEMU 的 PIIX3 UHCI"))
+            results.append(("pci 看得到显卡和网卡",
+                            has("1234:1111") and has("VGA display controller")
+                            and has("Ethernet controller"), "VGA + e1000"))
+            run("pci 0:1.2", idle=True)
+            results.append(("pci 详情:UHCI 的寄存器口",
+                            has("class 0C.03") and has("BAR4") and has("bus master: yes"),
+                            "BAR4 就是以后 USB 驱动要读的那个 I/O 口"))
+            # 地址要写全 bus:slot.func(短路式会被当成用法错误);0:9.0 是格式合法但空着的槽
+            run("pci 0:9.0", idle=True)
+            results.append(("pci 空槽位会说不存在", has("no device at that address"),
+                            "没有设备的位置不能假装有"))
+            run("pci zzz", idle=True)
+            results.append(("pci 参数非法给用法", has("usage: pci"), "打用法提示"))
 
             # ---- Alt 码位输入:日文/韩文/中文(靠 QMP 分开按住 Alt,tools/text2alt.py)
             run("clear")
@@ -1451,6 +1479,15 @@ def main() -> int:
                             "PDE not present"))
 
             run("debug ptest")
+            # ★ 这条的输出有十来行,而内核往 VBE 帧缓冲写字是 MMIO:抓屏那一刻可能
+            #   还在画(wait_idle 只看"两帧一样",中间停顿一下就会提前返回)。
+            #   这里自己轮询到那行真的落屏为止 —— 固定 sleep 会时不时假失败。
+            #   (wait_for 在这个分支里还没定义,所以直接 has/rescan 循环。)
+            for _ in range(16):
+                if has("ptest: all good"):
+                    break
+                time.sleep(0.5)
+                rescan()
             results.append(("ptest 自测通过", has("ptest: all good"),
                             "translate 对得上 + 页池没泄漏(ptest 最后那行会报 no leak)"))
 
@@ -1518,6 +1555,8 @@ def main() -> int:
                 # 硬盘镜像那条完整断言(RC.CONF / keys / hostname)在下面的 rc 块里
                 ("rc.conf 服务库",  "rc.conf:"),
                 ("RTC 时钟",        "rtc: CMOS clock"),
+                # 软盘镜像上也有 PCI(那行照打),所以这条两边都能过
+                ("PCI 枚举",        "devices on bus 0"),
                 ("阶段完成提示",    "OK - stage 5"),
                 ("多 shell 线程",   "4 shells (Ctrl+Left / Ctrl+Right)"),
                 ("shell 就绪",      'type "help" for commands.'),

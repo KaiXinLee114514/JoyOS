@@ -77,6 +77,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **ring 3 用户态** | 程序不再由内核 `call` 进去,而是 `iret` 到 **CPL=3**:内核运行时重建 GDT(0x1B 用户代码 / 0x23 用户数据 / 0x28 TSS)+ `ltr` 装 TSS(从 ring 3 掉回内核的栈只能从 TSS 取);程序页表项带 U/S 位,**内核的页它碰不到** —— 故意读内核内存会被页错误干掉、内核自己接着用(`run FAULT` 现场演示);程序结尾照旧 `ret`:内核在用户栈顶压了**弹床页**(0x19F000,三条指令 `int 0x30` 功能号 15 退出),所以现有程序一行都不用改(见 §5) |
 | **rc.conf 服务 / 事件库** | 根目录的 `RC.CONF` 是**纯 `key=value`**(BSD / OpenRC 那种,不是 systemd 段):`hostname` / `boot_msg` / `autostart` / `on_crash` + `service_N`(程序、参数、启用开关)。`rc` 一条命令管起来:`rc list` 看服务、`rc get KEY` 取值、`rc start N` **把服务当程序跑**(借 `run` 那条路:ring 3 + 按需分页)、`rc reload` 重读刚写的配置;另有**事件账本**:开机 / 读配置 / 服务起停 / 程序跑完 / 程序崩了 / 线程被 kill / 换 shell,每种连 100 Hz 的 tick 一起记 16 条(`rc log`);`autostart=YES` 就是开机按配置跑服务,`on_crash=reboot` 则程序崩了直接重启(见 [docs/rc-conf.md](docs/rc-conf.md)) |
 | **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
+| **PCI 总线枚举** | 开机扫 bus 0:`pci` 列出机器上所有设备(厂商:设备号 / 类别名 / 中断号),`pci 0:1.2` 看单台设备详情(类别、命令寄存器、六个 BAR 是内存还是 I/O、内存 BAR 多大);配置空间走 **机制 #1**(`0xCF8` 地址 / `0xCFC` 数据),多功能设备的"兄弟功能"也会一起扫出来 —— 这是 USB 的前置工作(见 [docs/pci.md](docs/pci.md)) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
 | **子目录** | `ls DOCS`、`cat DOCS/NOTE.TXT`、`cd` / `mkdir` / `rmdir`、路径里 `/` 和 `\` 都认;子目录里的程序 `run DOCS/HELLO.BIN` 和 `int 0x30` 的读写接口都跟着当前目录走;子目录满了会自动往簇链上接新簇 |
@@ -196,6 +197,7 @@ kernel/keyboard.asm    8259A 重映射、IRQ1 键盘中断、扫描码翻译、�
 kernel/pit.asm         8254 定时器:通道 0 按 100 Hz 发 IRQ0,只加 tick 计数(uptime/sleep 靠它)
 kernel/rtc.asm         CMOS 实时时钟:等 UIP、读两遍比对、BCD/12 小时制换算、日期格式化(date 靠它)
 kernel/sched.asm       内核线程 + 抢占式轮转:TCB 表、20 ms 时间片、IRQ0 里换栈、spawn/kill 的栈管理(ps 靠它)
+kernel/pci.asm         PCI 总线枚举:配置机制 #1、扫 bus 0(含多功能设备的兄弟功能)、类别名表、BAR 类型与大小
 kernel/rc.asm          rc.conf 服务/事件库:读根目录 RC.CONF、就地拆 key=value、按配置跑服务(借 shell 的 run)、16 条事件账本(rc 靠它)
 kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
@@ -827,6 +829,58 @@ IF=0 一路回到了 shell —— 后果特别唬人:定时器(IRQ0)和键盘(IR
 = 中断被关了),再 `info pic` 看 `irr` 有没有挂着 —— 两者一对就能分清"真死机"和"只是中断关了"。
 修法:`run_resume_kernel` 在换回内核页目录之后补一条 `sti`。
 
+### 6.26 配置空间读出来全是 0:忘了把 bit31 置 1
+
+PCI 的机制 #1 是"写地址(0xCF8)、读数据(0xCFC)",那个地址的 **bit31 必须是 1**,
+表示"这次访问要真的发出去"。忘了置 1 的话 CPU 根本不会发起配置周期,
+读回来的就是 0x00000000 —— 屏幕上表现为"每台设备都读成 0000:0000",而且不报错。
+先怀疑地址寄存器,再怀疑设备。
+
+### 6.27 只扫 func 0 会漏掉设备的"兄弟"
+
+一个 PCI 设备最多有 8 个功能(function)。ISA 桥(00:01.0)自己只是个桥,
+它的 **IDE 控制器(00:01.1)、USB 控制器(00:01.2)、电源管理(00:01.3)全是它的功能**。
+判断方法:读设备头部的 header type,bit7 = 1 说明是"多功能设备",
+这时候 func 1~7 都要扫。只扫 func 0 的话,你的机器上"看不到 IDE 也看不到 USB"。
+
+### 6.28 不存在的设备返回 0xFFFF,不是 0
+
+读取一个空槽位,配置空间返回 **0xFFFF**(厂商号 0xFFFF 是"没有设备"的约定),
+而不是 0。所以判断"这里有没有设备"要用 `cmp eax, 0xFFFFFFFF`。
+另外 0x00000000 是另一种情况:设备在、但寄存器就是 0。
+
+### 6.29 写命令寄存器要用 16 位写(status 是"写 1 清")
+
+命令寄存器(command)和状态寄存器(status)共用 offset 4:低 16 位是命令(读写)、
+高 16 位是状态(**写 1 才清**)。想开 Bus Master 就只写低 16 位(`out dx, ax`),
+用 32 位写会把高位的状态位全清掉 —— 那会把"设备报过什么错"这类信息擦掉。
+我们枚举时会给每台设备打开 I/O + MMIO + Bus Master,用的就是 16 位写。
+
+### 6.30 手写 push/pop 不配平:`ret` 飞到了 0x9208
+
+给 PCI 写十六进制打印时,我手写了三份 `pci_ph1/2/4`,其中一份最后**多 pop 了一个寄存器**,
+于是 `ret` 弹出来的是栈上的脏数据(0x9208)⇒ 开机就
+`*** KERNEL PANIC *** / EXCEPTION 0E: page fault / EIP = 0x00009208`。
+教训:**要么老老实实 pushad/popad,要么一个字节都别多动栈**(和 §6.23 是同一个坑的两种形状)。
+重写成一个 `pushad/popad` + `shr edx, cl` 的循环就再没出过事。
+
+### 6.31 QEMU 的 USB 键盘会把 `sendkey` 抢走(窗口看着像死了)
+
+两个连着的坑:
+1. `-device usb-kbd` 单独用会报 `No 'usb-bus' bus found for device 'usb-kbd'` ——
+   得先有 `-usb`(它顺手把机器自带的 PIIX3 UHCI 控制器挂到 00:01.2)。
+2. **一旦真插了 usb-kbd,QEMU 的 `sendkey` 就改投 USB 键盘** ⇒ 我们的 PS/2 驱动
+   一个键也收不到,测起来像"系统死了"。所以 Makefile 和测试台都只用 `-usb`
+   (要的就是那台 UHCI 控制器),不插 USB 键盘。
+
+### 6.32 I/O BAR 写全 1 量大小,会把整个配置空间搞挂
+
+"往 BAR 写全 1、读回来反推大小"是 PCI 的标准做法,但它在这台 QEMU 上只对**内存 BAR** 安全:
+拿 IDE 的 BAR4(I/O BAR)这么量一次,之后**所有**设备的配置空间都读成 0x0004 / 全 0,
+连它自己的大小都读成 62224 这种鬼数字(真值 16 字节)。
+所以 `kernel/pci.asm` 现在只量内存 BAR,I/O BAR 直接给基址 —— 反正 USB 驱动要的
+UHCI BAR4 就是个 I/O 基址(`0xC040`),地址够用,不用知道大小。
+
 ## 7. shell 命令
 
 ```
@@ -848,6 +902,7 @@ write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
 run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不带点会自动补 .BIN;
               裸敲 run 打印接口说明;跑完会报补了多少页:run TOUCH 最能看出来)
 date [fmt]    读 CMOS 时钟:裸 date 打日期+时间+星期,加 ymd / mdy / dmy / time 换格式
+pci [b:s.f]   PCI 总线枚举:裸 pci 列出总线上所有设备,加 0:1.2 这种地址看单台详情
 uptime        开机到现在多久(内含 tick 数,例:up 4 s (432 ticks at 100 Hz))
 sleep <秒>    用 hlt 睡这么多秒(空闲不烧 CPU;上限 3600 秒)
 ps            列出内核线程(编号 / 名字 / 拿到过多少 tick / 被调度过几次)
@@ -1056,7 +1111,12 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 
 ## 10. 下一步:该玩点啥
 
-**刚刚落地:ring 3 用户态 + rc.conf 服务/事件库** —— 程序跑在 CPL=3,内核的页它碰不到,碰了就死、内核不慌
+**刚刚落地:PCI 总线枚举** —— `pci` 一条命令把机器上的设备全列出来(厂商:设备号、类别名、中断号),
+`pci 0:1.2` 看单台设备详情;QEMU 上正好一次看全:IDE、USB(UHCI)、显卡、网卡
+(见 [docs/pci.md](docs/pci.md))。**这是给 USB 铺的路** —— 想读 USB 键盘,得先知道
+USB 控制器在哪、它的寄存器窗口(那个 I/O BAR)开在哪儿。
+
+再往前是 **ring 3 用户态 + rc.conf 服务/事件库** —— 程序跑在 CPL=3,内核的页它碰不到,碰了就死、内核不慌
 (见 §5「程序跑在 ring 3」)。再往前是**多 shell**:4 条 shell 各是一条内核线程,
 `Ctrl+←/→` 在键盘中断里换焦点,一条卡在 `run HANG` 里时另一条照样能干活(见 §5「多 shell」)。
 再往前一步是内核线程 + 抢占式轮转(PIT 的 IRQ0 里存现场、换栈,`ps`/`spawn`/`kill`)
@@ -1090,6 +1150,9 @@ qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 - **`sleep` 的更细粒度**:现在按秒睡(tick 粒度已经到 10 ms,只是 shell 只认整秒)
 - **ELF 加载**:现在程序是平铺二进制读到固定地址(没有段、没有重定位),也不会
   按程序要多少给多少地长大;`malloc` 已经有了(迷你 libc 里那个),但堆就固定那么大
+- **USB**:PCI 枚举已经能看见 QEMU 的 UHCI 控制器(00:01.2,BAR4 = I/O `0xC040`)和一台
+  e1000 网卡了;按图上这条路走是 **UHCI 初始化 → EP0 控制传输 → HID 键盘 → EHCI + 大容量存储**
+  (为什么按这个顺序、每步会踩什么,写在 [docs/pci.md](docs/pci.md) 结尾)
 - **鼠标(IRQ12)**:PS/2 鼠标比键盘多几个坑(要发命令、读 3 字节包)
 - **`date` 只能读不能写 / 不知道时区**:没有 `settime`(往 CMOS 写得先关 NMI 位、
   还得避开时钟更新,见 [docs/known-issues.md](docs/known-issues.md) 第 8 节);

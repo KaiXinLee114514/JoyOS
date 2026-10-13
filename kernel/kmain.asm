@@ -270,6 +270,10 @@ COL_ERR    equ 0x0C                    ; 亮红
     call rtc_get
     call rtc_print_boot
 
+    ; PCI:把机器上有什么设备点名一遍(IDE / USB 的地址也顺手记下来,
+    ; 给以后的 USB 驱动用)
+    call pci_scan
+
     ; ---- rc.conf(磁盘根目录的 RC.CONF)+ 事件账本 ----
     ; 为啥是 rc.conf 而不是 systemd 的 unit:玩具 OS 要的是"一行一个 key=value",
     ; 用 shell 的 write 就能改,改完 rc reload 立刻生效。详见 kernel/rc.asm 文件头。

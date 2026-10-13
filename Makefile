@@ -44,6 +44,15 @@ QMP_SOCK := $(BUILD)/qmp.sock
 # RTC 给虚拟机的"现在几点":QEMU 默认 base=utc,guest 里 date 打出来会比你墙上钟少 8 小时。
 # 加了这个,窗口里看到的 CMOS 时间就是你本机时间(测试台自己起 QEMU,不受影响)
 RTC_ARG := -rtc base=localtime
+# 给虚拟机上插一个 USB 键盘:让 pci 命令有东西可看,
+# 以后 USB 驱动就靠它当第一个真设备。
+# 打开机器自带的 USB 控制器(PIIX3 UHCI,落在 00:01.2),但**先不插设备**:
+#   ⚠️ 两个坑都踩过:① 只写 `-device usb-kbd` 会报 "No 'usb-bus' bus found for device
+#      'usb-kbd'" 直接退出(pc 机器不会自己造控制器,-usb 才会挂默认那个);
+#   ② 一旦真插上 usb-kbd,QEMU 的 sendkey 就改投 USB 键盘去了 —— 窗口里
+#      PS/2 键盘(我们的驱动)一个字都收不到,shell 像是死了。
+#   等 USB 驱动能用了,再自己加 `-device usb-kbd` 上去看设备枚举。
+USB_ARG := -usb
 DIV_IMG    := $(BUILD)/joyos-div.img
 
 BOOT_SRC    := boot/boot.asm
@@ -174,7 +183,7 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
 
 hd: $(HDIMG)
 	@rm -f $(QMP_SOCK)
-	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait $(RTC_ARG)
+	$(QEMU) -drive file=$(HDIMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait $(RTC_ARG) $(USB_ARG)
 
 # ---------------------------------------------------------------------------
 #  FAT32 版镜像:同一个内核(BPB 自动认 FAT16/FAT32),只是分区格式不一样。
@@ -196,7 +205,7 @@ $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-jo
 
 hd32: $(HD32IMG)
 	@rm -f $(QMP_SOCK)
-	$(QEMU) -drive file=$(HD32IMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait $(RTC_ARG)
+	$(QEMU) -drive file=$(HD32IMG),format=raw,if=ide,index=0 -boot c -qmp unix:$(QMP_SOCK),server,nowait $(RTC_ARG) $(USB_ARG)
 
 # ---------------------------------------------------------------------------
 #  扩展:不进默认构建/默认镜像的东西(现在就一个 vi)
