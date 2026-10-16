@@ -1386,6 +1386,46 @@ def main() -> int:
             results.append(("空目录真的没了", "EMPTY" not in screen_lines(),
                             "列表里没有 EMPTY"))
 
+            # ---- rm:删文件(目录要用 rmdir),簇链和目录项都要真的还回去 ----
+            run("write rmtmp.txt delete-me")
+            # 用 wait_for 而不是 has:命令刚敲完,回显可能还没画上屏幕(内核画字走 MMIO,慢)
+            results.append(("rm 前文件在", wait_for("wrote rmtmp.txt"),
+                            "RMTMP.TXT 已建好"))
+            run("rm rmtmp.txt")
+            results.append(("rm 删文件", wait_for("removed rmtmp.txt"),
+                            "removed rmtmp.txt"))
+            run("ls")
+            results.append(("删掉的文件真的没了", "RMTMP.TXT" not in screen_lines(),
+                            "列表里没有 RMTMP.TXT"))
+            run("cat rmtmp.txt")
+            results.append(("删掉之后读不到了", has("not found") or has("no such"),
+                            "cat 报找不到"))
+            run("rm rmtmp.txt")
+            results.append(("删不存在的文件会报错",
+                            has("rm failed (no such file; use rmdir for directories)"),
+                            "rm failed (no such file...)"))
+            run("mkdir rmdir")
+            run("rm rmdir")
+            results.append(("rm 不删目录(让人改用 rmdir)",
+                            has("rm: that is a directory, use rmdir"),
+                            "rm: that is a directory, use rmdir"))
+            run("rmdir rmdir")
+            results.append(("那条目录还在(rm 没动它)", has("removed directory rmdir"),
+                            "removed directory rmdir"))
+            # 空间真的还给盘了:删两只写一只,盘上不该越删越少
+            run("write free1.txt aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            run("write free2.txt bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            run("rm free1.txt")
+            run("rm free2.txt")
+            run("write free3.txt cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+            results.append(("删完还能接着写(簇链还回盘上了)", has("wrote free3.txt"),
+                            "wrote FREE3.TXT"))
+            run("rm free3.txt")
+            run("ls")
+            results.append(("清完临时文件,根目录干净",
+                            "FREE1.TXT" not in screen_lines() and "FREE3.TXT" not in screen_lines(),
+                            "FREE1/FREE2/FREE3 都不在了"))
+
             # ---- 目录满一簇:内核要能往簇链上再挂一簇(不能只会看第一簇)----
             run("ls bigdir", wait=1.6, idle=True)
             results.append(("列出一整个装满的目录(要跟着簇链走)",

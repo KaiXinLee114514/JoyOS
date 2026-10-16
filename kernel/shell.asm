@@ -916,6 +916,54 @@ cmd_rmdir:
     call term_print
     ret
 
+; ---------------------------------------------------------------------------
+;  rm <文件>:删文件(目录要用 rmdir)
+; ---------------------------------------------------------------------------
+cmd_rm:
+    cmp byte [fat_ok], 0
+    je cmd_ls.nomount
+    mov esi, [cmd_arg]
+    call strip_name
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .usage
+    call fat_path                         ; 支持 rm A/B.TXT
+    jc .fail
+    cmp byte [eax], 0
+    je .fail
+    mov esi, eax
+    call fat_unlink
+    test eax, eax
+    jz .ok
+    cmp eax, -2
+    je .isdir
+.fail:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_rm_bad
+    call term_print
+    ret
+.isdir:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_rm_isdir
+    call term_print
+    ret
+.ok:
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_rm_ok
+    call term_print
+    mov esi, [cmd_arg]
+    call term_print
+    mov al, 10
+    call term_putc
+    ret
+.usage:
+    mov esi, msg_rm_use
+    call term_print
+    ret
+
 cmd_ls:
     cmp byte [fat_ok], 0
     je .nomount
@@ -2383,6 +2431,7 @@ n_page   db 'page', 0
 n_cd     db 'cd', 0
 n_mkdir  db 'mkdir', 0
 n_rmdir  db 'rmdir', 0
+n_rm     db 'rm', 0
 n_fault  db 'fault', 0
 n_reboot db 'reboot', 0
 n_pmem   db 'pmem', 0
@@ -2412,6 +2461,7 @@ cmd_table:
     dd n_cd,     cmd_cd
     dd n_mkdir,  cmd_mkdir
     dd n_rmdir,  cmd_rmdir
+    dd n_rm,     cmd_rm
     dd n_cat,    cmd_cat
     dd n_write,  cmd_write
     dd n_run,    cmd_run
@@ -2449,6 +2499,10 @@ msg_rmdir_ok    db 'removed directory ', 0
 msg_rmdir_bad   db 'rmdir failed (not found or not a directory)', 10, 0
 msg_rmdir_notempty db 'rmdir failed (directory not empty)', 10, 0
 msg_rmdir_use   db 'usage: rmdir <dir>', 10, 0
+msg_rm_ok       db 'removed ', 0
+msg_rm_bad      db 'rm failed (no such file; use rmdir for directories)', 10, 0
+msg_rm_isdir    db 'rm: that is a directory, use rmdir', 10, 0
+msg_rm_use      db 'usage: rm <file>', 10, 0
 msg_shell_unknown db 'unknown command: ', 0
 msg_fault       db 'touching an unmapped address on purpose...', 10, 0
 msg_reboot      db 'rebooting...', 10, 0
@@ -2515,6 +2569,9 @@ msg_help db \
     'rc <what>     rc.conf: list / get KEY / start N / log / reload (event log)', 10, \
     'reboot        restart the machine', 10, \
     'ls            list files on the FAT16 disk', 10, \
+    'mkdir <d>     create a directory', 10, \
+    'rmdir <d>     remove an empty directory', 10, \
+    'rm <file>     delete a file (directories: use rmdir)', 10, \
     'cat <file>    print a text file (UTF-8)', 10, \
     'write <f> <t> create/overwrite a file', 10, \
     'run <file>    run a program from disk (.BIN; bare "run" = the ABI)', 10, 0

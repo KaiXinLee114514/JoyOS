@@ -80,7 +80,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **PCI 总线枚举** | 开机扫 bus 0:`pci` 列出机器上所有设备(厂商:设备号 / 类别名 / 中断号),`pci 0:1.2` 看单台设备详情(类别、命令寄存器、六个 BAR 是内存还是 I/O、内存 BAR 多大);配置空间走 **机制 #1**(`0xCF8` 地址 / `0xCFC` 数据),多功能设备的"兄弟功能"也会一起扫出来 —— 这是 USB 的前置工作(见 [docs/pci.md](docs/pci.md)) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
-| **子目录** | `ls DOCS`、`cat DOCS/NOTE.TXT`、`cd` / `mkdir` / `rmdir`、路径里 `/` 和 `\` 都认;子目录里的程序 `run DOCS/HELLO.BIN` 和 `int 0x30` 的读写接口都跟着当前目录走;子目录满了会自动往簇链上接新簇 |
+| **子目录** | `ls DOCS`、`cat DOCS/NOTE.TXT`、`cd` / `mkdir` / `rmdir` / `rm`、路径里 `/` 和 `\` 都认;子目录里的程序 `run DOCS/HELLO.BIN` 和 `int 0x30` 的读写接口都跟着当前目录走;子目录满了会自动往簇链上接新簇 |
 | **跑磁盘上的程序** | `run HELLO`:从磁盘读进来 → 给这个程序**建一套自己的页目录**(私有页,见下) → 切 CR3 → 执行(镜像超 512 KB 直接拒绝),程序用 `int 0x30` 调用内核(见 [docs/programs.md](docs/programs.md)) |
 | **程序接口 15 个功能** | 打印/颜色/收键 + 清屏、读写文件、定位光标、读键事件(方向键)、屏幕尺寸、程序参数、定位画字、**蜂鸣器(14 号 `beep`)** —— 够写全屏程序,还够唱一首 |
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
@@ -139,6 +139,7 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 > cd DOCS               ← 进目录,提示符变成 DOCS>
 > mkdir SUB              ← 建目录(自动写好 . 和 ..)
 > rmdir SUB              ← 删空目录(非空的会拒绝,不会把文件弄丢)
+> rm OLD.TXT             ← 删文件(目录要用 rmdir;它占的簇会还回盘上)
 > cd ..                  ← 回上一层;cd / 回根目录
 > run DOCS/HELLO.BIN    ← 子目录里的程序照样能跑
 ```
@@ -203,7 +204,7 @@ kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
 kernel/ata.asm         ATA(IDE)PIO 驱动:读扇区 + 写扇区 + FLUSH CACHE
 kernel/fontdisk.asm    启动时把完整字库从磁盘读进 0x200000(读不到就用内建子集)
-kernel/fat.asm         FAT16/FAT32:挂载(BPB 自动判)/找文件/读/写/列目录/子目录(cd/mkdir/rmdir)
+kernel/fat.asm         FAT16/FAT32:挂载(BPB 自动判)/找文件/读/写/删(rm/rmdir)/列目录/子目录
 kernel/api.asm         int 0x30 程序接口(打印字符串/数字/码位、设颜色、等按键)
 kernel/speaker.asm     PC 蜂鸣器:14 号 beep(PIT 通道 2 定音高 + 0x61 开关扬声器,毫秒是忙等估的)
 kernel/shell.asm       shell:行编辑、命令解析、各命令实现
@@ -1134,8 +1135,10 @@ USB 控制器在哪、它的寄存器窗口(那个 I/O BAR)开在哪儿。
 
 ## 11. 还没做的(想练手就从这里挑)
 
-- **删文件 / 长文件名**:`mkdir` / `rmdir` / 子目录已经能用了,还缺 `rm`
-  (目录项首字节写 `0xE5` + 把簇链标回空闲)和长文件名(VFAT,那是另一个故事)
+- **长文件名(VFAT)**:`rm` / `rmdir` / `mkdir` / 子目录现在都能用了,
+  但名字还是 8.3(短名);VFAT 长名是另一套目录项编码,值得单独做一轮
+- **程序里的删除**:`rm` 是 shell 命令,`mini-libc` 里还没有 `remove()`
+  (所以编辑器存盘只能覆盖同名文件,删不掉旧的)
 - ~~保护程序搞坏内核~~:已经做了(ring 3 + TSS + U/S 位,见 §5)—— 下一步是让内核窗口
   彻底不出现在程序页目录里(现在还是拷一份内核页目录,只是 U/S=0)
 - **虚拟内存的下一层**:按需分页已经有了(碰到哪页才给哪页),但还没有

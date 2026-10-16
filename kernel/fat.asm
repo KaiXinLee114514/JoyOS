@@ -1189,6 +1189,82 @@ fat_mkdir:
     ret
 
 ; ---------------------------------------------------------------------------
+;  fat_unlink:esi = 文件名 → eax = 0 成功 / -1 找不到 / -2 那是个目录
+;
+;  和 fat_rmdir 是一对:这里删的是"文件",所以
+;    · 先看目录项是不是目录(attr bit4),是就退回去让调用方走 rmdir ——
+;      要是这里也删,那条簇链里的子目录就全成孤儿了;
+;    · 簇链照样整条标回空闲(从首簇沿 FAT 走,和 rmdir 一样的循环);
+;    · 父目录里那一项首字节写 0xE5(= 已删除),这才是"文件真的不在了"的证据。
+;
+;  注意:目录项不首字节写 0 是有原因的 —— 0x00 表示"后面再没有表项了",
+;  用 0 会把同目录后面的兄弟文件一起藏掉,只能用 0xE5。
+; ---------------------------------------------------------------------------
+fat_unlink:
+    pushad
+    call fat_name83                     ; esi → 11 字节 8.3 名
+    call fat_find
+    cmp eax, -1
+    je .fail
+    mov [rm_lba], eax
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    mov esi, FAT_BUF
+    add esi, [fat_entry_off]
+    test byte [esi + 11], 0x10
+    jnz .isdir                          ; 目录:请用 rmdir
+    call fat_ent_cluster
+    mov [rm_clus], eax
+    test eax, eax
+    jz .mark                            ; 空文件(首簇 0):只有目录项要清
+
+    ; 从首簇沿链走,见一个标一个空闲 —— 和 fat_rmdir 的 .free_loop 同款
+    mov [rm_scan], eax
+.free_loop:
+    mov eax, [rm_scan]
+    test eax, eax
+    jz .mark
+    cmp eax, 0xFFF8
+    jae .mark
+    mov [fat_cluster], eax
+    push eax
+    call fat_next_cluster
+    mov [rm_next], eax
+    pop eax
+    mov [fat_cluster], eax
+    xor eax, eax
+    call fat_set_entry
+    mov eax, [rm_next]
+    mov [rm_scan], eax
+    jmp .free_loop
+
+.mark:
+    mov eax, [rm_lba]                   ; 父目录里那一项标成 0xE5
+    mov ecx, 1
+    mov edi, FAT_BUF
+    call ata_read_sectors
+    mov dword [fat_cache_lba], -1
+    mov ebx, [fat_entry_off]
+    mov byte [FAT_BUF + ebx], 0xE5
+    mov eax, [rm_lba]
+    mov ecx, 1
+    mov esi, FAT_BUF
+    call ata_write_sectors
+    popad
+    xor eax, eax
+    ret
+.isdir:
+    popad
+    mov eax, -2
+    ret
+.fail:
+    popad
+    mov eax, -1
+    ret
+
+; ---------------------------------------------------------------------------
 ;  fat_rmdir:esi = 目录名 → eax = 0 成功 / -1 不是目录 / -2 目录不空
 ; ---------------------------------------------------------------------------
 fat_rmdir:
