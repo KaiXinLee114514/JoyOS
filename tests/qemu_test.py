@@ -38,6 +38,10 @@ class Monitor:
                     raise RuntimeError("连不上 QEMU monitor")
                 time.sleep(0.1)
         self.buf = b""
+        # 抓屏落盘的默认路径:带上进程号,免得和别的 QEMU/别的测试轮次互相踩
+        import os
+        self.shot_path = os.path.join(
+            os.environ.get("TMPDIR", "/tmp"), f"joyos-shot-{os.getpid()}.ppm")
         time.sleep(0.2)
         self._drain()
 
@@ -120,10 +124,18 @@ class Monitor:
             self.sendkey(key)
             time.sleep(delay)
 
-    def screendump(self, path: str = "build/_shot.ppm"):
-        """抓一张像素图(图形模式下的断言要靠它)"""
+    def screendump(self, path: str | None = None):
+        """抓一张像素图(图形模式下的断言要靠它)
+
+        ★ 别用固定路径:两个 QEMU/两轮测试同时开着时,固定路径会读到**别人家的屏幕**
+          (踩过:软盘那轮和硬盘那轮共用 build/_shot.ppm,硬盘那轮的断言读到软盘
+           屏幕上的 'boot disk: CHS fallback',于是"读盘方式"偶发假失败)。
+          默认路径按进程号区分,各写各的。
+        """
         import os
         from PIL import Image
+        if path is None:
+            path = self.shot_path
         if os.path.exists(path):
             os.unlink(path)
         self.cmd(f"screendump {path}", wait=1.0)
@@ -1468,10 +1480,30 @@ def main() -> int:
             # ---- shell:真敲命令,看输出 ----
             results = []
 
+            def wait_idle(max_wait=6.0):
+                """等屏幕不再变(内核画字走 MMIO,一屏要好几秒)。
+
+                这个分支里得自己来一份:外面那个 wait_idle 是在 hd 模式那段里定义的,
+                软盘跑 --shell 时还没轮到它(踩过:直接调用 → NameError)。
+                """
+                last = None
+                t0 = time.time()
+                while time.time() - t0 < max_wait:
+                    blob = mon.screendump().tobytes()
+                    if blob == last:
+                        return
+                    last = blob
+                    time.sleep(0.3)
+
             def run(line, wait=0.7):
+                # ★ 敲之前先等上一条画完、敲完再等这条画完:内核往 VBE 帧缓冲画字是
+                #   MMIO,一屏要好几秒,固定 sleep 不够时断言就会扑空
+                #   (踩过:`debug` 的用法那行,单跑 test-shell 稳定假失败)
+                wait_idle(6.0)
                 mon.type_text(line)
                 mon.sendkey("ret")
                 time.sleep(wait)
+                wait_idle(6.0)
                 rescan()
 
             run("help")
@@ -1601,12 +1633,33 @@ def main() -> int:
                 ("多 shell 线程",   "4 shells (Ctrl+Left / Ctrl+Right)"),
                 ("shell 就绪",      'type "help" for commands.'),
             ]
+
+        # 开机这几十行是内核一行一行往 VBE 帧缓冲上画的(MMIO,一屏要好几秒)。
+        # 抓屏只等了 2 秒,机器一忙就可能拍到**画到一半**的屏幕 → 偶发一条假失败。
+        # 先盯住最后画上去的那行,等它出现(最多 10 秒),再逐条断言。
+        if graphics:
+            for _ in range(25):
+                if has(checks[-1][1]):
+                    break
+                time.sleep(0.4)
+                rescan()
+
+        dumped = False
         for name, needle in checks:
             if has(needle):
                 print(f"  ✅ {name}")
             else:
                 print(f"  ❌ {name}  —— 屏幕上找不到: {needle!r}")
                 failures.append(name)
+                # 抓屏那一刻屏幕到底长什么样:存图 + OCR 出来(不然只能猜)
+                if graphics and not dumped:
+                    dumped = True
+                    shot.save("build/screen-fail.png")
+                    print("  ── 失败时的屏幕(OCR,存了 build/screen-fail.png)──")
+                    for i, line in enumerate(screen_text(shot, glyphs)[:22]):
+                        if line.strip():
+                            print(f"   {i:2d}| {line}")
+                    print("  ──────────────────────────────")
 
     finally:
         qemu.terminate()
