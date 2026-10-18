@@ -438,6 +438,29 @@ shell_readline_resume:
     cmp eax, [sh_active]
     jne .yield
     call shell_wait_key                   ; 只为活动 shell 等键(见上面的说明)
+    ; ---- 输入法:正在挑候选 → 所有键都先交给它 ----
+    cmp dword [ime_state], 1
+    je .ime_picking
+    ; ---- 输入法:Shift 单独按一下 = 中英切换 ----
+    cmp al, KBD_IME_TOGGLE
+    je .ime_toggle
+    ; ---- 中文状态:a-z 敲的是拼音,不进命令行 ----
+    cmp dword [ime_on], 0
+    je .plain_key
+    cmp dword [ime_ok], 0
+    je .plain_key
+    cmp al, 'a'
+    jb .ime_maybe_open
+    cmp al, 'z'
+    jbe .ime_letter
+.ime_maybe_open:
+    cmp dword [ime_len], 0
+    je .plain_key
+    cmp al, 32                            ; 空格 = 出候选
+    je .ime_open
+    cmp al, 13                            ; 回车 = 出候选再选
+    je .ime_open
+.plain_key:
     cmp al, 13                            ; Enter
     je .done
     cmp al, 8                             ; Backspace
@@ -455,6 +478,107 @@ shell_readline_resume:
     jmp .next
 .multibyte:
     call shell_read_mb                    ; 中文/日文/韩文/emoji:整串一起收、一起画
+    jmp .next
+
+; ---------------------------------------------------------------------------
+;  输入法(拼音单字)—— 真正的实现在 kernel/ime.asm,这里只管"分键":
+;      Shift 单独按  切中英
+;      a-z           敲拼音(回车/空格 出候选)
+;      数字 1-9      直接选那个候选
+;      空格 / 回车   选当前候选
+;      左右键        挪选中项
+;      Esc / 退格    取消
+; ---------------------------------------------------------------------------
+.ime_letter:
+    mov ebx, [ime_len]
+    cmp ebx, IME_BUF_MAX - 1
+    jae .next
+    mov [ime_buf + ebx], al
+    inc dword [ime_len]
+    mov ebx, [ime_len]
+    mov byte [ime_buf + ebx], 0
+    call term_putc
+    jmp .next
+
+.ime_open:
+    mov esi, ime_buf
+    call ime_begin
+    test eax, eax
+    jz .ime_none
+    mov dword [ime_state], 1
+    call ime_show
+    jmp .next
+
+.ime_none:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_ime_none
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    call ime_reset
+    jmp .next
+
+.ime_toggle:
+    mov eax, [ime_on]
+    xor eax, 1
+    mov [ime_on], eax
+    mov dword [ime_state], 0
+    call ime_reset
+    jmp .next
+
+.ime_picking:
+    movzx eax, al
+    cmp eax, '1'
+    jb .ime_pick_special
+    cmp eax, '9'
+    ja .ime_pick_special
+    sub eax, '0'
+    dec eax
+    add eax, [ime_win]
+    call ime_pick
+    jmp .ime_pick_done
+.ime_pick_special:
+    cmp al, 32                            ; 空格 = 选定
+    je .ime_pick_sel
+    cmp al, 13                            ; 回车 = 选定
+    je .ime_pick_sel
+    cmp al, 8                             ; 退格 = 取消
+    je .ime_cancel
+    cmp al, 0x1B
+    je .ime_pick_arrow
+    jmp .next
+.ime_pick_sel:
+    mov eax, [ime_sel]
+    call ime_pick
+    jmp .ime_pick_done
+.ime_pick_arrow:
+    call kbd_avail                        ; 方向键 = ESC + (0x80|编号)
+    test eax, eax
+    jz .ime_cancel                        ; 光一个 Esc(或者没跟上)= 取消
+    push eax
+    call shell_wait_key
+    pop eax
+    cmp al, 0x83                          ; 左
+    je .ime_pick_left
+    cmp al, 0x84                          ; 右
+    je .ime_pick_right
+    jmp .ime_cancel
+.ime_pick_left:
+    mov eax, -1
+    call ime_move
+    jmp .next
+.ime_pick_right:
+    mov eax, 1
+    call ime_move
+    jmp .next
+.ime_cancel:
+    mov al, 10
+    call term_putc
+    call ime_reset
+.ime_pick_done:
+    mov dword [ime_state], 0
+    call ime_reset
     jmp .next
 
 .backspace:

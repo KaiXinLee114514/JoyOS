@@ -87,7 +87,7 @@ VI_OBJS     := $(addprefix $(BUILD)/vi/,$(notdir $(patsubst %.c,%.o,$(wildcard e
 
 PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS) $(C_PROGS))
 
-.PHONY: all run run-font hd hd32 ext ext-img run-ext subset test makefile-check test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check
+.PHONY: all run run-font hd hd32 ext ext-img run-ext subset test makefile-check test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check pinyin
 
 all: $(IMG) $(HDIMG)
 
@@ -170,7 +170,22 @@ $(BUILD)/bigdir/.stamp: | $(BUILD)
 # (比如 BIGDIR/F.TXT),根目录里的文件全乱(踩过)。
 BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 39),BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
 
+# 输入法用的拼音表:常用字 + 单字读音(wordfreq 按频次排、pypinyin 取读音)。
+# 需要 pypinyin/wordfreq 才有数据;装不上就生成一个空表(输入法自动关掉),不影响编译。
+PINYIN_BIN := $(BUILD)/PINYIN.BIN
+
+# 仓库里带了生成好的 progs/PINYIN.BIN(17 KB),没有 python 依赖也能编译。
+# 想换词表:装好 pypinyin + wordfreq 后跑 `make pinyin` 重新生成再提交。
+$(PINYIN_BIN): progs/PINYIN.BIN tools/mkpinyin.py | $(BUILD)
+	@cp progs/PINYIN.BIN $@ 2>/dev/null || python3 tools/mkpinyin.py 3500 $@ 2>/dev/null || \
+	    { echo "PINYIN.BIN: 没有词表也没有 python 依赖,生成空表(输入法会自己关掉)"; \
+	      printf 'PIME\000\000\000\000\000\000\000\000' > $@; }
+
+pinyin:
+	python3 tools/mkpinyin.py 3500 progs/PINYIN.BIN
+
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
+          $(PINYIN_BIN) \
           $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
           tools/mkimg.py tools/mkfat.py \
           $(BUILD)/bigdir/.stamp
@@ -178,7 +193,7 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
-	    RC.CONF=progs/RC.CONF \
+	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
@@ -192,7 +207,7 @@ hd: $(HDIMG)
 HD32IMG := $(BUILD)/joyos-hd32.img
 
 $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
+            $(PINYIN_BIN) $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
             tools/mkimg.py tools/mkfat.py \
             $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \
@@ -200,7 +215,7 @@ $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-jo
 	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
-	    RC.CONF=progs/RC.CONF \
+	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd32: $(HD32IMG)

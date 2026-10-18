@@ -297,6 +297,7 @@ COL_ERR    equ 0x0C                    ; 亮红
     xor ebx, ebx
     call evt_log
     call rc_load                         ; 读 + 解析 + 报一行
+    call ime_load                        ; 拼音输入法的字表(没有就安静地关掉)
     call rc_print_bootmsg                ; 配置里写了的开机提示
     call shell_apply_rc_style            ; RC.CONF 里写了 style = moe 就换提示符
     call rc_autostart                    ; autostart=YES 就把启用的服务跑一遍

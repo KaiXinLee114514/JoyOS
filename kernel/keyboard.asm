@@ -46,6 +46,7 @@ IRQ_BASE   equ 0x20                    ; 重映射后:IRQ0 = 0x20
 KBD_VECTOR equ IRQ_BASE + 1            ; 键盘 = IRQ1 = 0x21
 
 KBD_BUF_SIZE equ 64                    ; 必须是 2 的幂(取模用 and)
+KBD_IME_TOGGLE equ 0x1F                 ; 单独按一下 Shift 就塞这个字节(切中英)
 
 ; ---------------------------------------------------------------------------
 ;  kbd_init:重映射 PIC → 装中断入口 → 只放行键盘 → 开中断
@@ -151,6 +152,11 @@ keyboard_irq:
     je .ctrl_on
     cmp bl, 0x38                       ; 左 Alt:开始"码位输入"
     je .alt_on
+    ; ---- 这一下是"正经按键",记一笔:Shift 被用过了(松开时就不算切换输入法)----
+    cmp byte [shift_down], 0
+    je .no_shift_use
+    mov byte [shift_used], 1
+.no_shift_use:
     ; ---- Alt 按着的时候:数字键是在敲码位,不进正常缓冲 ----
     cmp byte [alt_down], 0
     je .not_alt_digit
@@ -273,8 +279,16 @@ keyboard_irq:
 
 .shift_on:
     mov byte [shift_down], 1
+    mov byte [shift_used], 0
     jmp .done
 .shift_off:
+    ; 只按了一下 Shift、没跟别的键 = 切换中英文输入法(和真输入法一个手感)
+    cmp byte [shift_used], 0
+    jne .shift_off_done
+    mov al, KBD_IME_TOGGLE
+    call kbd_push
+.shift_off_done:
+    mov byte [shift_used], 0
     mov byte [shift_down], 0
     jmp .done
 .ctrl_on:
@@ -567,7 +581,8 @@ sc_hi:
     db 0
     times 0x80 - ($ - sc_hi) db 0
 
-shift_down db 0
+shift_down db 0                       ; Shift 按着吗
+shift_used db 0                       ; 这一轮 Shift 被当成修饰键用过吗
 caps_down  db 0                        ; Caps Lock 状态(按一下翻一次)
 ctrl_down  db 0
 ext_pending db 0

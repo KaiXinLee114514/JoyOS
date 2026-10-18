@@ -1397,6 +1397,28 @@ def main() -> int:
             results.append(("style plain 换回 >", wait_for("prompt style: plain", 10.0),
                             "切回朴素样式,后面的用例不受影响"))
 
+            # ---- 拼音输入法:Shift 切中英、敲拼音、数字选字 ----
+            run("clear")
+            mon.sendkey("shift")                      # 切到中文
+            time.sleep(0.3)
+            mon.type_text("shuang")
+            time.sleep(0.4)
+            mon.sendkey("spc")                        # 空格出候选
+            time.sleep(1.0)
+            rescan()
+            results.append(("输入法:敲拼音出候选", has("1-9 pick") and has("1."),
+                            "Shift 切中文、打 shuang、空格 → 出现候选行"))
+            mon.sendkey("3")                          # 选第 3 个候选
+            time.sleep(1.0)
+            run("echo ime-ok")                        # 前面的汉字后面接命令
+            time.sleep(1.5)
+            rescan()
+            results.append(("输入法:数字选字进命令行", has("ime-ok"),
+                            "候选选出来的字进了命令行,后面的英文命令照常执行"))
+            mon.sendkey("shift")                      # 切回英文
+            time.sleep(0.3)
+            run("clear")
+
             # ---- 文本编辑器(EDIT.BIN)----
             run("run edit newfile.txt", wait=1.5)
             screen_now = screen_lines()
