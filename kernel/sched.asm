@@ -29,7 +29,7 @@
 ; ============================================================================
 
 SCHED_MAX         equ 6                 ; 最多几个线程(含 0 号 = shell 自己)
-TCB_SIZE          equ 32                ; 每个 TCB 32 字节 → 下标 ×32 = shl 5,好算
+TCB_SIZE          equ 40                ; 每个 TCB 40 字节(×40,见下面的 SHIFT_SIZE)
 TCB_ESP           equ 0                 ; 被切走时保存的 esp(指向它的现场)
 TCB_CR3           equ 4                 ; 它的页目录(程序在跑时可能是程序自己的)
 TCB_STATE         equ 8                 ; 见下面的 ST_*
@@ -37,6 +37,11 @@ TCB_TICKS         equ 12                ; 它一共拿到过几个 tick
 TCB_STACK         equ 16                ; 栈的物理基址(死了要还给页池)
 TCB_NAME          equ 20                ; 名字(给 ps 看的)
 TCB_RUNS          equ 24                ; 被调度上去过几次
+TCB_OWNER         equ 28                ; 它出生在哪条 shell 上(kill 时按这个找地址空间)
+; ★ 为什么要 ×40 而不是 ×32:TCB 原来正好 32 字节,于是全仓都用 `shl 5` 当下标步长。
+;   加一格之后 32 不够用了,再挪一格就又要动所有 shl —— 干脆用一个宏,
+;   以后加字段只改这一个地方(踩过:改完忘了 shl,TCB 全错位)。
+%define TCB_OFF(id) (((id) * TCB_SIZE))
 
 ST_EMPTY          equ 0                 ; 空槽
 ST_ALIVE          equ 1                 ; 活着
@@ -61,6 +66,7 @@ sched_init:
 
     mov edi, tcb_table
     mov dword [edi + TCB_STATE], ST_ALIVE
+    mov dword [edi + TCB_OWNER], 0
     mov dword [edi + TCB_NAME], nm_main
     mov dword [sched_cur], 0
     mov dword [sched_live], 1
@@ -95,7 +101,7 @@ sched_pick:
 
     ; ---- 1) 把当前线程的现场存好,顺手记一个 tick ----
     mov eax, [sched_cur]
-    shl eax, 5                          ; × TCB_SIZE
+    imul eax, TCB_SIZE                  ; × TCB_SIZE(40,不是 2 的幂)
     mov ebx, tcb_table
     add ebx, eax
     mov ecx, [sched_save_esp]
@@ -124,7 +130,7 @@ sched_pick:
     xor esi, esi
 .no_wrap:
     mov edx, esi
-    shl edx, 5
+    imul edx, TCB_SIZE
     add edx, tcb_table
     cmp dword [edx + TCB_STATE], ST_ALIVE
     jne .try_next
@@ -176,7 +182,7 @@ sched_spawn:
     xor esi, esi
 .find_slot:
     mov edx, esi
-    shl edx, 5
+    imul edx, TCB_SIZE
     add edx, tcb_table
     cmp dword [edx + TCB_STATE], ST_EMPTY
     je .got_slot
@@ -225,6 +231,7 @@ sched_spawn:
     mov dword [edx + TCB_STATE], ST_ALIVE
     mov dword [edx + TCB_TICKS], 0
     mov dword [edx + TCB_RUNS], 0
+    mov dword [edx + TCB_OWNER], 0       ; 出生地由调用方填(cmd_spawn)
     mov eax, [spawn_stack]
     mov [edx + TCB_STACK], eax
     mov eax, [spawn_name]
@@ -261,10 +268,16 @@ sched_kill:
     cmp eax, [sched_cur]
     je .bad
     mov ebx, eax
-    shl ebx, 5
+    imul ebx, TCB_SIZE
     add ebx, tcb_table
     cmp dword [ebx + TCB_STATE], ST_ALIVE
     jne .bad
+
+    ; ★ 先把它的 cr3 和"出生在哪条 shell"记下来再清槽 —— 调用方要拿 cr3 判断
+    ;   该不该拆那套程序地址空间(不然 kill 一个正在跑程序的线程,那套页目录
+    ;   和私有页表就漏在池子里了)。
+    mov eax, [ebx + TCB_CR3]
+    mov [kill_cr3], eax
 
     ; 还栈(杀的是别人,它此刻没在跑,放心还)
     mov eax, [ebx + TCB_STACK]
@@ -280,6 +293,7 @@ sched_kill:
     mov dword [ebx + TCB_TICKS], 0
     mov dword [ebx + TCB_RUNS], 0
     mov dword [ebx + TCB_NAME], nm_free
+    mov dword [ebx + TCB_OWNER], 0
     dec dword [sched_live]
     clc
     jmp .out
@@ -301,7 +315,7 @@ sched_name:
     cmp eax, SCHED_MAX
     jae .bad
     mov esi, tcb_table
-    shl eax, 5
+    imul eax, TCB_SIZE
     add esi, eax
     mov esi, [esi + TCB_NAME]
     clc
@@ -366,6 +380,16 @@ spawn_stack     dd 0
 
 demo_a          dd 0                    ; alpha 数到几
 demo_b          dd 0                    ; beta 数到几
+
+kill_cr3        dd 0
+
+; ---------------------------------------------------------------------------
+;  sched_kill_cr3:上一次 sched_kill 杀掉的线程当时用的页目录(0 = 没有)
+;  shell 靠它判断"该不该把程序的地址空间收摊" —— 见 cmd_kill。
+; ---------------------------------------------------------------------------
+sched_kill_cr3:
+    mov eax, [kill_cr3]
+    ret
 
 tcb_table       times SCHED_MAX * TCB_SIZE db 0
 

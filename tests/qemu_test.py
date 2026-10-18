@@ -58,6 +58,23 @@ class Monitor:
         finally:
             self.s.settimeout(10.0)
 
+    def _drain(self, budget: float = 0.05):
+        """把 monitor 里积压的旧回显读掉。
+
+        为什么要有这一步:测试要敲几百条命令,只要有一条的回显没读完,
+        残留就会被当成下一条的答复;更糟的是双方 socket 缓冲会互相堵满
+        (QEMU 等我们读、我们等 QEMU 读) —— 表现出来就是"卡死",查过一次很费劲。"""
+        try:
+            self.s.settimeout(budget)
+            while True:
+                try:
+                    if not self.s.recv(65536):
+                        break
+                except socket.timeout:
+                    break
+        except OSError:
+            pass
+
     def _write(self, data: bytes, tries: int = 6) -> bool:
         """往 monitor 写,带超时重试。
 
@@ -79,6 +96,7 @@ class Monitor:
           数据在流,超时就永远不触发 —— 测试无限等下去(卡死的老根因)。
           现在:最多等 budget 秒,而且一看到 (qemu) 提示符就认为答完了。"""
         self.buf = b""
+        self._drain()                     # 先排空残留,防止缓冲互相堵死
         self._write((line + chr(10)).encode())
         time.sleep(wait)
         deadline = time.time() + budget
@@ -139,6 +157,13 @@ class Monitor:
         if os.path.exists(path):
             os.unlink(path)
         self.cmd(f"screendump {path}", wait=1.0)
+        # QEMU 那边要是没写出来,这里会读到**上一张**旧图(假画面) —— 宁可报错也别骗自己
+        for _ in range(10):
+            if os.path.exists(path) and os.path.getsize(path) > 1000:
+                break
+            time.sleep(0.3)
+        else:
+            raise RuntimeError(f"screendump 没生成文件: {path}(monitor 可能卡住了)")
         return Image.open(path).convert("RGB")
 
     def screen(self) -> list[str]:
@@ -670,7 +695,24 @@ def main() -> int:
     failures = []
     try:
         mon = Monitor(sock, timeout=15)
-        time.sleep(2.0)                        # 等它启动完
+        # ★ 开机这几十行是内核一行行往 VBE 帧缓冲上画的(MMIO,一屏好几秒),
+        #   固定 2 秒在机器忙的时候**根本不够** —— 更糟的是后面那些没写 wait_idle
+        #   的段(比如 `run()` 的等待)会看到画面一直变、一直重试,整套就挂死在那儿,
+        #   最后只留下 build/screen-fail.png 里一张"刚开机"的屏幕(踩过)。
+        #   所以开局就等"画完了 + 最后一行在屏幕上"两件事都成立。
+        # ★ 抓屏本身是重活:guest 正一行行往 VBE 帧缓冲(MMIO)上画的时候,
+        #   连续 screendump 会把 QEMU 的 monitor 拖死(整套挂死、连 info registers
+        #   都不回 —— 踩过一次,查了两小时)。所以开局**先干等**,再少量、间隔大地试探。
+        time.sleep(7.0)              # 先干等:这段时间屏幕一直在变,抓屏纯属浪费
+        for _ in range(6):
+            try:
+                if find_text(mon.screendump(), 'type "help" for commands.',
+                             load_font(font_path), None):
+                    time.sleep(2.0)      # 让最后的提示符画完
+                    break
+            except Exception:
+                break
+            time.sleep(2.0)
 
         if qemu.poll() is not None:
             err = qemu.stderr.read().decode("utf-8", "replace")[:400]
@@ -868,6 +910,14 @@ def main() -> int:
             run("cat readme.txt", wait=0.6, idle=True)
             results.append(("cat 读得到正文", has("int 0x30"),
                             "README.TXT 里的 int 0x30(接口表)"))
+
+            # 2 KB 中文滚过好几屏之后,屏幕还必须"读得出来" —— 以前这里会花屏
+            # (滚屏后文字落不到 16 像素的格子线上,同一屏里出现两种相位)。
+            # 拿 uptime 的输出当探针:它只出现在**输出**里,不会跟命令行回显混。
+            run("uptime", wait=1.0)
+            results.append(("长中文滚屏之后屏幕还能读",
+                            wait_for("ticks at 100 Hz", 10.0),
+                            "cat 2 KB 中文滚过屏之后,新输出照样认得出来"))
 
             run("write test.txt hello-from-fat16")
             results.append(("write 写文件", has("wrote test.txt"), "wrote test.txt"))
@@ -1227,28 +1277,40 @@ def main() -> int:
             run("spawn", wait=0.6)              # beta
             time.sleep(2.0)
 
-            def ps_rows(tries=4):
+            def raw_cmd(text, wait=1.8):
+                """直接敲一条命令,不等屏幕静下来。
+
+                ★ 给"屏幕永远在变"的场景用:演示线程每秒打一行、HANG 在刷进度,
+                  这时候 run() 里的 wait_idle 要等满 15~25 秒才放弃 —— ps_rows
+                  就是被它拖到几乎跑不完的(一轮下来几分钟,看起来像卡死)。"""
+                mon.type_text(text)
+                mon.sendkey("ret")
+                time.sleep(wait)
+                rescan()
+
+            def ps_rows(tries=3):
                 """抓 ps:[编号] 名字 ticks=N。被线程插花了就 clear 重来。"""
                 got, head = [], False
                 for _ in range(tries):
-                    run("clear")
-                    run("ps", wait=1.0)
-                    # ps 那几行也是画出来的:轮询到 alpha/beta 两行都落屏为止
-                    for _ in range(15):
+                    raw_cmd("clear", 0.4)
+                    mon.type_text("ps")          # 自己敲,不等屏幕静止(线程一直在刷)
+                    mon.sendkey("ret")
+                    # 演示线程每秒打一行,**会插进 ps 输出中间**(实测把表头
+                    # 插成 "scheduled tialpha 6 ks= 1400"),而且 ps 那几行是
+                    # 一格一格画的。所以:短时间内多抓几张,把各张里认出来的
+                    # 行并起来看,凑够 alpha/beta 两行才算数。
+                    for _ in range(4):
+                        time.sleep(0.5)
                         rescan()
                         txt = ("\n".join(screen_text(shot, glyphs)) if graphics
                                else "\n".join(mon.screen()))
-                        if len(re.findall(r"\[(\d)\] (alpha|beta)\s+ticks=(\d+)", txt)) >= 2:
-                            break
-                        time.sleep(0.4)
-                    rescan()
-                    txt = ("\n".join(screen_text(shot, glyphs)) if graphics
-                           else "\n".join(mon.screen()))
-                    got = re.findall(r"\[(\d)\] (alpha|beta)\s+ticks=(\d+)", txt)
-                    head = "alive / 6 slots" in txt
-                    if len(got) >= 2 and head:
-                        break
-                    time.sleep(0.8)
+                        rows = re.findall(r"\[(\d)\] (alpha|beta)\s+ticks=(\d+)", txt)
+                        if len(rows) > len(got):
+                            got = rows
+                        if "alive / 6 slots" in txt:
+                            head = True
+                        if len(got) >= 2 and head:
+                            return got, head
                 return got, head
 
             rows, header_ok = ps_rows()
@@ -1320,6 +1382,20 @@ def main() -> int:
             run("echo back-after-hang", wait=1.2)
             results.append(("HANG 之后键盘还活着", wait_for("back-after-hang", 20.0),
                             "HANG 跑完之后 shell 1 照样收键盘(下面编辑器那串全靠它)"))
+
+            # ---- 提示符样式:style 命令(朴素/萌/DOS/C64)----
+            run("style", wait=1.0)
+            results.append(("style 报当前样式", wait_for("prompt style: plain", 10.0),
+                            "裸 style 打出现用样式"))
+            run("style dos", wait=1.0)
+            results.append(("style dos 换成 C:\\>", wait_for("C:\\>", 10.0),
+                            "DOS 样式提示符"))
+            run("style", wait=1.0)
+            results.append(("style 现在报 dos", wait_for("prompt style: dos", 10.0),
+                            "切完再问一次,回 dos"))
+            run("style plain", wait=1.0)
+            results.append(("style plain 换回 >", wait_for("prompt style: plain", 10.0),
+                            "切回朴素样式,后面的用例不受影响"))
 
             # ---- 文本编辑器(EDIT.BIN)----
             run("run edit newfile.txt", wait=1.5)

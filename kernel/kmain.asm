@@ -254,6 +254,22 @@ COL_ERR    equ 0x0C                    ; 亮红
     call term_print
 .fs_done:
 
+    ; ---- 软盘版说明 ----
+    ; 软盘镜像只有 boot + stub + kernel(没有 FAT 盘、没有字库盘、没有 RC.CONF),
+    ; 所以这里明说一句:想要完整功能请用硬盘版。
+    ; 判据是 BOOTINFO+72 的启动盘号(< 0x80 = 软盘)。
+    cmp byte [BOOTINFO + 72], 0x80
+    jae .not_floppy
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_floppy_edition
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    mov esi, msg_floppy_bye
+    call term_print                      ; 一句话告别:软盘这条线到此为止
+.not_floppy:
+
     ; ---- 键盘 ----
     call kbd_init
     mov esi, msg_kbd
@@ -282,6 +298,7 @@ COL_ERR    equ 0x0C                    ; 亮红
     call evt_log
     call rc_load                         ; 读 + 解析 + 报一行
     call rc_print_bootmsg                ; 配置里写了的开机提示
+    call shell_apply_rc_style            ; RC.CONF 里写了 style = moe 就换提示符
     call rc_autostart                    ; autostart=YES 就把启用的服务跑一遍
                                          ; (放在 sched_enable 之前:跑服务时还没别的东西抢 CPU)
 
@@ -755,6 +772,8 @@ msg_font_glyphs  db ' glyphs', 10, 0
 msg_fs      db 'fat16: ', 0
 msg_fs_ok   db 'mounted at LBA 6144 (ls / cat / write / run)', 10, 0
 msg_fs_none db 'not available (floppy boot?)', 10, 0
+msg_floppy_edition db 'floppy edition: minimal - use the hard disk image for the full system', 10, 0
+msg_floppy_bye db 'Goodbye Floppy disk', 10, 0
 msg_fs32    db 'fat32: mounted at LBA 6144 (BPB 里的 f16 扇区数 = 0 → 32 位 FAT,根目录是簇链)', 10, 0
 msg_ok      db 'OK - stage 5: boot + protection + IDT + paging + keyboard + shell.', 10, 0
 

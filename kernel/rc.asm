@@ -134,6 +134,8 @@ rc_parse:
 .check:
     cmp al, 10                      ; 空行
     je .next_line
+    test al, al                     ; 缓冲区里的 0 也当行尾(解析时会往里写 0)
+    je .next_line
     cmp al, '#'                     ; 注释
     je .to_eol
     mov [rc_kstart], esi            ; 这一行的 key 从这里开始

@@ -171,7 +171,7 @@ $(BUILD)/bigdir/.stamp: | $(BUILD)
 BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 39),BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
 
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT \
+          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
           tools/mkimg.py tools/mkfat.py \
           $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
@@ -192,7 +192,7 @@ hd: $(HDIMG)
 HD32IMG := $(BUILD)/joyos-hd32.img
 
 $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT \
+            $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
             tools/mkimg.py tools/mkfat.py \
             $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \

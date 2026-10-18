@@ -91,24 +91,143 @@ shell_main:
     jmp .loop
 
 ; ---------------------------------------------------------------------------
-;  shell_print_prompt:活动 shell 的提示符(1 号是 "> ",别的打 "2> ")
+;  shell_print_prompt:活动 shell 的提示符
+;
+;  样式放在 [sh_style] 里(0 = 朴素,1 = 萌,2 = DOS,3 = C64):
+;     0:  >            2:  C:\>
+;     1:  じょいおす>   3:  READY.   (C64 BASIC 那味儿)
+;  用 `style` 命令现场切换,或者在 RC.CONF 里写 style = moe 让它开机就生效
+;  (见 shell_apply_rc_style)。多 shell 的编号在朴素/萌样式里照旧带出来。
 ; ---------------------------------------------------------------------------
 shell_print_prompt:
+    pushad
+    cmp dword [sh_style], 3
+    je .c64
+    cmp dword [sh_style], 2
+    je .dos
+    cmp dword [sh_style], 1
+    je .moe
+
+    ; ---- 0:朴素 ----
     mov al, COL_HEADER
     call term_set_color
     cmp byte [cwd_str], 0
-    je .arrow
+    je .p_arrow
     mov esi, cwd_str
     call term_print
-.arrow:
+.p_arrow:
     mov eax, [sh_active]
     test eax, eax
-    jz .plain
+    jz .p_mark
     inc eax
     call term_print_dec
-.plain:
+.p_mark:
     mov esi, msg_prompt
     call term_print
+    jmp .done
+
+.moe:
+    mov al, 0x0D                       ; 亮粉
+    call term_set_color
+    mov esi, msg_prompt_moe
+    call term_print
+    cmp byte [cwd_str], 0
+    je .m_num
+    mov esi, cwd_str
+    call term_print
+.m_num:
+    mov eax, [sh_active]
+    test eax, eax
+    jz .m_mark
+    inc eax
+    call term_print_dec
+.m_mark:
+    mov esi, msg_prompt
+    call term_print
+    jmp .done
+
+.dos:
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_prompt_dos
+    call term_print
+    cmp byte [cwd_str], 0
+    je .d_mark
+    mov esi, cwd_str
+    call term_print
+.d_mark:
+    mov esi, msg_prompt_dos_end
+    call term_print
+    jmp .done
+
+.c64:
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_prompt_c64
+    call term_print
+
+.done:
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  shell_apply_rc_style:开机时按 RC.CONF 的 style 设一次(没写就保持朴素)
+; ---------------------------------------------------------------------------
+shell_apply_rc_style:
+    pushad
+    mov esi, key_style
+    call rc_get
+    test eax, eax
+    jz .out
+    mov esi, eax
+    ; 值可能带引号/空格,直接按前缀比:mo->1 / do->2 / c6->3 / pl->0
+    mov al, [esi]
+    cmp al, 'm'
+    je .moe
+    cmp al, 'M'
+    je .moe
+    cmp al, 'd'
+    je .dos
+    cmp al, 'D'
+    je .dos
+    cmp al, 'c'
+    je .c64
+    cmp al, 'C'
+    je .c64
+    jmp .out
+.moe:
+    mov dword [sh_style], 1
+    jmp .out
+.dos:
+    mov dword [sh_style], 2
+    jmp .out
+.c64:
+    mov dword [sh_style], 3
+.out:
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  shell_msg_nofile:"文件找不到"。朴素样式一行;萌样式换成一句吐槽
+; ---------------------------------------------------------------------------
+shell_msg_nofile:
+    pushad
+    mov al, COL_ERR
+    call term_set_color
+    cmp dword [sh_style], 1
+    jne .plain
+    mov esi, msg_no_file_moe
+    call term_print
+    jmp .out
+.plain:
+    mov esi, msg_no_file
+    call term_print
+.out:
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
     ret
 
 ; ---------------------------------------------------------------------------
@@ -199,6 +318,13 @@ shell_spawn_extra:
     mov ebx, [ebx + ebp * 4]
     call sched_spawn
     jc .done                            ; 页池空了就只能少起几条
+    ; ★ 记下它的出生地(0 号主 shell)。sched_spawn 会冲掉寄存器,所以先从 ebp 取。
+    ;   ⚠️ `sched_cur` 是内存变量,不是函数 —— `call sched_cur` 会跳进数据区
+    ;   (EIP 落在 sched_cur 自己的存储上,CR2=0x38000004 页错误 panic)(踩过)。
+    mov ecx, [sched_cur]
+    imul eax, TCB_SIZE
+    add eax, tcb_table
+    mov [eax + TCB_OWNER], ecx
     inc ebp
     jmp .next
 .done:
@@ -547,8 +673,15 @@ shell_execute:
 .unknown:
     mov al, COL_ERR
     call term_set_color
+    cmp dword [sh_style], 1
+    jne .unknown_plain
+    mov esi, msg_shell_unknown_moe
+    call term_print
+    jmp .unknown_name
+.unknown_plain:
     mov esi, msg_shell_unknown
     call term_print
+.unknown_name:
     mov esi, shell_buf
     call term_print
     mov al, 10
@@ -1036,10 +1169,7 @@ cmd_cat:
     call term_print
     ret
 .notfound:
-    mov al, COL_ERR
-    call term_set_color
-    mov esi, msg_no_file
-    call term_print
+    call shell_msg_nofile
     ret
 
 ; ---------------------------------------------------------------------------
@@ -1364,10 +1494,7 @@ cmd_run:
     call term_print
     ret
 .notfound:
-    mov al, COL_ERR
-    call term_set_color
-    mov esi, msg_no_file
-    call term_print
+    call shell_msg_nofile
     ret
 .toobig:
     mov al, COL_ERR
@@ -2111,7 +2238,7 @@ cmd_ps:
     mov eax, [ps_i]
     cmp eax, SCHED_MAX
     jae .done
-    shl eax, 5
+    imul eax, TCB_SIZE
     add eax, tcb_table
     cmp dword [eax + TCB_STATE], ST_EMPTY
     je .skip
@@ -2123,21 +2250,21 @@ cmd_ps:
     mov esi, msg_ps_name
     call term_print
     mov eax, [ps_i]
-    shl eax, 5
+    imul eax, TCB_SIZE
     add eax, tcb_table
     mov esi, [eax + TCB_NAME]
     call term_print
     mov esi, msg_ps_ticks
     call term_print
     mov eax, [ps_i]
-    shl eax, 5
+    imul eax, TCB_SIZE
     add eax, tcb_table
     mov eax, [eax + TCB_TICKS]
     call term_print_dec
     mov esi, msg_ps_runs
     call term_print
     mov eax, [ps_i]
-    shl eax, 5
+    imul eax, TCB_SIZE
     add eax, tcb_table
     mov eax, [eax + TCB_RUNS]
     call term_print_dec
@@ -2205,7 +2332,17 @@ cmd_spawn:
 .do:
     call sched_spawn
     jc .full
-    mov [spawn_id], eax
+    ; ★ 新线程记下自己出生在哪条 shell 上(杀它的时候好按 cr3 找该收摊的地址空间 ——
+    ;   以前 kill 只把 prog_owner 抹了,那套页目录/私有页表就漏在池子里了)。
+    ;   ⚠️ `sched_cur` 是**内存里的一个变量**(dd),不是函数 —— 写成 `call sched_cur`
+    ;   就是往数据区里跳:CPU 在那儿执行零字节,一路跑过 sched_live / sched_ticks,
+    ;   最后 EIP=0x1D1BA(正好落在 sched_cur 自己的存储上)、CR2=0x38000004 页错误 panic(踩过)。
+    mov eax, [sched_cur]
+    mov ebx, [spawn_id]
+    imul ebx, TCB_SIZE
+    add ebx, tcb_table
+    mov [ebx + TCB_OWNER], eax
+    mov eax, [spawn_id]
     mov al, COL_OK
     call term_set_color
     mov esi, msg_spawn_ok
@@ -2250,7 +2387,7 @@ cmd_kill:
     cmp eax, SCHED_MAX
     jae .none
     mov ebx, eax
-    shl ebx, 5
+    imul ebx, TCB_SIZE
     add ebx, tcb_table
     cmp dword [ebx + TCB_STATE], ST_ALIVE
     jne .none
@@ -2261,15 +2398,33 @@ cmd_kill:
     mov eax, [kill_id]
     call sched_kill
     jc .none
-    ; 它要是正在跑程序,把"一次一个"的锁放掉(那套地址空间就漏了,见 known-issues)
-    mov eax, EV_KILL                    ; 事件账本:谁被杀了
-    mov ebx, [kill_id]
-    call evt_log
+    ; ★ 它要是正在跑程序(kill 之前它占着"一次一个"的那套地址空间),
+    ;   得看它跑的是不是**现在**这套:cr3 一样才是,那就收摊、把页还回池子,
+    ;   再把锁放掉。以前只把 prog_owner 抹了 ⇒ 那套页目录 + 私有页表漏在池子里
+    ;   (症状:反复 run HANG 再 kill,`debug pmem` 的空闲页数一路往下掉)。
+    call sched_kill_cr3
+    test eax, eax
+    jz .not_owner
+    cmp eax, [space_pd]
+    jne .not_owner
+    call space_destroy                 ; eax = 还回去的页数
+    mov [kill_freed], eax
+    mov dword [prog_owner], -1
+    mov al, COL_NORMAL
+    call term_set_color
+    mov esi, msg_kill_pages1
+    call term_print
+    mov eax, [kill_freed]
+    call term_print_dec
+    mov esi, msg_kill_pages2
+    call term_print
+    jmp .after_clean
+.not_owner:
     mov eax, [kill_id]
     cmp eax, [prog_owner]
-    jne .not_owner
+    jne .after_clean
     mov dword [prog_owner], -1
-.not_owner:
+.after_clean:
     mov al, COL_OK
     call term_set_color
     mov esi, msg_kill_ok
@@ -2451,8 +2606,97 @@ n_fmt_ymd  db 'ymd', 0
 n_fmt_mdy  db 'mdy', 0
 n_fmt_dmy  db 'dmy', 0
 n_fmt_time db 'time', 0
+n_style    db 'style', 0
+n_style_plain db 'plain', 0
+n_style_moe   db 'moe', 0
+n_style_dos   db 'dos', 0
+n_style_c64   db 'c64', 0
 msg_date_usage db 'date: unknown format, try ymd / mdy / dmy / time (got: ', 0
 msg_date_usage_end db ')', 0
+
+; ---------------------------------------------------------------------------
+;  cmd_style:看/切换提示符样式(style / style plain|moe|dos|c64)
+; ---------------------------------------------------------------------------
+cmd_style:
+    mov esi, [cmd_arg]
+    call strip_name
+    mov esi, [cmd_arg]
+    cmp byte [esi], 0
+    je .show
+
+    mov edi, esi
+    xor ecx, ecx
+.len:
+    cmp byte [edi], 0
+    je .len_done
+    inc edi
+    inc ecx
+    jmp .len
+.len_done:
+    mov edx, n_style_plain
+    call str_eq
+    test eax, eax
+    jnz .set_plain
+    mov esi, [cmd_arg]
+    mov edx, n_style_moe
+    call str_eq
+    test eax, eax
+    jnz .set_moe
+    mov esi, [cmd_arg]
+    mov edx, n_style_dos
+    call str_eq
+    test eax, eax
+    jnz .set_dos
+    mov esi, [cmd_arg]
+    mov edx, n_style_c64
+    call str_eq
+    test eax, eax
+    jnz .set_c64
+    jmp .usage
+
+.set_plain:
+    mov dword [sh_style], 0
+    jmp .ok
+.set_moe:
+    mov dword [sh_style], 1
+    jmp .ok
+.set_dos:
+    mov dword [sh_style], 2
+    jmp .ok
+.set_c64:
+    mov dword [sh_style], 3
+.ok:
+    mov al, COL_OK
+    call term_set_color
+    mov esi, msg_style_set
+    call term_print
+    call shell_print_prompt
+    mov al, 10
+    call term_putc
+    mov al, COL_NORMAL
+    call term_set_color
+    ret
+
+.show:
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_style_cur
+    call term_print
+    mov eax, [sh_style]
+    mov esi, [style_names + eax*4]
+    call term_print
+    mov al, COL_NORMAL
+    call term_set_color
+    mov esi, msg_style_list
+    call term_print
+    ret
+
+.usage:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_style_usage
+    call term_print
+    ret
 
 cmd_table:
     dd n_help,   cmd_help
@@ -2472,6 +2716,7 @@ cmd_table:
     dd n_uptime, cmd_uptime
     dd n_sleep,  cmd_sleep
     dd n_date,   cmd_date
+    dd n_style,  cmd_style
     dd n_pci,    cmd_pci
     dd n_shell,  cmd_shell
     dd n_ps,     cmd_ps
@@ -2492,6 +2737,7 @@ ps_i            dd 0                   ; ps 的循环下标(调用会碰寄存�
 spawn_id        dd 0                   ; 刚起的线程号
 kill_id         dd 0                   ; 要杀的线程号
 kill_name       dd 0                   ; 杀之前先记下的名字
+kill_freed      dd 0                   ; 顺手收摊时还回去的页数
 msg_mkdir_ok    db 'created directory ', 0
 msg_mkdir_bad   db 'mkdir failed (already exists or disk full)', 10, 0
 msg_mkdir_use   db 'usage: mkdir <dir>', 10, 0
@@ -2504,6 +2750,21 @@ msg_rm_bad      db 'rm failed (no such file; use rmdir for directories)', 10, 0
 msg_rm_isdir    db 'rm: that is a directory, use rmdir', 10, 0
 msg_rm_use      db 'usage: rm <file>', 10, 0
 msg_shell_unknown db 'unknown command: ', 0
+msg_shell_unknown_moe db '(ﾟーﾟ;) ん? そんなコマンド知らない... ', 0
+msg_no_file_moe  db '(ﾟーﾟ) あれ? file がないよ... disk-tan が食べちゃった? (file not found)', 10, 0
+
+; ---- 提示符样式(style 命令 / RC.CONF 的 style 键)----
+sh_style        dd 0                     ; 0=朴素 1=萌 2=DOS 3=C64
+style_names     dd n_style_plain, n_style_moe, n_style_dos, n_style_c64
+msg_prompt_moe      db 'じょいおす', 0
+msg_prompt_dos      db 'C:\', 0
+msg_prompt_dos_end  db '> ', 0
+msg_prompt_c64      db 'READY.', 10, 0
+msg_style_cur       db 'prompt style: ', 0
+msg_style_list      db '   (style plain|moe|dos|c64 换样式;RC.CONF 里写 style = moe 开机生效)', 10, 0
+msg_style_set       db 'prompt style -> ', 0
+msg_style_usage     db 'style: usage style plain|moe|dos|c64', 10, 0
+key_style           db 'style', 0
 msg_fault       db 'touching an unmapped address on purpose...', 10, 0
 msg_reboot      db 'rebooting...', 10, 0
 msg_reboot_fail db '8042 did not reset, trying triple fault...', 10, 0
@@ -2551,6 +2812,9 @@ msg_kill_rp    db ')', 10, 0
 msg_kill_self  db 'kill: thread 0 is the shell itself, cannot kill that', 10, 0
 msg_kill_none  db 'kill: no such thread', 10, 0
 msg_kill_usage db 'usage: kill <id>  (get ids from ps)', 10, 0
+; kill 掉一个正在跑程序的线程时,顺手把它那套地址空间收摊(页还回物理页池)
+msg_kill_pages1 db '  (its address space: ', 0
+msg_kill_pages2 db ' pages back to the pool)', 10, 0
 
 msg_help db \
     'help          show this list', 10, \
@@ -2561,6 +2825,7 @@ msg_help db \
     'uptime        how long the PIT has been ticking', 10, \
     'sleep <sec>   sleep N seconds (hlt while waiting, max 3600)', 10, \
     'date [fmt]    read the CMOS clock: no arg = full, or ymd / mdy / dmy / time', 10, \
+    'style [name]  prompt style: plain / moe / dos / c64 (RC.CONF: style = moe)', 10, \
     'pci [b:s.f]   list the PCI devices on bus 0, or show one in detail', 10, \
     'ps            list scheduler threads (id / name / ticks / runs)', 10, \
     'spawn [who]   start a demo kernel thread (no arg = alpha, then beta)', 10, \
