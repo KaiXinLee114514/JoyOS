@@ -123,67 +123,31 @@ fb_blit:
     mov [blit_w], ecx
     mov [blit_color], edx
 
-    ; ---- 先涂黑这块矩形(相当于"擦掉原来的字")----
-    xor ebp, ebp                        ; 行
-.bg_row:
-    mov edi, [fb_phys]
-    mov eax, [fb_pitch]
-    mov ecx, [blit_y]
-    add ecx, ebp
-    imul eax, ecx
-    add edi, eax
-    mov eax, [blit_x]
-    lea edi, [edi + eax * 4]
-    mov ecx, [blit_w]
-    xor eax, eax
-    rep stosd                           ; ★ 整行一次写完(逐像素写会把 QEMU/VBox 压死)
-    inc ebp
-    cmp ebp, FB_CELL_H
-    jb .bg_row
-
-    ; ---- 再画有点的像素:一行一行拼(RAM),一行一行写(显存)----
-    ;   ★ 为什么不能一个像素一个 mov [edi], eax:帧缓冲是 MMIO,每个像素都是一次
-    ;     虚拟机退出。画一屏中文就是几百万次 —— QEMU/VBox 都被压到连 monitor
-    ;     都不回话(测试里表现成"卡住、无输出")。改成:在普通内存里拼好一整行,
-    ;     再用 rep movsd 一发写过去,MMIO 次数少一个数量级。
+    ; ---- 再画有点的像素:查表展开 ----
+    ;   ★ 以前是"每一行 16 次 逐位判断(shl/test/存)" —— 一个字 256 次循环,
+    ;     一屏中文几万次分支。现在:一张 256 项的表把"一个字节"直接翻译成 8 个
+    ;     像素掩码(0 或 0xFFFFFFFF),再 and 上颜色就完事,循环里没有分支。
+    ;   掩码为 0 的地方自然写成黑色,所以上面那趟"铺黑底"可以省掉了。
     xor ebp, ebp                        ; 行号
 .row:
     mov esi, [blit_data]
+    mov edx, [blit_color]
+    mov edi, fb_rowbuf
     cmp dword [blit_w], 8
     jne .wide
-    movzx eax, byte [esi + ebp]         ; 8 宽:每行 1 字节
-    shl eax, 8                          ; 挪到高位,和 16 宽统一用 bit15 开始判断
-    mov ecx, 8
-    jmp .draw
+    movzx eax, byte [esi + ebp]         ; 8 宽:1 字节 = 8 个像素
+    call .byte8
+    jmp .row_done
 .wide:
-    movzx eax, word [esi + ebp * 2]     ; 16 宽:每行 2 字节
-    rol ax, 8                           ; ★ 把左右两半换回来:低地址那个字节才是左半边,
-    ;                                    而它在这个 16 位字里是**低位**,不换的话
-    ;                                    笔画会左右颠倒(bit15 是右半边的最高位)
-    mov ecx, 16
-.draw:
-    ; eax = 该行的位图,ecx = 位数,从最高位开始画
-    mov ebx, [blit_color]               ; 笔画颜色(下面要腾出 edx/ecx)
+    movzx eax, word [esi + ebp * 2]     ; 16 宽:2 字节 = 16 个像素
+    rol ax, 8                           ; 低地址的字节是左半边
     push eax
-    push ecx
-    mov edi, fb_rowbuf                  ; 先在 RAM 里铺 16 格黑底
-    xor eax, eax
-    mov ecx, 16
-    rep stosd
-    pop ecx
+    shr eax, 8                          ; 高字节 → 左边 8 格
+    call .byte8
     pop eax
-    mov edx, ecx                        ; edx = 剩余位数
-    mov edi, fb_rowbuf
-.bit:
-    test eax, 0x8000                    ; 用 16 位判断,8 宽时高位自然是 0
-    jz .next_bit
-    mov ecx, [blit_w]                   ; 当前列 = 总列数 - 剩余位数
-    sub ecx, edx
-    mov [edi + ecx * 4], ebx            ; 普通内存写,不是 MMIO
-.next_bit:
-    shl eax, 1
-    dec edx
-    jnz .bit
+    and eax, 0xFF                       ; 低字节 → 右边 8 格
+    call .byte8
+.row_done:
     ; ---- 这一行整发写进显存 ----
     mov edi, [fb_phys]
     mov ecx, [blit_y]
@@ -201,6 +165,40 @@ fb_blit:
 
     popad
     ret
+
+; ---- 把 al 里的一个字节展开成 8 个像素,写到 [edi](写 8 个 dword)----
+;   edx = 颜色,edi 自动前进 32 字节;表 fb_mask8 每项 8 个 dword
+.byte8:
+    movzx ecx, al
+    shl ecx, 5                          ; 每项 8 dword = 32 字节
+    add ecx, fb_mask8
+    mov eax, [ecx + 0]
+    and eax, edx
+    mov [edi + 0], eax
+    mov eax, [ecx + 4]
+    and eax, edx
+    mov [edi + 4], eax
+    mov eax, [ecx + 8]
+    and eax, edx
+    mov [edi + 8], eax
+    mov eax, [ecx + 12]
+    and eax, edx
+    mov [edi + 12], eax
+    mov eax, [ecx + 16]
+    and eax, edx
+    mov [edi + 16], eax
+    mov eax, [ecx + 20]
+    and eax, edx
+    mov [edi + 20], eax
+    mov eax, [ecx + 24]
+    and eax, edx
+    mov [edi + 24], eax
+    mov eax, [ecx + 28]
+    and eax, edx
+    mov [edi + 28], eax
+    add edi, 32
+    ret
+
 .skip:
     popad
     ret
@@ -451,6 +449,264 @@ pa_cells        dd 1
 blit_x          dd 0
 blit_y          dd 0
 blit_w          dd 8
+fb_mask8:                           ; 字节 → 8 个像素掩码(0 或 0xFFFFFFFF)
+    dd 0, 0, 0, 0, 0, 0, 0, 0
+    dd 0, 0, 0, 0, 0, 0, 0, 0xFFFFFFFF
+    dd 0, 0, 0, 0, 0, 0, 0xFFFFFFFF, 0
+    dd 0, 0, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0, 0, 0, 0xFFFFFFFF, 0, 0
+    dd 0, 0, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0, 0, 0xFFFFFFFF, 0, 0, 0
+    dd 0, 0, 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0, 0xFFFFFFFF, 0, 0, 0, 0
+    dd 0, 0, 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF
+    dd 0, 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0
+    dd 0, 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0
+    dd 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0
+    dd 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0
+    dd 0, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0
+    dd 0, 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0
+    dd 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0
+    dd 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0
+    dd 0, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0, 0
+    dd 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0, 0
+    dd 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0, 0
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0, 0, 0, 0, 0
+    dd 0xFFFFFFFF, 0, 0, 0, 0, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0, 0, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0, 0, 0
+    dd 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0, 0, 0
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0, 0xFFFFFFFF
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0
+    dd 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF
+
 blit_color      dd 0
 blit_data       dd 0
 want_cp         dd 0
