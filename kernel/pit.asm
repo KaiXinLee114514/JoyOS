@@ -117,6 +117,7 @@ pit_wait_ticks:
     call pit_get_ticks
     add ecx, eax                        ; edx = 到点时的 tick 数
     mov edx, ecx
+    call fb_flush                       ; ★ 睡之前把行缓冲里没刷的字刷上屏
 .wait:
     hlt
     call pit_get_ticks

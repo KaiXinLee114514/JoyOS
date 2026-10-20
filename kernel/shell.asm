@@ -727,6 +727,7 @@ shell_wait_key:
     jne .drop
     ret
 .sleep:
+    call fb_flush                         ; ★ 等键之前把行缓冲刷上屏
     hlt                                   ; 键盘/定时器中断都会把这里叫醒
     jmp shell_wait_key
 .gone:

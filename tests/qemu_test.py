@@ -987,8 +987,11 @@ def main() -> int:
                             "page beyond the file (bss at 0x184000): was zero, as it should be"))
 
             run("debug pmem")
-            results.append(("程序退出后页池没泄漏", has("free: 3066 pages"),
-                            "free: 3066 pages"))
+            # 3072 - 6 = 3066 是老基线:帧缓冲终端的"当前行"缓冲要在 fb_init 里
+            # 常驻 13 页(52 KiB,逐字直写退路不要),所以现在固定占用 19 页 → 3053。
+            # 这条断言要抓的是"跑完程序没泄漏",数字只是当前基线,常驻量变了就跟着改。
+            results.append(("程序退出后页池没泄漏", has("free: 3053 pages"),
+                            "free: 3053 pages(6 页常驻 + 行缓冲 13 页)"))
 
             # ---- 定时器(PIT):tick 在涨、uptime 读得到、sleep 真的等够 ----
             def uptime_ticks() -> int:
@@ -1332,8 +1335,8 @@ def main() -> int:
             results.append(("kill 0 被拒", has("cannot kill"),
                             "0 号是 shell 自己,杀不掉"))
             run("debug pmem", wait=1.2)
-            results.append(("线程栈还回页池", has("free: 3066 pages"),
-                            "kill 完页池还是 3066 页空闲"))
+            results.append(("线程栈还回页池", has("free: 3053 pages"),
+                            "kill 完页池还是 3053 页空闲(行缓冲 13 页常驻)"))
             run("echo after-sched", wait=0.8)
             results.append(("调度器没弄死 shell", has("after-sched"),
                             "线程起起落落之后 shell 照常响应"))

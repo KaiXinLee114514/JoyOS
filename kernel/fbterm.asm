@@ -17,6 +17,9 @@
 ; ============================================================================
 
 FB_CELL_H   equ 16                      ; 字符格高(像素)
+FB_LINE_PAGES equ 13                    ; 行缓冲要的页数:13 × 4096 = 53248 B
+                                        ;   (800 像素 × 16 扫描行 × 4 B = 51200 B,
+                                        ;    多要的那一页是给 pitch 留的余量)
 
 ; ---------------------------------------------------------------------------
 ;  fb_color_of:属性字节(和文本模式一样的 0x0B 那种)→ 0x00RRGGBB
@@ -65,6 +68,11 @@ fb_clear:
     pop ecx
     dec ecx
     jnz .row
+    ; ★ 行缓冲里攒的东西现在和显存对不上了 —— 但整屏都要黑,没必要刷,
+    ;   直接作废(脏标志清零 + 行号失效,下一笔字来了重新认领)。
+    ;   千万**不能**留着脏标志:留着的话下次刷的时候会把擦屏前的旧像素
+    ;   糊回干净的屏幕上(现象:清屏之后屏幕上还挂着半行字)。
+    call fb_lb_forget
     call fb_home
     popad
     ret
@@ -74,6 +82,8 @@ fb_clear:
 ; ---------------------------------------------------------------------------
 fb_scroll:
     pushad
+    call fb_flush                       ; ★ 先把当前行落盘:要滚的是显存里的东西,
+                                        ;   脏着滚就等于把最后一行扔了
     mov esi, [fb_phys]
     mov eax, [fb_pitch]
     imul eax, FB_CELL_H
@@ -97,6 +107,86 @@ fb_scroll:
     imul ecx, FB_CELL_H
     xor eax, eax
     rep stosd
+    ; 滚过之后,缓冲里那一行已经不是显存里的那一行了(显存整体上移了一行)——
+    ; 脏标志和行号都作废。虽然刚刷过(dirty=0),但行号必须失效,
+    ; 否则光标落回最后一行时会被错当成"还在缓冲里",把旧像素刷到底行去。
+    call fb_lb_forget
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  fb_lb_forget:丢掉行缓冲的记账(脏标志清零 + 行号失效)
+;  用在"显存被整块改掉"的地方(擦屏、滚屏):缓冲里的内容不再可信。
+; ---------------------------------------------------------------------------
+fb_lb_forget:
+    pushad
+    mov dword [fb_dirty_line], 0
+    mov dword [fb_lb_row], -1
+    mov eax, [fb_width]
+    mov [fb_lb_x0], eax                 ; 脏区清成空区间(起点 = 屏宽,终点 = 0)
+    mov dword [fb_lb_x1], 0
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  fb_flush:把行缓冲里"脏"的那一段刷进显存
+;
+;  行缓冲模式下**这是唯一的显存出口**:平时画字只往 RAM 里写,到这里才把
+;  "这一行里被改过的那段横坐标区间 × 16 个扫描行"一次性搬过去:
+;      每扫描行一次 rep movsd,共 16 次
+;  对比以前:每个字就要 16 次 32/64 字节的散写 —— 一行 40 个字就是 640 次。
+;  搬的字节数差不多,但**段数**从"每字 16 段"降到"每行 16 段",而且每段
+;  长得多(整行的 4~3200 字节,而不是 32 字节),在 QEMU 的 TCG 里差好几倍。
+;
+;  只刷"脏段"而不是整行 3200 字节:画的字都在游标走过的区间里,
+;  区间的左右边界在 fb_blit 里顺手记下来(见 fb_lb_x0 / fb_lb_x1)。
+;  这样既不碰屏幕上没画过的像素(不会把背景糊掉),字节数也更省。
+;
+;  没有行缓冲(页池要不到 52 KiB → 退回逐字直写)或没有脏数据时,直接返回。
+; ---------------------------------------------------------------------------
+fb_flush:
+    pushad
+    cmp dword [fb_dirty_line], 0
+    je .out
+    mov dword [fb_dirty_line], 0        ; 先清标志:下面就算是空区间也不会再刷
+    mov esi, [fb_lb_base]
+    test esi, esi
+    jz .out
+    mov ebx, [fb_lb_x1]
+    sub ebx, [fb_lb_x0]                 ; 脏段宽度(像素 = dword 数)
+    jbe .reset
+
+    ; ---- 源:缓冲只装"当前这一行",所以永远是缓冲开头 + x0 像素 ----
+    ;   (这里**不能**再加行号 × 16 × pitch 的偏移:缓冲里只有一行,
+    ;    加了就等于去读分配区外面的野内存 —— 现象是只有第 0 行能显示。)
+    mov eax, [fb_lb_x0]
+    lea esi, [esi + eax * 4]
+    ; ---- 目标:显存里同一行同一段 ----
+    mov edi, [fb_phys]
+    mov eax, [fb_lb_row]
+    shl eax, 4
+    imul eax, [fb_pitch]
+    add edi, eax
+    mov eax, [fb_lb_x0]
+    lea edi, [edi + eax * 4]
+    ; ---- 16 个扫描行,每行一次 rep movsd ----
+    mov ebp, FB_CELL_H
+.row:
+    mov ecx, ebx
+    push esi
+    push edi
+    rep movsd
+    pop edi
+    pop esi
+    add esi, [fb_pitch]
+    add edi, [fb_pitch]
+    dec ebp
+    jnz .row
+.reset:
+    mov eax, [fb_width]
+    mov [fb_lb_x0], eax
+    mov dword [fb_lb_x1], 0
+.out:
     popad
     ret
 
@@ -123,16 +213,60 @@ fb_blit:
     mov [blit_w], ecx
     mov [blit_color], edx
 
-    ; ---- 再画有点的像素:查表展开 ----
-    ;   ★ 以前是"每一行 16 次 逐位判断(shl/test/存)" —— 一个字 256 次循环,
-    ;     一屏中文几万次分支。现在:一张 256 项的表把"一个字节"直接翻译成 8 个
-    ;     像素掩码(0 或 0xFFFFFFFF),再 and 上颜色就完事,循环里没有分支。
-    ;   掩码为 0 的地方自然写成黑色,所以上面那趟"铺黑底"可以省掉了。
+    ; ---- 目标:行缓冲(有的话)还是显存 ----
+    ;   ★ 有行缓冲时,字先画进 RAM 里的"当前行"(13 页 = 52 KiB,见 fb_init),
+    ;     显存一个字节都不碰,只记下"这一行的哪一段被改了";等换行 / 滚屏 /
+    ;     光标跳行 / 等待按键的时候由 fb_flush 一次性搬过去。
+    ;     这就是这次重构的核心:把"每个字 16 次显存散写"摊成"每行 16 次整段搬"。
+    mov edi, [fb_lb_base]
+    test edi, edi
+    jz .vram
+    mov eax, [blit_y]
+    shr eax, 4                          ; 目标行号(字符行)
+    cmp eax, [fb_lb_row]
+    je .adopt_done
+    ; 换了一行(换行 / 光标跳行 / puts_at 换行):先把上一行的脏段落盘
+    call fb_flush
+    mov eax, [blit_y]
+    shr eax, 4
+    mov [fb_lb_row], eax                ; 认领这一行:缓冲里那段内容随画随覆盖,
+                                        ; 只有记下来的脏段才会被刷进显存
+.adopt_done:
+    mov edi, [fb_lb_base]
+    mov eax, [blit_y]
+    and eax, FB_CELL_H - 1              ; 行内是第几个扫描行(0..15)
+    imul eax, [fb_pitch]
+    add edi, eax
+    mov eax, [blit_x]
+    lea edi, [edi + eax * 4]
+    ; ---- 顺手把脏段的左右边界扩一下(fb_flush 只刷这一段)----
+    mov eax, [blit_x]
+    cmp eax, [fb_lb_x0]
+    jae .x0_ok
+    mov [fb_lb_x0], eax
+.x0_ok:
+    mov eax, [blit_x]
+    add eax, [blit_w]
+    cmp eax, [fb_lb_x1]
+    jbe .x1_ok
+    mov [fb_lb_x1], eax
+.x1_ok:
+    mov dword [fb_dirty_line], 1
+    jmp .draw
+.vram:
+    ; 没有行缓冲(页池要不到 52 KiB):退回老路子,逐字直写显存(慢但不挂)
+    mov edi, [fb_phys]
+    mov eax, [blit_y]
+    imul eax, [fb_pitch]
+    add edi, eax
+    mov eax, [blit_x]
+    lea edi, [edi + eax * 4]
+
+.draw:
     xor ebp, ebp                        ; 行号
 .row:
     mov esi, [blit_data]
     mov edx, [blit_color]
-    mov edi, fb_rowbuf
     cmp dword [blit_w], 8
     jne .wide
     movzx eax, byte [esi + ebp]         ; 8 宽:1 字节 = 8 个像素
@@ -148,17 +282,12 @@ fb_blit:
     and eax, 0xFF                       ; 低字节 → 右边 8 格
     call .byte8
 .row_done:
-    ; ---- 这一行整发写进显存 ----
-    mov edi, [fb_phys]
-    mov ecx, [blit_y]
-    add ecx, ebp
-    imul ecx, [fb_pitch]
-    add edi, ecx
-    mov ecx, [blit_x]
-    lea edi, [edi + ecx * 4]
-    mov esi, fb_rowbuf
-    mov ecx, [blit_w]
-    rep movsd
+    ; ★ 以前这里先把这一行攒进 fb_rowbuf、再 rep movsd 进显存;
+    ;   现在 .byte8 直接写在目标上(行缓冲 / 显存),少一趟中转、少 16 次 rep movsd。
+    add edi, [fb_pitch]
+    mov eax, [blit_w]
+    shl eax, 2
+    sub edi, eax
     inc ebp
     cmp ebp, FB_CELL_H
     jb .row
@@ -389,6 +518,8 @@ fb_putcp_at:
     ret
 
 fb_newline:
+    call fb_flush                       ; ★ 换行 = 这一行写完了:先把它刷进显存
+                                        ;   (以前是每个字直接写显存,没有这一步)
     mov dword [fb_cur_x], 0
     mov eax, [fb_cur_y]
     add eax, FB_CELL_H
@@ -413,10 +544,27 @@ fb_newline:
 ;  fb_init:记下参数 + 清屏
 ; ---------------------------------------------------------------------------
 fb_init:
-    mov eax, [fb_phys]
     mov [fb_cur_x], dword 0
     mov [fb_cur_y], dword 0
     mov [term_fb_color], dword 0x00AAAAAA
+    ; ---- 行缓冲:找页池要 13 页连续的物理页(52 KiB)当"当前行" ----
+    ;   ★ 为什么不放内核静态数据区:内核上限 128 KiB(boot 扇区只读 256 个扇区),
+    ;     现在内容已经 ~85 KiB,再塞 51200 字节就顶死了;而 0x3B0000 往上
+    ;     被 PINYIN 表和页池占着(页池从 0x400000 起)。所以走 pmem。
+    ;   页池的位图在 0x6000、页从 4 MiB 起,都在恒等映射范围内,指针就是物理地址。
+    call fb_lb_forget                   ; 先记成"没有缓冲"
+    mov dword [fb_lb_base], 0
+    mov eax, [fb_pitch]
+    test eax, eax
+    jz .no_buf
+    cmp eax, FB_LINE_PAGES * 4096 / FB_CELL_H   ; 一行 16 个扫描行塞得进 52 KiB?
+    ja .no_buf                                  ; 塞不进(比如 pitch > 3200)→ 不用缓冲
+    mov ecx, FB_LINE_PAGES
+    call pmem_alloc_pages
+    test eax, eax
+    jz .no_buf                          ; 页池没页了 → 退回逐字直写,绝不能挂
+    mov [fb_lb_base], eax
+.no_buf:
     call fb_clear
     ret
 
@@ -428,9 +576,8 @@ fb_palette:
     dd 0x00FF5555, 0x00FF55FF, 0x00FFFF55, 0x00FFFFFF
 
 blank_glyph: times 16 db 0
-; 字库缺字时画的占位框(8×16 空心框)
-fb_rowbuf   times 16 dd 0            ; 画字用的一行像素缓冲(16 格,8 宽也够)
 
+; 字库缺字时画的占位框(8×16 空心框)
 missing_glyph:
     db 0xFF, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81
     db 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0x81, 0xFF
@@ -449,6 +596,13 @@ pa_cells        dd 1
 blit_x          dd 0
 blit_y          dd 0
 blit_w          dd 8
+
+; ---- 行缓冲的记账(缓冲本身在页池里,fb_init 时申请,见上面)----
+fb_lb_base      dd 0                    ; 行缓冲物理地址;0 = 没要到 → 退回逐字直写
+fb_lb_row       dd -1                   ; 缓冲里装的是第几个字符行;-1 = 没认领/已作废
+fb_dirty_line   dd 0                    ; 脏标志:1 = 缓冲里有没刷进显存的内容
+fb_lb_x0        dd 800                  ; 脏段左边界(像素,含)
+fb_lb_x1        dd 0                    ; 脏段右边界(像素,不含)
 fb_mask8:                           ; 字节 → 8 个像素掩码(0 或 0xFFFFFFFF)
     dd 0, 0, 0, 0, 0, 0, 0, 0
     dd 0, 0, 0, 0, 0, 0, 0, 0xFFFFFFFF

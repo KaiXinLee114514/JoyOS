@@ -68,6 +68,12 @@ COL_ERR    equ 0x0C                    ; 亮红
     ; ---- 字库:先从磁盘尝试读完整版(读不到就退回内建子集)----
     call font_load_from_disk
 
+    ; ---- 物理页池(位图分配器):4 MiB 以上 12 MiB 交给它 ----
+    ;  ★ 必须赶在 fb_init 之前:帧缓冲终端的"当前行"缓冲要从这里要 13 页
+    ;    (52 KiB,内核静态区塞不下)。pmem_init 只动 0x6000 的位图和几个计数器,
+    ;    那时还没开分页,0x6000 本来就是线性=物理,直接访问没有问题。
+    call pmem_init
+
     ; 图形模式:先把帧缓冲终端初始化(它自己会清屏,所以要在任何打印之前)
     cmp dword [vbe_ok], 0
     je .skip_fb_early
@@ -157,9 +163,8 @@ COL_ERR    equ 0x0C                    ; 亮红
     mov esi, msg_paging
     call term_print
 
-    ; ---- 物理页池(位图分配器):4 MiB 以上 12 MiB 交给它 ----
-    ; 必须在分页之后:paging_map 动态建表时要找它要页,而它自己只认恒等映射过的地址
-    call pmem_init
+    ; ---- 物理页池:开机更早的地方已经初始化过(见上面 —— fb_init 要先用)----
+    ; 这里只把数字报出来
     mov esi, msg_pmem
     call term_print
     mov eax, PMEM_TOTAL

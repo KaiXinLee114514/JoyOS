@@ -506,6 +506,9 @@ kbd_getkey:
     pop ebx
     ret
 .wait:
+    call fb_flush                      ; ★ 要睡了:把行缓冲里攒着的字刷上屏
+                                       ;   (不然"没换行的半行字"——比如提示符 ——
+                                       ;    会一直看不见,直到下一次换行)
     hlt                                ; 睡着等键盘中断把 CPU 叫醒
     jmp .loop
 
@@ -533,6 +536,7 @@ kbd_getchar:
     pop ebx
     ret
 .wait:
+    call fb_flush                      ; ★ 同上:睡之前把行缓冲刷上屏
     hlt
     jmp .loop
 
