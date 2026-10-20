@@ -1671,12 +1671,12 @@ def main() -> int:
                 time.sleep(0.12)
             time.sleep(0.6)
             rescan()
-            results.append(("滚屏生效", not has("JoyOS - stage 5") and has("echo n29"),
+            results.append(("滚屏生效", not has("boot: Operation System") and has("echo n29"),
                             "开机标题被顶出屏幕、最后一行还在"))
 
             # ---- 清屏 ----
             run("clear")
-            results.append(("clear 清屏", not has("JoyOS - stage 5") and not has("echo n29"),
+            results.append(("clear 清屏", not has("boot: Operation System") and not has("echo n29"),
                             "屏幕上只剩提示符"))
 
             # 中文的完整演示(点阵汉字/emoji/坏字节)搬到了磁盘程序 UTF8.BIN,
@@ -1709,7 +1709,7 @@ def main() -> int:
             ]
         else:
             checks = [
-                ("标题",            "JoyOS - stage 5"),
+                ("标题",            "boot: Operation System"),
                 ("保护模式链路",    "bootloader -> protected mode -> kernel"),
                 ("内核区大小(多扇区)", "kernel area: 256 sectors = 131072 bytes"),
                 ("kmain 地址",      "kmain at 0x00010000"),
@@ -1727,6 +1727,7 @@ def main() -> int:
                 ("RTC 时钟",        "rtc: CMOS clock"),
                 # 软盘镜像上也有 PCI(那行照打),所以这条两边都能过
                 ("PCI 枚举",        "devices on bus 0"),
+                ("显示名",          "os: JoyOS"),
                 ("阶段完成提示",    "OK - stage 5"),
                 ("多 shell 线程",   "4 shells (Ctrl+Left / Ctrl+Right)"),
                 ("shell 就绪",      'type "help" for commands.'),

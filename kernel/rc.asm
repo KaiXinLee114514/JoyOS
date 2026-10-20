@@ -514,6 +514,31 @@ rc_print_boot:
     ret
 
 ; ---------------------------------------------------------------------------
+;  rc_print_osname:开机打一行系统显示名
+;  RC.CONF 里写了 osname 就用它,没写就用默认串(屏幕上看得到 JoyOS)
+; ---------------------------------------------------------------------------
+rc_print_osname:
+    pushad
+    mov al, COL_HEADER
+    call term_set_color
+    mov esi, msg_rc_os
+    call term_print
+    mov esi, rc_k_osname
+    call rc_get
+    test eax, eax
+    jnz .have
+    mov eax, rc_def_osname
+.have:
+    mov esi, eax
+    call term_print
+    mov al, 10
+    call term_putc
+    mov al, COL_NORMAL
+    call term_set_color
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
 ;  rc_print_bootmsg:把配置里的 boot_msg 打出来(配置见效的肉眼证明)
 ; ---------------------------------------------------------------------------
 rc_print_bootmsg:
@@ -1106,6 +1131,7 @@ cmd_rc:
 rc_fname      db 'RC.CONF', 0
 rc_k_svc      db 'service_', 0
 rc_k_hostname db 'hostname', 0
+rc_k_osname   db 'osname', 0
 rc_k_bootmsg  db 'boot_msg', 0
 rc_k_autostart db 'autostart', 0
 rc_k_oncrash  db 'on_crash', 0
@@ -1113,6 +1139,7 @@ rc_suf_none   db 0
 rc_suf_args   db '_args', 0
 rc_suf_enable db '_enable', 0
 rc_def_host   db 'joyos', 0
+rc_def_osname db 'JoyOS', 0
 
 rc_ok         dd 0                  ; 1 = 真的读到了 RC.CONF
 rc_buf        times RC_MAX db 0     ; RC.CONF 的内容(就地解析:key=value 就地改 0)
@@ -1159,6 +1186,7 @@ n_rc_reload   db 'reload', 0
 n_rc_status   db 'status', 0
 
 msg_rc_head      db 'rc.conf: ', 0
+msg_rc_os        db 'os: ', 0
 msg_rc_comma     db ', ', 0
 msg_rc_keys      db ' keys', 0
 msg_rc_builtin   db 'no RC.CONF (built-in defaults)', 0

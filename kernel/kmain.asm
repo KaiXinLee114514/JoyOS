@@ -298,6 +298,7 @@ COL_ERR    equ 0x0C                    ; 亮红
     call evt_log
     call rc_load                         ; 读 + 解析 + 报一行
     call ime_load                        ; 拼音输入法的字表(没有就安静地关掉)
+    call rc_print_osname                 ; 显示名(默认 JoyOS,RC.CONF 的 osname 可改)
     call rc_print_bootmsg                ; 配置里写了的开机提示
     call shell_apply_rc_style            ; RC.CONF 里写了 style = moe 就换提示符
     call rc_autostart                    ; autostart=YES 就把启用的服务跑一遍
@@ -737,7 +738,9 @@ term_print_byte:
 ; ============================================================================
 ;  数据
 ; ============================================================================
-msg_title   db 'JoyOS - stage 5', 10, 0
+; 第一行刻意不写系统名:名字可能被 RC.CONF 的 osname 改掉,而这一行
+; 打在任何配置被读之前;真正的显示名由 rc_print_osname 在 rc_load 之后打。
+msg_title   db 'boot: Operation System', 10, 0
 msg_chain   db 'bootloader -> protected mode -> kernel', 10, 0
 msg_fbdump  db 'fb: phys=', 0
 msg_fbw     db ' w=', 0

@@ -43,6 +43,7 @@ BOOT_MSG=hi from rc.conf    # key 不分大小写;不带引号也行
 | key | 意思 |
 | --- | --- |
 | `hostname` | 主机名(`rc` 概要里显示;不影响命令提示符) |
+| `osname` | 系统显示名(默认 `JoyOS`;开机打一行 `os: <名字>`) |
 | `style` | 提示符样式:`plain` / `moe` / `dos` / `c64`(见 [../README.md](../README.md) §5「提示符样式」;不写就是 `plain`) |
 | `boot_msg` | 开机打一行(`boot_msg: ...`)—— 配置生效的肉眼证明 |
 | `autostart` | `YES` = 开机把"启用的服务"按编号顺序跑一遍;默认 `NO`(不然开机会卡在服务里) |

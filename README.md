@@ -193,7 +193,6 @@ python3 tests/qemu_test.py build/joyos-hd.img --hda --dump   # 只把屏幕打�
 ## 3. 源码地图
 
 ```
-current_version.txt    当前版本号 + 内部阶段代号(rd- / classic / indev / infdev / alpha / beta / pre-release / release)
 boot/boot.asm          引导扇区(512 字节内):探 LBA/CHS 读盘 → 跳 stub
 kernel/stub.asm        实模式 stub(搬到 0x500):问 VBE 要图形模式 → GDT → 保护模式
 kernel/start.asm       内核镜像入口:拼装 stub 之后的 32 位部分(顺序有讲究,见注释)
@@ -537,6 +536,7 @@ wordfreq + pypinyin 生成;想换词表就跑 `make pinyin`(需要这两个 pyth
 开机时内核读它、把 `boot_msg` 打出来、按 `autostart` 决定要不要把启用的服务跑起来;
 `rc` 一条命令就能看配置、看服务、起服务、重读刚写下的文件,还有一本带 PIT tick 的
 事件账本。细节和全部 key 见 [docs/rc-conf.md](docs/rc-conf.md)。
+显示名默认 `JoyOS`,可在 `RC.CONF` 里用 `osname = 你的名字` 自定义(开机打一行 `os: <名字>`)。
 
 ![rc.conf 服务列表与事件账本](docs/screenshot-rc.png)
 
