@@ -23,6 +23,7 @@ kmain:                                  ; 32 位内核入口(stub 里 jmp 0x1000
 %include "utf8.asm"                      ; UTF-8 解码
 %include "ata.asm"                       ; ATA 硬盘 PIO
 %include "pci.asm"                       ; PCI 总线枚举(USB 的前置工作)
+%include "usb.asm"                       ; UHCI + HID 键盘(第一步,只有键盘)
 %include "fontdisk.asm"                  ; 从磁盘加载完整字库
 %include "fat.asm"                       ; FAT16 文件系统
 %include "api.asm"                       ; 程序接口 int 0x30                  ; 从磁盘加载完整字库                      ; UTF-8 解码

@@ -2722,6 +2722,7 @@ n_uptime db 'uptime', 0
 n_sleep  db 'sleep', 0
 n_date   db 'date', 0
 n_pci    db 'pci', 0
+n_usb    db 'usb', 0
 n_shell  db 'shell', 0
 n_ps     db 'ps', 0
 n_spawn  db 'spawn', 0
@@ -2843,6 +2844,7 @@ cmd_table:
     dd n_date,   cmd_date
     dd n_style,  cmd_style
     dd n_pci,    cmd_pci
+    dd n_usb,    cmd_usb
     dd n_shell,  cmd_shell
     dd n_ps,     cmd_ps
     dd n_spawn,  cmd_spawn
@@ -2952,6 +2954,7 @@ msg_help db \
     'date [fmt]    read the CMOS clock: no arg = full, or ymd / mdy / dmy / time', 10, \
     'style [name]  prompt style: plain / moe / dos / c64 (RC.CONF: style = moe)', 10, \
     'pci [b:s.f]   list the PCI devices on bus 0, or show one in detail', 10, \
+    'usb           UHCI controller / ports / USB keyboard status', 10, \
     'ps            list scheduler threads (id / name / ticks / runs)', 10, \
     'spawn [who]   start a demo kernel thread (no arg = alpha, then beta)', 10, \
     'kill <id>     kill a thread, give its stack back to the page pool', 10, \

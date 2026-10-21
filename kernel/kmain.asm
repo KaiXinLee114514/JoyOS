@@ -295,6 +295,9 @@ COL_ERR    equ 0x0C                    ; 亮红
     ; 给以后的 USB 驱动用)
     call pci_scan
 
+    ; USB:UHCI 控制器 + 端口枚举(失败只打一行,不停机;没有 USB 控制器时静默)
+    call usb_init
+
     ; ---- rc.conf(磁盘根目录的 RC.CONF)+ 事件账本 ----
     ; 为啥是 rc.conf 而不是 systemd 的 unit:玩具 OS 要的是"一行一个 key=value",
     ; 用 shell 的 write 就能改,改完 rc reload 立刻生效。详见 kernel/rc.asm 文件头。
