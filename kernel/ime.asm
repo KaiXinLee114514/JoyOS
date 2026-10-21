@@ -3,14 +3,24 @@
 ;
 ;  ── 它是什么 ────────────────────────────────────────────────────────────
 ;  一个能用的单字拼音输入法:按一下 **Shift**(只按、不带别的键)切中英;
-;  中文状态下敲拼音 → 空格出候选 → 左右键挑、空格/数字选定 → 汉字进命令行。
+;  中文状态下敲拼音 → 空格出候选 → 数字选本页的字,`,` / `.` 翻页。
 ;
 ;      > shuang
-;        1.双 2.爽 3.霜        ← 空格之后长这样,左右键移动,回车/空格选
+;        1.双 2.爽 3.霜 4.塽   1-9 pick  space pick first Esc cancel
 ;      > 双
 ;
+;      > ji
+;        1.及 2.即 3.级 ... 9.记   1-9 pick  space pick first  ,/. page 1/11 Esc cancel
+;
+;  ── 翻页 ────────────────────────────────────────────────────────────────
+;  一页只放 9 个(IME_CAND_PAGE),但同一个音最多有 90 多个字,所以要翻页:
+;      `,` 上一页、`.` 下一页;页内始终编号 1..9(和 1-9 pick 对得上),
+;      提示里的 "1/11" 是"第几页/共几页";只有 1 页时(比如 shuang)不显示页码。
+;  不用方向键:shell 里方向键是 ESC + 一个字节的前缀,饿的时候会丢/串,
+;  这个坑以前踩过(见 docs/known-issues.md),翻页键就选了不会被前缀吃掉的 ,/.。
+;
 ;  ── 数据从哪来 ──────────────────────────────────────────────────────────
-;  开机时从磁盘读 PINYIN.BIN(tools/mkpinyin.py 生成,约 17 KB):
+;  开机时从磁盘读 PINYIN.BIN(tools/mkpinyin.py 生成,约 33 KB / 6000 字):
 ;      0     "PIME"
 ;      4     u32 音节个数
 ;      8     u32 字条目个数
@@ -19,14 +29,14 @@
 ;  字条目的顺序就是"常用度"(生成时按词频排),所以第一个候选永远是最常用的那个。
 ;
 ;  ── 为什么放磁盘不放内核 ────────────────────────────────────────────────
-;  17 KB 的拼音表塞进内核会白占半个内核区,而且改字表就得重编内核;
+;  33 KB 的拼音表塞进内核会白占四分之一个内核区,而且改字表就得重编内核;
 ;  放 FAT16 里跟字库一个待遇,换字表 = 换文件。
 ; ============================================================================
 
 PINYIN_ADDR    equ 0x3B0000            ; 字库(0x200000 + 1.7 MB)后面那段空着的
-PINYIN_MAX     equ 32768
+PINYIN_MAX     equ 61440               ; 0x3B0000 到 0x3C0000(USB 结构)只有 64 KB
 IME_BUF_MAX    equ 12                  ; 一个音节最长 7 个字母,留点余量
-IME_CAND_PAGE  equ 9                   ; 一屏最多 9 个候选
+IME_CAND_PAGE  equ 9                   ; 一页最多 9 个候选(1-9 对应)
 
 ; ---------------------------------------------------------------------------
 ;  ime_load:开机读 PINYIN.BIN(没有就安静地关掉输入法)
@@ -117,12 +127,14 @@ ime_lookup:
 
 ; ---------------------------------------------------------------------------
 ;  ime_begin:esi = 拼音串 → eax = 候选个数(0 = 没这个音)
-;            顺便把 ime_first / ime_count / ime_sel 都安排好
+;            顺便把 ime_first / ime_count / ime_page / ime_win 都安排好
 ; ---------------------------------------------------------------------------
 ime_begin:
     pushad
     mov dword [ime_count], 0
     mov dword [ime_sel], 0
+    mov dword [ime_page], 0             ; 新拼音从第 1 页开始
+    mov dword [ime_win], 0
     mov dword [ime_first], 0
     call ime_lookup
     cmp eax, -1
@@ -177,41 +189,46 @@ ime_char_ptr:
     ret
 
 ; ---------------------------------------------------------------------------
-;  ime_show:把候选那一行打出来(当前选中的反白)
+;  ime_show:把当前这一页的候选打出来(本页第 1 个反白),再打提示行
 ; ---------------------------------------------------------------------------
 ime_show:
     pushad
-    ; 窗口起点 = (sel / 9) * 9
-    mov eax, [ime_sel]
+    ; 窗口起点 = 页号 × 9。页号大到超出候选数时(理论上不会)夹到最后一页,
+    ; 免得 div 出怪页号、画出一行空候选。
+    mov eax, [ime_page]
+    imul eax, IME_CAND_PAGE
+    cmp eax, [ime_count]
+    jb .have_win
+    mov eax, [ime_count]
+    dec eax
     xor edx, edx
     mov ecx, IME_CAND_PAGE
     div ecx
+    mov [ime_page], eax
     imul eax, IME_CAND_PAGE
+.have_win:
     mov [ime_win], eax
     mov al, 10
     call term_putc
-    xor ebx, ebx                        ; ebx = 这一屏的第几个
+    xor ebx, ebx                        ; ebx = 本页的第几个
 .row:
     cmp ebx, IME_CAND_PAGE
     jae .tail
     mov eax, [ime_win]
     add eax, ebx
     cmp eax, [ime_count]
-    jae .tail
+    jae .tail                           ; 最后一页可能不满 9 个
     mov [ime_tmp], eax
-    ; 选中的反白
+    ; 本页第 1 个反白 —— 空格/回车选的就是它;数字键直接选对应项
     mov al, COL_NORMAL
-    cmp dword [ime_tmp], 0
-    jl .color
-    mov eax, [ime_tmp]
-    cmp eax, [ime_sel]
+    cmp ebx, [ime_sel]
     jne .color
     mov al, 0x70                        ; 黑底白字 = 选中
 .color:
     call term_set_color
     mov al, ' '
     call term_putc
-    mov eax, [ime_tmp]
+    mov eax, ebx                        ; 页内编号 1..9,和 "1-9 pick" 的键位一致
     inc eax
     call term_print_dec                 ; "1." ~ "9."
     mov al, '.'
@@ -232,26 +249,53 @@ ime_show:
     call term_set_color
     mov esi, msg_ime_hint
     call term_print
+    ; 页数 = (候选数 + 8) / 9;多于 1 页才把 "1/3" 写出来(短、放得下一行)
+    mov eax, [ime_count]
+    add eax, IME_CAND_PAGE - 1
+    xor edx, edx
+    mov ecx, IME_CAND_PAGE
+    div ecx
+    mov [ime_pages], eax
+    cmp eax, 1
+    jbe .eol
+    mov esi, msg_ime_page
+    call term_print
+    mov eax, [ime_page]
+    inc eax
+    call term_print_dec                 ; 当前页(1 起)
+    mov al, '/'
+    call term_putc
+    mov eax, [ime_pages]
+    call term_print_dec                 ; 总页数
+.eol:
+    mov esi, msg_ime_hint_end
+    call term_print
     popad
     ret
 
 ; ---------------------------------------------------------------------------
-;  ime_move:eax = ±1 → 把选中项左右挪一格(到头绕回去),再重画一行
+;  ime_page_prev / ime_page_next:候选翻页(到头就不动),再重画一行
+;    —— 用 ,/. 不用方向键:方向键是 ESC 前缀,shell 里会丢/串(见文件头)
 ; ---------------------------------------------------------------------------
-ime_move:
-    add [ime_sel], eax
-    cmp dword [ime_sel], 0
-    jge .hi
-    mov eax, [ime_count]
-    dec eax
-    mov [ime_sel], eax
-.hi:
-    mov eax, [ime_sel]
-    cmp eax, [ime_count]
-    jb .show
+ime_page_prev:
+    cmp dword [ime_page], 0
+    je .out
+    dec dword [ime_page]
     mov dword [ime_sel], 0
-.show:
     call ime_show
+.out:
+    ret
+
+ime_page_next:
+    mov eax, [ime_page]
+    inc eax
+    imul eax, IME_CAND_PAGE
+    cmp eax, [ime_count]
+    jae .out
+    inc dword [ime_page]
+    mov dword [ime_sel], 0
+    call ime_show
+.out:
     ret
 
 ; ---------------------------------------------------------------------------
@@ -261,7 +305,6 @@ ime_move:
 ime_pick:
     cmp eax, [ime_count]
     jae .out
-    mov [ime_sel], eax
     call ime_char_ptr
     ; ---- 追加到命令行缓冲 ----
     mov ebx, [shell_len]
@@ -286,11 +329,14 @@ ime_pick:
     ret
 
 ; ---------------------------------------------------------------------------
-;  ime_reset:清掉拼音缓冲(切换模式 / 取消时用)
+;  ime_reset:清掉拼音缓冲和翻页状态(选完 / 取消 / 切换模式时用)
 ; ---------------------------------------------------------------------------
 ime_reset:
     mov dword [ime_len], 0
     mov byte [ime_buf], 0
+    mov dword [ime_page], 0              ; 下次打拼音还从第 1 页开始
+    mov dword [ime_win], 0
+    mov dword [ime_sel], 0
     ret
 
 ; ---------------------------------------------------------------------------
@@ -298,7 +344,9 @@ ime_reset:
 ; ---------------------------------------------------------------------------
 msg_ime_none    db '  (没有这个音 —— 或者盘上没有 PINYIN.BIN)', 10, 0
 msg_ime_file    db 'PINYIN.BIN', 0
-msg_ime_hint    db '   1-9 pick, space/enter pick first, Esc cancel', 10, 0
+msg_ime_hint    db ' 1-9 pick  space pick first', 0
+msg_ime_page    db '  ,/. page ', 0
+msg_ime_hint_end db ' Esc cancel', 10, 0
 
 ime_ok          dd 0
 ime_on          dd 0
@@ -308,8 +356,10 @@ ime_nchar       dd 0
 ime_syl         dd 0
 ime_first       dd 0
 ime_count       dd 0
-ime_sel         dd 0
-ime_win         dd 0
+ime_sel         dd 0                    ; 本页里选中的第几个(0 = 第 1 个)
+ime_page        dd 0                    ; 当前页号(0 起)
+ime_pages       dd 1                    ; 这个音节一共几页(显示页码用)
+ime_win         dd 0                    ; 本页第一个候选的全局序号 = page*9
 ime_tmp         dd 0
 ime_len         dd 0
 ime_buf         times IME_BUF_MAX db 0

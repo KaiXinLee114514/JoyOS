@@ -484,10 +484,10 @@ shell_readline_resume:
 ;  输入法(拼音单字)—— 真正的实现在 kernel/ime.asm,这里只管"分键":
 ;      Shift 单独按  切中英
 ;      a-z           敲拼音(回车/空格 出候选)
-;      数字 1-9      直接选那个候选
-;      空格 / 回车   选当前候选
-;      左右键        挪选中项
-;      Esc / 退格    取消
+;      数字 1-9      选当前页对应的候选
+;      空格 / 回车   选当前页第 1 个
+;      , / .         上一页 / 下一页(候选多于一页时;方向键是 ESC 前缀,不可靠)
+;      Esc           取消(退格也取消)
 ; ---------------------------------------------------------------------------
 .ime_letter:
     mov ebx, [ime_len]
@@ -536,42 +536,43 @@ shell_readline_resume:
     sub eax, '0'
     dec eax
     add eax, [ime_win]
+    cmp eax, [ime_count]                  ; 最后一页不满 9 个:超出的数字键当没按
+    jae .next
     call ime_pick
     jmp .ime_pick_done
 .ime_pick_special:
-    cmp al, 32                            ; 空格 = 选定
+    cmp al, 32                            ; 空格 = 选本页第 1 个
     je .ime_pick_sel
-    cmp al, 13                            ; 回车 = 选定
+    cmp al, 13                            ; 回车 = 选本页第 1 个
     je .ime_pick_sel
+    cmp al, ','                           ; , = 上一页
+    je .ime_pick_prev
+    cmp al, '.'                           ; . = 下一页
+    je .ime_pick_next
     cmp al, 8                             ; 退格 = 取消
     je .ime_cancel
-    cmp al, 0x1B
-    je .ime_pick_arrow
+    cmp al, 0x1B                          ; Esc = 取消
+    je .ime_pick_esc
     jmp .next
 .ime_pick_sel:
-    mov eax, [ime_sel]
+    mov eax, [ime_win]                    ; 本页第 1 个
     call ime_pick
     jmp .ime_pick_done
-.ime_pick_arrow:
-    call kbd_avail                        ; 方向键 = ESC + (0x80|编号)
+.ime_pick_prev:
+    call ime_page_prev
+    jmp .next
+.ime_pick_next:
+    call ime_page_next
+    jmp .next
+.ime_pick_esc:
+    ; 旧版在这里等 ESC 后跟的 0x83/0x84(左右键)。方向键前缀在 shell 里不可靠,
+    ; 翻页改用 ,/. 了,这边就当纯 Esc:把可能残留的第二字节吃掉再取消。
+    call kbd_avail
     test eax, eax
-    jz .ime_cancel                        ; 光一个 Esc(或者没跟上)= 取消
+    jz .ime_cancel
     push eax
     call shell_wait_key
     pop eax
-    cmp al, 0x83                          ; 左
-    je .ime_pick_left
-    cmp al, 0x84                          ; 右
-    je .ime_pick_right
-    jmp .ime_cancel
-.ime_pick_left:
-    mov eax, -1
-    call ime_move
-    jmp .next
-.ime_pick_right:
-    mov eax, 1
-    call ime_move
-    jmp .next
 .ime_cancel:
     mov al, 10
     call term_putc

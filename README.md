@@ -77,7 +77,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **提示符样式** | `style` 一条命令换提示符:**plain(朴素 `>`)** / **moe(萌,粉色的 `じょいおす>`,报错也换成吐槽)** / **DOS(`C:\>`)** / **C64(`READY.`)**;也能在 `RC.CONF` 里写 `style = moe` 开机就生效 |
 | **ring 3 用户态** | 程序不再由内核 `call` 进去,而是 `iret` 到 **CPL=3**:内核运行时重建 GDT(0x1B 用户代码 / 0x23 用户数据 / 0x28 TSS)+ `ltr` 装 TSS(从 ring 3 掉回内核的栈只能从 TSS 取);程序页表项带 U/S 位,**内核的页它碰不到** —— 故意读内核内存会被页错误干掉、内核自己接着用(`run FAULT` 现场演示);程序结尾照旧 `ret`:内核在用户栈顶压了**弹床页**(0x19F000,三条指令 `int 0x30` 功能号 15 退出),所以现有程序一行都不用改(见 §5) |
 | **rc.conf 服务 / 事件库** | 根目录的 `RC.CONF` 是**纯 `key=value`**(BSD / OpenRC 那种,不是 systemd 段):`hostname` / `boot_msg` / `autostart` / `on_crash` + `service_N`(程序、参数、启用开关)。`rc` 一条命令管起来:`rc list` 看服务、`rc get KEY` 取值、`rc start N` **把服务当程序跑**(借 `run` 那条路:ring 3 + 按需分页)、`rc reload` 重读刚写的配置;另有**事件账本**:开机 / 读配置 / 服务起停 / 程序跑完 / 程序崩了 / 线程被 kill / 换 shell,每种连 100 Hz 的 tick 一起记 16 条(`rc log`);`autostart=YES` 就是开机按配置跑服务,`on_crash=reboot` 则程序崩了直接重启(见 [docs/rc-conf.md](docs/rc-conf.md)) |
-| **拼音输入法** | 按 **Shift** 切中英;打 `shuang` 出候选行「1.双 2.爽 3.霜 …」,**数字 1-9 或空格**选字,回车出候选、Esc 取消。词表是盘上的 `PINYIN.BIN`(2900+ 常用字,按词频排序,`tools/mkpinyin.py` 生成) |
+| **拼音输入法** | 按 **Shift** 切中英;打 `shuang` 出候选行「1.双 2.爽 3.霜 …」,**数字 1-9 或空格**选字,回车出候选、Esc 取消;一页 9 个、**`,` / `.` 翻页**(提示里有页码)。词表是盘上的 `PINYIN.BIN`(6000 常用字,按词频排序,`tools/mkpinyin.py` 生成) |
 | **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
 | **PCI 总线枚举** | 开机扫 bus 0:`pci` 列出机器上所有设备(厂商:设备号 / 类别名 / 中断号),`pci 0:1.2` 看单台设备详情(类别、命令寄存器、六个 BAR 是内存还是 I/O、内存 BAR 多大);配置空间走 **机制 #1**(`0xCF8` 地址 / `0xCFC` 数据),多功能设备的"兄弟功能"也会一起扫出来 —— 这是 USB 的前置工作(见 [docs/pci.md](docs/pci.md)) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
@@ -516,16 +516,21 @@ shell 的意义。
 
 ```
 > shuang
-1.双 2.爽 3.霜   1-9 pick, space/enter pick first, Esc cancel
+ 1.双 2.爽 3.霜 4.塽   1-9 pick  space pick first Esc cancel
 > 霜 hai
 unknown command: 霜 hai
 > xiang
-1.想 2.向 3.像 4.相 5.乡 6.项 7.象 8.香 9.响   1-9 pick, space/enter pick first, Esc cancel
+ 1.想 2.向 3.像 4.相 5.乡 6.项 7.象 8.香 9.响   1-9 pick  space pick first  ,/. page 1/4 Esc cancel
+ 1.箱 2.享 3.湘 4.祥 5.镶 6.详 7.巷 8.厢 9.翔   1-9 pick  space pick first  ,/. page 2/4 Esc cancel
 ```
 
-数字 1-9 直接选、空格选第一个、Esc 取消;候选按**词频**排(最常用的在最前面)。
-数据在磁盘的 `PINYIN.BIN`(2900+ 常用字、394 个音节),由 `tools/mkpinyin.py` 用
-wordfreq + pypinyin 生成;想换词表就跑 `make pinyin`(需要这两个 python 包)。
+第二行候选是敲了 `.` 之后的样子;候选行本来就在提示符下面另起一行,屏幕不会清屏,
+所以翻页时会把每一页都留在屏幕上(终端没有"回到上一行重画"的能力)。
+
+数字 1-9 直接选**当前页**对应的候选、空格选当前页第 1 个、`,` / `.` 翻上一页 / 下一页
+(候选只有一页时提示里不显示页码)、Esc 取消;候选按**词频**排(最常用的在最前面)。
+数据在磁盘的 `PINYIN.BIN`(6000 常用字、400 个音节,`ji` 这种音有 11 页),由
+`tools/mkpinyin.py` 用 wordfreq + pypinyin 生成;想换词表就跑 `make pinyin`(需要这两个 python 包)。
 盘上没有这个文件时输入法会自己安静地关掉,不影响其它功能。
 
 ![拼音输入法](docs/screenshot-ime.png)

@@ -174,15 +174,15 @@ BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 39),BIGDIR/F$(i).TXT=$(BUILD)/bigdi
 # 需要 pypinyin/wordfreq 才有数据;装不上就生成一个空表(输入法自动关掉),不影响编译。
 PINYIN_BIN := $(BUILD)/PINYIN.BIN
 
-# 仓库里带了生成好的 progs/PINYIN.BIN(17 KB),没有 python 依赖也能编译。
+# 仓库里带了生成好的 progs/PINYIN.BIN(约 33 KB / 6000 常用字),没有 python 依赖也能编译。
 # 想换词表:装好 pypinyin + wordfreq 后跑 `make pinyin` 重新生成再提交。
 $(PINYIN_BIN): progs/PINYIN.BIN tools/mkpinyin.py | $(BUILD)
-	@cp progs/PINYIN.BIN $@ 2>/dev/null || python3 tools/mkpinyin.py 3500 $@ 2>/dev/null || \
+	@cp progs/PINYIN.BIN $@ 2>/dev/null || python3 tools/mkpinyin.py 6000 $@ 2>/dev/null || \
 	    { echo "PINYIN.BIN: 没有词表也没有 python 依赖,生成空表(输入法会自己关掉)"; \
 	      printf 'PIME\000\000\000\000\000\000\000\000' > $@; }
 
 pinyin:
-	python3 tools/mkpinyin.py 3500 progs/PINYIN.BIN
+	python3 tools/mkpinyin.py 6000 progs/PINYIN.BIN
 
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
           $(PINYIN_BIN) \
