@@ -1414,7 +1414,8 @@ USB 控制器在哪、它的寄存器窗口(那个 I/O BAR)开在哪儿。
 
 ## 12. 许可
 
-MIT —— 随便用、随便改、随便抄(见 [LICENSE](LICENSE))。
+GPL-3.0 —— 随便用、随便改，**改完/分发也得保持开源**(见 [LICENSE](LICENSE))。
+Copyright (c) 2026 kai030226
 `font/` 目录里的字形数据来自 GNU Unifont,按 **GPL-2+** 单独授权(见 [font/LICENSE](font/LICENSE))。
 
 要是这个仓库帮你搞懂了保护模式、分页或者文件系统,那就够了。
