@@ -151,6 +151,19 @@ void *memset(void *d, int c, size_t n)
     return d;
 }
 
+int memcmp(const void *a, const void *b, size_t n)
+{
+    const unsigned char *p = (const unsigned char *)a;
+    const unsigned char *q = (const unsigned char *)b;
+    while (n--) {
+        if (*p != *q)
+            return (int)*p - (int)*q;
+        p++;
+        q++;
+    }
+    return 0;
+}
+
 /* ==========================================================================
  *  ctype(老代码里 isXXX 就是普通函数,不搞宏)
  * ==========================================================================*/
@@ -288,6 +301,30 @@ size_t heap_free_bytes(void)
     return total;
 }
 
+/* 打印堆状态(调试用) */
+void heap_dump(void)
+{
+    blk_t *b;
+    int n = 0, freecnt = 0;
+    size_t freebytes = 0, maxfree = 0, usedbytes = 0;
+    for (b = heap_head; b; b = b->next) {
+        n++;
+        if (b->used)
+            usedbytes += b->size;
+        else {
+            freecnt++;
+            freebytes += b->size;
+            if (b->size > maxfree)
+                maxfree = b->size;
+        }
+        if (n <= 8)
+            printf("dbg: heap blk %d size=%lu used=%d\n", n, (unsigned long)b->size, b->used);
+    }
+    printf("dbg: heap_head=%p blocks=%d used=%lu free=%lu maxfree=%lu freecnt=%d\n",
+           (void *)heap_head, n, (unsigned long)usedbytes, (unsigned long)freebytes,
+           (unsigned long)maxfree, freecnt);
+}
+
 int atoi(const char *s)
 {
     int v = 0, neg = 0;
@@ -348,6 +385,195 @@ long strtol(const char *s, char **end, int base)
     if (end)
         *end = (char *)(any ? s : s);
     return neg ? -v : v;
+}
+
+/* strtoul:无符号版(不处理负号,TCC 只往正数用) */
+unsigned long strtoul(const char *s, char **end, int base)
+{
+    unsigned long v = 0;
+    int d;
+
+    while (isspace((unsigned char)*s))
+        s++;
+    if (*s == '+')
+        s++;
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    } else if (base == 0 && s[0] == '0') {
+        base = 8;
+        s++;
+    } else if (base == 0) {
+        base = 10;
+    }
+    for (;; s++) {
+        if (*s >= '0' && *s <= '9')
+            d = *s - '0';
+        else if (*s >= 'a' && *s <= 'z')
+            d = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'Z')
+            d = *s - 'A' + 10;
+        else
+            break;
+        if (d >= base)
+            break;
+        v = v * base + (unsigned long)d;
+    }
+    if (end)
+        *end = (char *)s;
+    return v;
+}
+
+long long strtoll(const char *s, char **end, int base)
+{
+    long long v = 0;
+    int neg = 0, d, any = 0;
+
+    while (isspace((unsigned char)*s))
+        s++;
+    if (*s == '-') {
+        neg = 1;
+        s++;
+    } else if (*s == '+') {
+        s++;
+    }
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    } else if (base == 0 && s[0] == '0') {
+        base = 8;
+        s++;
+    } else if (base == 0) {
+        base = 10;
+    }
+    for (;; s++) {
+        if (*s >= '0' && *s <= '9')
+            d = *s - '0';
+        else if (*s >= 'a' && *s <= 'z')
+            d = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'Z')
+            d = *s - 'A' + 10;
+        else
+            break;
+        if (d >= base)
+            break;
+        v = v * (long long)base + (long long)d;
+        any = 1;
+    }
+    if (end)
+        *end = (char *)s;
+    return neg ? -v : v;
+}
+
+unsigned long long strtoull(const char *s, char **end, int base)
+{
+    unsigned long long v = 0;
+    int d;
+
+    while (isspace((unsigned char)*s))
+        s++;
+    if (*s == '+')
+        s++;
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    } else if (base == 0 && s[0] == '0') {
+        base = 8;
+        s++;
+    } else if (base == 0) {
+        base = 10;
+    }
+    for (;; s++) {
+        if (*s >= '0' && *s <= '9')
+            d = *s - '0';
+        else if (*s >= 'a' && *s <= 'z')
+            d = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'Z')
+            d = *s - 'A' + 10;
+        else
+            break;
+        if (d >= base)
+            break;
+        v = v * (unsigned long long)base + (unsigned long long)d;
+    }
+    if (end)
+        *end = (char *)s;
+    return v;
+}
+
+/* strtod:简单浮点解析(TCC 用 strtold→这里,精度 double 够 i386 目标) */
+double strtod(const char *s, char **end)
+{
+    double v = 0.0, frac = 0.1;
+    int neg = 0, any = 0, e = 0, esign = 1;
+
+    while (isspace((unsigned char)*s))
+        s++;
+    if (*s == '-') {
+        neg = 1;
+        s++;
+    } else if (*s == '+') {
+        s++;
+    }
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10.0 + (double)(*s - '0');
+        s++;
+        any = 1;
+    }
+    if (*s == '.') {
+        s++;
+        while (*s >= '0' && *s <= '9') {
+            v += (double)(*s - '0') * frac;
+            frac *= 0.1;
+            s++;
+            any = 1;
+        }
+    }
+    if (any && (*s == 'e' || *s == 'E')) {
+        const char *p = s + 1;
+        esign = 1;
+        if (*p == '+')
+            p++;
+        else if (*p == '-') {
+            esign = -1;
+            p++;
+        }
+        if (*p >= '0' && *p <= '9') {
+            s = p;
+            while (*s >= '0' && *s <= '9') {
+                e = e * 10 + (*s - '0');
+                s++;
+            }
+            while (e-- > 0)
+                v = (esign > 0) ? v * 10.0 : v / 10.0;
+        }
+    }
+    if (end)
+        *end = (char *)s;
+    return neg ? -v : v;
+}
+
+float strtof(const char *s, char **end)
+{
+    return (float)strtod(s, end);
+}
+
+long double strtold(const char *s, char **end)
+{
+    return (long double)strtod(s, end);
+}
+
+double ldexp(double x, int e)
+{
+    while (e > 0) {
+        x *= 2.0;
+        e--;
+    }
+    while (e < 0) {
+        x /= 2.0;
+        e++;
+    }
+    return x;
 }
 
 /* ==========================================================================
@@ -411,9 +637,147 @@ time_t time(time_t *t)
     return v;
 }
 
+int gettimeofday(struct timeval *tv, void *tz)
+{
+    (void)tz;
+    if (tv) {
+        tv->tv_sec = time(NULL);
+        tv->tv_usec = 0;
+    }
+    return 0;
+}
+
+int mprotect(void *addr, unsigned int len, int prot)
+{
+    (void)addr;
+    (void)len;
+    (void)prot;
+    return 0;   /* JoyOS 用户态没有页权限概念:假装成功 */
+}
+
+/* libgcc 的 64 位无符号除法/取模(i386 没有硬件 64 位除法指令,TCC 等程序要用) */
+unsigned long long __udivdi3(unsigned long long n, unsigned long long d)
+{
+    unsigned long long q = 0;
+    int s = 0;
+    if (d == 0)
+        return 0;
+    while (!(d & 0x8000000000000000ULL)) {
+        d <<= 1;
+        s++;
+    }
+    for (; s >= 0; s--) {
+        if (n >= d) {
+            n -= d;
+            q |= (1ULL << s);
+        }
+        d >>= 1;
+    }
+    return q;
+}
+
+unsigned long long __umoddi3(unsigned long long n, unsigned long long d)
+{
+    unsigned long long dd;
+    int s = 0;
+
+    if (d == 0)
+        return 0;
+    dd = d;
+    while (!(dd & 0x8000000000000000ULL)) {
+        dd <<= 1;
+        s++;
+    }
+    for (; s >= 0; s--) {
+        if (n >= dd)
+            n -= dd;
+        dd >>= 1;
+    }
+    return n;
+}
+
 clock_t clock(void)
 {
     return (clock_t)(j_rdtsc() >> 12);
+}
+
+/* localtime:把 time_t 秒数拆成日历(近似 UTC;TCC 只用来生成 __DATE__/__TIME__) */
+struct tm *localtime(const time_t *t)
+{
+    static struct tm tmv;
+    static const int mdays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    long secs = (long)*t;
+    long days = secs / 86400;
+    long rem = secs % 86400;
+    int year = 1970, mon, md, leap;
+
+    if (rem < 0) {
+        rem += 86400;
+        days--;
+    }
+    tmv.tm_hour = (int)(rem / 3600);
+    tmv.tm_min = (int)((rem % 3600) / 60);
+    tmv.tm_sec = (int)(rem % 60);
+    tmv.tm_wday = (int)((days + 4) % 7);   /* 1970-01-01 是周四 */
+    tmv.tm_isdst = 0;
+    tmv.tm_yday = 0;
+
+    for (;;) {
+        leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+        if (days < 365 + leap)
+            break;
+        days -= 365 + leap;
+        year++;
+    }
+    leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+    for (mon = 0; mon < 12; mon++) {
+        md = mdays[mon] + (mon == 1 ? leap : 0);
+        if (days < md)
+            break;
+        days -= md;
+    }
+    tmv.tm_year = year - 1900;
+    tmv.tm_mon = mon;
+    tmv.tm_mday = (int)days + 1;
+    return &tmv;
+}
+
+char *getcwd(char *buf, unsigned int size)
+{
+    if (!buf) {
+        if (size < 2)
+            size = 2;
+        buf = (char *)malloc(size);
+        if (!buf)
+            return NULL;
+    }
+    if (size < 2)
+        return NULL;
+    buf[0] = '/';
+    buf[1] = '\0';
+    return buf;
+}
+
+char *realpath(const char *path, char *resolved)
+{
+    size_t n = strlen(path) + 1;
+    char *r = resolved;
+    if (!r) {
+        r = (char *)malloc(n);
+        if (!r)
+            return NULL;
+    }
+    strcpy(r, path);
+    return r;
+}
+
+/* JoyOS 没有进程模型:exec 一律失败(TCC 的自举切换用,不走这里) */
+int execvp(const char *file, char *const argv[])
+{
+    (void)file;
+    (void)argv;
+    errno = ENOENT;
+    return -1;
 }
 
 unsigned int sleep(unsigned int seconds)
@@ -429,6 +793,10 @@ char *getenv(const char *name)
     (void)name;
     return NULL;
 }
+
+/* JoyOS 没有环境变量:空环境表(TCC 的 tccrun 要用) */
+static char *mc_envp_empty[] = { NULL };
+char **environ = mc_envp_empty;
 
 /* 执行外部命令:没有进程这回事,告诉用户一声 */
 int system(const char *cmd)
@@ -724,6 +1092,11 @@ int vsprintf(char *buf, const char *fmt, va_list ap)
     return mc_vformat(buf, -1, fmt, ap);
 }
 
+int vsnprintf(char *buf, unsigned int size, const char *fmt, va_list ap)
+{
+    return mc_vformat(buf, (int)size - 1, fmt, ap);
+}
+
 /* ==========================================================================
  *  小小的 stdio:FILE 就是一块内存缓冲(见文件头)
  * ==========================================================================*/
@@ -732,8 +1105,33 @@ int vsprintf(char *buf, const char *fmt, va_list ap)
 
 static FILE mc_stdout_file = {NULL, 0, 0, 0, NULL, 1};
 static FILE mc_stderr_file = {NULL, 0, 0, 0, NULL, 2};
+static FILE mc_stdin_file = {NULL, 0, 0, 0, NULL, 0};
 FILE *stdout = &mc_stdout_file;
 FILE *stderr = &mc_stderr_file;
+FILE *stdin  = &mc_stdin_file;
+
+static FILE *mc_fd_get(int fd);  /* 前向声明:fdopen 在它前面 */
+
+FILE *fdopen(int fd, const char *mode)
+{
+    (void)mode;
+    if (fd == 0)
+        return stdin;
+    if (fd == 1)
+        return stdout;
+    if (fd == 2)
+        return stderr;
+    /* open() 已经把 FILE 挂进 fd 表,直接返回同一个 FILE,
+     * 否则 TCC 的 open()+fdopen("wb") 写文件路径会拿到 NULL。 */
+    return mc_fd_get(fd);
+}
+
+FILE *freopen(const char *name, const char *mode, FILE *f)
+{
+    (void)name;
+    (void)mode;
+    return f;   /* JoyOS 文件是整文件缓冲模型,原样返回 */
+}
 
 int mc_console_write(const char *s, int n)
 {
@@ -1125,13 +1523,18 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f)
     size_t total, put = 0;
     const char *p = (const char *)ptr;
 
-    if (!f || !(f->mode & FMODE_WRITE) || size == 0 || nmemb == 0)
+    if (!f || size == 0 || nmemb == 0)
         return 0;
     total = size * nmemb;
+    /* stdout/stderr 的 FILE 结构没有 FMODE_WRITE(控制台不是文件),
+     * 必须先判它们再查 mode —— 否则 gcc 把 fputs/fprintf 字面量优化成
+     * fwrite 后会在 mode 检查处静默返回,什么都不打印。 */
     if (f == stdout || f == stderr) {
         mc_console_write(p, (int)total);
         return nmemb;
     }
+    if (!(f->mode & FMODE_WRITE))
+        return 0;
     while (put < total && f->pos < MC_WRITE_MAX) {
         if (f->pos >= f->len)
             f->len = f->pos + 1;

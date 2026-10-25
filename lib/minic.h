@@ -21,6 +21,9 @@
 #define EINVAL 22
 extern int errno;
 
+/* POSIX 的 ssize_t(读/写返回负数表示错误) */
+typedef int ssize_t;
+
 /* ---- stdio ---- */
 #define EOF     (-1)
 #define SEEK_SET 0
@@ -42,6 +45,7 @@ typedef struct {
 
 extern FILE *stdout;
 extern FILE *stderr;
+extern FILE *stdin;
 
 FILE *fopen(const char *name, const char *mode);
 int   fclose(FILE *f);
@@ -56,6 +60,9 @@ int   putchar(int c);
 int   puts(const char *s);
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f);
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f);
+int    vsnprintf(char *buf, unsigned int size, const char *fmt, va_list ap);
+FILE  *fdopen(int fd, const char *mode);
+FILE  *freopen(const char *name, const char *mode, FILE *f);
 int    fseek(FILE *f, long off, int whence);
 long   ftell(FILE *f);
 void   rewind(FILE *f);
@@ -125,13 +132,22 @@ void  *calloc(size_t n, size_t sz);
 void  *realloc(void *p, size_t n);
 void   free(void *p);
 size_t heap_free_bytes(void);
+void heap_dump(void);
 int    atoi(const char *s);
 long   atol(const char *s);
 long   strtol(const char *s, char **end, int base);
+unsigned long      strtoul(const char *s, char **end, int base);
+unsigned long long strtoull(const char *s, char **end, int base);
+double strtod(const char *s, char **end);
+float strtof(const char *s, char **end);
+long double strtold(const char *s, char **end);
+double ldexp(double x, int e);
+long long strtoll(const char *s, char **end, int base);
 int    abs(int v);
 long   labs(long v);
 void   exit(int code);
 char  *getenv(const char *name);
+extern char **environ;   /* TCC 等程序要读:JoyOS 没有环境变量,空表 */
 int    system(const char *cmd);
 
 /* 随机数:xorshift32,种子来自 TSC 抖动;不播种时首次调用自动播 */
@@ -147,6 +163,26 @@ typedef unsigned int clock_t;
 #define CLOCKS_PER_SEC 1000000u             /* TSC 当 tick,绝对值只作参考 */
 time_t  time(time_t *t);
 clock_t clock(void);
+
+/* ---- 拆时间(TCC 的 __DATE__/__TIME__ 要用)---- */
+struct tm {
+    int tm_sec;     /* 0-59 */
+    int tm_min;     /* 0-59 */
+    int tm_hour;    /* 0-23 */
+    int tm_mday;    /* 1-31 */
+    int tm_mon;     /* 0-11 */
+    int tm_year;    /* 从 1900 起 */
+    int tm_wday;    /* 0-6 (周日=0) */
+    int tm_yday;    /* 0-365 */
+    int tm_isdst;   /* 恒 0(JoyOS 没时区) */
+};
+struct tm *localtime(const time_t *t);
+struct timeval {
+    long tv_sec;
+    long tv_usec;
+};
+int gettimeofday(struct timeval *tv, void *tz);
+int mprotect(void *addr, unsigned int len, int prot);
 
 /* ---- unistd(POSIX 子集)----
  * 文件模型沿用 minic.c 的"整文件缓冲":open 时读进内存/攒着,c l o s e 时写回。
@@ -167,6 +203,9 @@ int  read(int fd, void *buf, int n);
 int  write(int fd, const void *buf, int n);
 int  lseek(int fd, int off, int whence);
 int  unlink(const char *name);
+char *getcwd(char *buf, unsigned int size);
+char *realpath(const char *path, char *resolved);
+int execvp(const char *file, char *const argv[]);
 int  getpid(void);
 unsigned int sleep(unsigned int seconds);
 int  isatty(int fd);

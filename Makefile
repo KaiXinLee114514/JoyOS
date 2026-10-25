@@ -81,6 +81,25 @@ else
 C_PROGS     :=
 endif
 
+# 扩展:TCC(系统内 C 编译器,移植版住在 extensions/tcc)。
+# 它靠宿主机 gcc -m32 交叉编译成 JoyOS 平铺 BIN;joyinc/ 给 TCC 源码提供
+# 一份"能糊弄过去"的 libc 头文件,真正链接的是 build/minic.o。
+# 依赖:  gcc-multilib (32 位 gcc)。读 extensions/tcc/README.md。
+TCCPORT    := extensions/tcc
+TCCSRC     := $(TCCPORT)/src
+GCC_INC    := $(shell $(CC) -print-file-name=include)
+TCC_CFLAGS := -m32 -std=gnu99 -O1 -fno-strict-aliasing -fno-pic -nostdinc \
+              -isystem $(GCC_INC) -I$(TCCSRC) -I$(TCCPORT)/joyinc -Iinclude -Ilib
+
+$(BUILD)/joymain.o: $(TCCPORT)/joymain.c | $(BUILD)
+	$(CC) $(TCC_CFLAGS) -c $< -o $@
+
+$(BUILD)/tcc.o: $(wildcard $(TCCSRC)/*.c) $(wildcard $(TCCSRC)/*.h) | $(BUILD)
+	$(CC) $(TCC_CFLAGS) -c $(TCCSRC)/tcc.c -o $@
+
+$(BUILD)/TCC.BIN: $(BUILD)/joymain.o $(BUILD)/tcc.o $(CRT0_OBJ) $(MINIC_OBJ)
+	$(C_LD) $(CRT0_OBJ) $(BUILD)/joymain.o $(BUILD)/tcc.o $(MINIC_OBJ) -o $@
+
 # 扩展:vi(STEVIE 公版 vi 克隆,现在住在 extensions/vi)。
 # 默认构建**不含**它 —— 扩展是可选玩具,main 线不该被它拖住;`make ext` 才构建。
 VI_OBJS     := $(addprefix $(BUILD)/vi/,$(notdir $(patsubst %.c,%.o,$(wildcard extensions/vi/*.c))))
@@ -185,7 +204,7 @@ pinyin:
 	python3 tools/mkpinyin.py 6000 progs/PINYIN.BIN
 
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
-          $(PINYIN_BIN) \
+          $(PINYIN_BIN) $(BUILD)/TCC.BIN \
           $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
           tools/mkimg.py tools/mkfat.py \
           $(BUILD)/bigdir/.stamp
@@ -194,6 +213,7 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
 	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \
+	    TCC.BIN=$(BUILD)/TCC.BIN T1.C=progs/T1.C \
 	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
 
 hd: $(HDIMG)
