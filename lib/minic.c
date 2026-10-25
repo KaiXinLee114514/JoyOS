@@ -1029,3 +1029,231 @@ int getpid(void)
 {
     return 1;                               /* 单任务,固定 1 */
 }
+
+/* ==========================================================================
+ *  第二批:stdio 的 fread/fwrite/fseek/ftell、qsort、strerror、string 加固
+ * ==========================================================================*/
+
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f)
+{
+    size_t total, got = 0;
+    char *p = (char *)ptr;
+
+    if (!f || !(f->mode & FMODE_READ) || size == 0 || nmemb == 0)
+        return 0;
+    total = size * nmemb;
+    while (got < total && f->pos < f->len)
+        p[got++] = f->buf[f->pos++];
+    return got / size;
+}
+
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f)
+{
+    size_t total, put = 0;
+    const char *p = (const char *)ptr;
+
+    if (!f || !(f->mode & FMODE_WRITE) || size == 0 || nmemb == 0)
+        return 0;
+    total = size * nmemb;
+    if (f == stdout || f == stderr) {
+        mc_console_write(p, (int)total);
+        return nmemb;
+    }
+    while (put < total && f->pos < MC_WRITE_MAX) {
+        if (f->pos >= f->len)
+            f->len = f->pos + 1;
+        f->buf[f->pos++] = p[put++];
+    }
+    return put / size;
+}
+
+int fseek(FILE *f, long off, int whence)
+{
+    long base;
+
+    if (!f || f == stdout || f == stderr) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (whence == SEEK_SET)
+        base = 0;
+    else if (whence == SEEK_CUR)
+        base = f->pos;
+    else if (whence == SEEK_END)
+        base = f->len;
+    else {
+        errno = EINVAL;
+        return -1;
+    }
+    if (base + off < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    f->pos = (int)(base + off);
+    return 0;
+}
+
+long ftell(FILE *f)
+{
+    return f ? (long)f->pos : -1;
+}
+
+void rewind(FILE *f)
+{
+    if (f)
+        f->pos = 0;
+}
+
+int feof(FILE *f)
+{
+    return (f && (f->mode & FMODE_READ) && f->pos >= f->len) ? 1 : 0;
+}
+
+int ferror(FILE *f)
+{
+    (void)f;
+    return 0;                               /* 简化:不记录错误标记 */
+}
+
+int ungetc(int c, FILE *f)
+{
+    if (!f || !(f->mode & FMODE_READ) || f->pos <= 0)
+        return EOF;
+    f->pos--;
+    return c;
+}
+
+int fileno(FILE *f)
+{
+    int i;
+
+    if (!f)
+        return -1;
+    if (f == stdout)
+        return 1;
+    if (f == stderr)
+        return 2;
+    for (i = 3; i < MC_MAXFD; i++)
+        if (mc_fdt[i] == f)
+            return i;
+    return -1;
+}
+
+int isatty(int fd)
+{
+    return (fd >= 0 && fd <= 2) ? 1 : 0;
+}
+
+char *strerror(int err)
+{
+    switch (err) {
+    case 0:      return "success";
+    case EPERM:  return "operation not permitted";
+    case ENOENT: return "no such file or directory";
+    case EIO:    return "input/output error";
+    case ENOMEM: return "out of memory";
+    case EACCES: return "permission denied";
+    case EEXIST: return "file exists";
+    case EINVAL: return "invalid argument";
+    default:     return "unknown error";
+    }
+}
+
+/* qsort:教学量级用插入排序,O(n²) 但稳,元素按字节搬 */
+void qsort(void *base, size_t n, size_t sz, int (*cmp)(const void *, const void *))
+{
+    char *b = (char *)base;
+    size_t i, j, k;
+
+    if (!b || !cmp || n < 2 || sz == 0)
+        return;
+    for (i = 1; i < n; i++) {
+        for (j = i; j > 0; j--) {
+            char *a = b + (j - 1) * sz;
+            char *d = b + j * sz;
+            char t;
+            if (cmp(a, d) <= 0)
+                break;
+            for (k = 0; k < sz; k++) {
+                t = a[k];
+                a[k] = d[k];
+                d[k] = t;
+            }
+        }
+    }
+}
+
+/* ---- string 加固 ---- */
+size_t strnlen(const char *s, size_t max)
+{
+    size_t n = 0;
+    while (n < max && s[n])
+        n++;
+    return n;
+}
+
+char *strpbrk(const char *s, const char *accept)
+{
+    while (*s) {
+        if (strchr(accept, *s))
+            return (char *)s;
+        s++;
+    }
+    return NULL;
+}
+
+int strcasecmp(const char *a, const char *b)
+{
+    int ca, cb;
+    while (*a) {
+        ca = tolower((unsigned char)*a);
+        cb = tolower((unsigned char)*b);
+        if (ca != cb)
+            return ca - cb;
+        a++;
+        b++;
+    }
+    cb = tolower((unsigned char)*b);
+    return cb ? -cb : 0;
+}
+
+int strncasecmp(const char *a, const char *b, size_t n)
+{
+    int ca, cb;
+    while (n-- && *a) {
+        ca = tolower((unsigned char)*a);
+        cb = tolower((unsigned char)*b);
+        if (ca != cb)
+            return ca - cb;
+        a++;
+        b++;
+    }
+    return 0;
+}
+
+char *strtok_r(char *s, const char *delim, char **save)
+{
+    char *p;
+
+    if (s)
+        *save = s;
+    if (!*save || !**save)
+        return NULL;
+    p = *save;
+    while (*p && strchr(delim, *p))
+        p++;
+    if (!*p) {
+        *save = p;
+        return NULL;
+    }
+    s = p;
+    while (*p && !strchr(delim, *p))
+        p++;
+    if (*p) {
+        *p = 0;
+        *save = p + 1;
+    } else {
+        *save = p;
+    }
+    return s;
+}

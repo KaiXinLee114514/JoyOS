@@ -54,6 +54,15 @@ char *fgets(char *s, int n, FILE *f);
 int   fputs(const char *s, FILE *f);
 int   putchar(int c);
 int   puts(const char *s);
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f);
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f);
+int    fseek(FILE *f, long off, int whence);
+long   ftell(FILE *f);
+void   rewind(FILE *f);
+int    feof(FILE *f);
+int    ferror(FILE *f);
+int    fileno(FILE *f);
+int    ungetc(int c, FILE *f);
 int   printf(const char *fmt, ...);
 int   fprintf(FILE *f, const char *fmt, ...);
 int   vfprintf(FILE *f, const char *fmt, va_list ap);
@@ -81,6 +90,11 @@ char  *strstr(const char *hay, const char *needle);
 char  *strtok(char *s, const char *delim);
 char  *strdup(const char *s);
 size_t strspn(const char *s, const char *accept);
+size_t strnlen(const char *s, size_t max);
+char  *strpbrk(const char *s, const char *accept);
+int    strcasecmp(const char *a, const char *b);
+int    strncasecmp(const char *a, const char *b, size_t n);
+char  *strtok_r(char *s, const char *delim, char **save);
 char  *index(const char *s, int c);
 char  *rindex(const char *s, int c);
 size_t strcspn(const char *s, const char *reject);
@@ -124,6 +138,8 @@ int    system(const char *cmd);
 #define RAND_MAX 0x7FFFFFFF
 unsigned int rand(void);
 void         srand(unsigned int seed);
+void         qsort(void *base, size_t n, size_t sz,
+                   int (*cmp)(const void *, const void *));
 
 /* ---- time(计时器)---- */
 typedef long time_t;
@@ -153,6 +169,8 @@ int  lseek(int fd, int off, int whence);
 int  unlink(const char *name);
 int  getpid(void);
 unsigned int sleep(unsigned int seconds);
+int  isatty(int fd);
+char *strerror(int err);
 
 /* ---- 退出跳板(crt0.asm 里的汇编,exit() 靠它回到 shell)---- */
 typedef int jmp_buf[6];
