@@ -29,6 +29,7 @@ kmain:                                  ; 32 位内核入口(stub 里 jmp 0x1000
 %include "api.asm"                       ; 程序接口 int 0x30                  ; 从磁盘加载完整字库                      ; UTF-8 解码
 %include "speaker.asm"                   ; PC 蜂鸣器(beep,忙等标定见文件开头)
 %include "idt.asm"                       ; IDT / 异常 / panic 屏
+%include "fpu.asm"                       ; x87 浮点单元初始化
 %include "tss.asm"                       ; 用户段 + TSS(ring 3 的地基)
 %include "paging.asm"                    ; 页目录 / 页表
 %include "pmem.asm"                      ; 物理页池(位图分配器,paging_map 会找它要页)

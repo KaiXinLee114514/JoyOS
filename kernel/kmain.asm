@@ -151,6 +151,19 @@ COL_ERR    equ 0x0C                    ; 亮红
     mov esi, msg_idt
     call term_print
 
+    ; ---- x87 浮点单元:CR0 的 NE 位改成现代语义,异常走 #MF(向量 16)----
+    ;  ★ 必须在 idt_init 之后:NE=1 时浮点错误会进 #MF,没有 IDT 就三重故障。
+    call fpu_init
+    test al, al
+    jz .fpu_none
+    mov esi, msg_fpu_ok
+    call term_print
+    jmp .fpu_done
+.fpu_none:
+    mov esi, msg_fpu_none
+    call term_print
+.fpu_done:
+
     ; ---- ring 3 的地基:换一张带用户段的 GDT + 建 TSS + ltr ----
     ;  必须赶在开中断之前(函数自己也 pushfd/cli)。TSS 是 CPU 从 ring 3 掉回
     ;  ring 0 时唯一的"内核栈在哪"来源,没它就三重故障重启。
@@ -771,6 +784,8 @@ msg_disk_lba db 'LBA (EDD multi-sector read)', 10, 0
 msg_disk_chs db 'CHS fallback (BIOS has no LBA)', 10, 0
 msg_idt     db 'IDT: 256 vectors installed (errors 0-31 have handlers)', 10, 0
 msg_ring3   db 'ring 3: user segments + TSS ready (programs run at CPL=3)', 10, 0
+msg_fpu_ok  db 'fpu: x87 initialized (CR0.NE=1, #MF handler ready)', 10, 0
+msg_fpu_none db 'fpu: no x87 detected (floating point unavailable)', 10, 0
 msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-16 MiB (+ VBE LFB high window)', 10, 0
 msg_pmem    db 'pmem: page pool 0x00400000-0x00FFFFFF, ', 0
 msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: debug pmem / debug ptest)', 10, 0

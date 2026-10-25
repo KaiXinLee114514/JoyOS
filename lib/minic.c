@@ -520,6 +520,73 @@ static void out_num(out_t *o, unsigned long v, int base, int upper,
             out_ch(o, ' ');
 }
 
+/* ---------------------------------------------------------------------------
+ *  浮点输出:%f —— 默认 6 位小数,支持精度/宽度/左对齐/零填充
+ *  说明:用 double 做整数部分 + 小数部分拆解,精度到 1e-9 够 printf 用了。
+ *        (JoyOS 的 x87 由 kernel/fpu.asm 初始化)
+ * -------------------------------------------------------------------------*/
+static void out_double(out_t *o, double v, int prec, int width, int left,
+                       int zero, int plus, int space)
+{
+    char intbuf[40];
+    int ni = 0, i, neg = 0;
+    unsigned long long ip, frac, scale = 1;
+    int pad, total;
+
+    if (v != v) {                           /* NaN */
+        out_str(o, "nan", width, left, -1);
+        return;
+    }
+    if (v > 1.0e308 || v < -1.0e308) {      /* Inf */
+        out_str(o, "inf", width, left, -1);
+        return;
+    }
+    if (v < 0.0) { neg = 1; v = -v; }
+    if (prec < 0) prec = 6;
+    if (prec > 9) prec = 9;
+    for (i = 0; i < prec; i++)
+        scale *= 10ULL;
+
+    ip = (unsigned long long)v;             /* 整数部分(截断;小数在下面四舍五入) */
+    {
+        double d = (v - (double)ip) * (double)scale;
+        frac = (unsigned long long)(d + 0.5);
+    }
+    if (frac >= scale) {                    /* 进位到整数 */
+        frac -= scale;
+        ip++;
+    }
+
+    do {                                    /* 整数部分(逆序) */
+        intbuf[ni++] = (char)('0' + (int)(ip % 10));
+        ip /= 10;
+    } while (ip);
+
+    for (i = 0; i < prec; i++) {            /* 小数部分(逆序,自动补前导 0) */
+        intbuf[ni + i] = (char)('0' + (int)(frac % 10));
+        frac /= 10;
+    }
+
+    total = (neg || plus || space ? 1 : 0) + ni + (prec > 0 ? 1 + prec : 0);
+    pad = width - total;
+    if (!left && !zero && pad > 0)
+        for (i = 0; i < pad; i++) out_ch(o, ' ');
+    if (neg) out_ch(o, '-');
+    else if (plus) out_ch(o, '+');
+    else if (space) out_ch(o, ' ');
+    if (!left && zero && pad > 0)
+        for (i = 0; i < pad; i++) out_ch(o, '0');
+    for (i = ni - 1; i >= 0; i--)
+        out_ch(o, intbuf[i]);
+    if (prec > 0) {
+        out_ch(o, '.');
+        for (i = prec - 1; i >= 0; i--)
+            out_ch(o, intbuf[ni + i]);
+    }
+    if (left && pad > 0)
+        for (i = 0; i < pad; i++) out_ch(o, ' ');
+}
+
 int mc_vformat(char *buf, int max, const char *fmt, va_list ap)
 {
     out_t o;
@@ -601,6 +668,12 @@ int mc_vformat(char *buf, int max, const char *fmt, va_list ap)
             out_str(&o, "0x", 0, 0, -1);
             out_num(&o, (unsigned long)va_arg(ap, void *), 16, 0, 0, 0, 0, 0, 0, 0);
             break;
+        case 'f':
+        case 'F': {
+            double d = va_arg(ap, double);   /* float 默认提升为 double */
+            out_double(&o, d, prec, width, left, zero, plus, space);
+            break;
+        }
         case 'c':
             out_ch(&o, (char)va_arg(ap, int));
             break;
