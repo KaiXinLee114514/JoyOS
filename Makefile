@@ -76,7 +76,7 @@ C_LD        := ld -m elf_i386 -T lib/joyos.ld
 CRT0_OBJ    := $(BUILD)/crt0.o
 MINIC_OBJ   := $(BUILD)/minic.o
 ifeq ($(CC_OK),yes)
-C_PROGS     := CHELLO.BIN PLAY.BIN
+C_PROGS     := CHELLO.BIN PLAY.BIN RNGTEST.BIN
 else
 C_PROGS     :=
 endif

@@ -308,6 +308,79 @@ long atol(const char *s) { return (long)atoi(s); }
 int abs(int v) { return v < 0 ? -v : v; }
 long labs(long v) { return v < 0 ? -v : v; }
 
+/* strtol:按 base 解析。end 指向"解析停止的位置"(可为 NULL) */
+long strtol(const char *s, char **end, int base)
+{
+    long v = 0;
+    int neg = 0, d, any = 0;
+
+    while (isspace((unsigned char)*s))
+        s++;
+    if (*s == '-') {
+        neg = 1;
+        s++;
+    } else if (*s == '+') {
+        s++;
+    }
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    } else if (base == 0 && s[0] == '0') {
+        base = 8;
+        s++;
+    } else if (base == 0) {
+        base = 10;
+    }
+    for (;; s++) {
+        if (*s >= '0' && *s <= '9')
+            d = *s - '0';
+        else if (*s >= 'a' && *s <= 'z')
+            d = *s - 'a' + 10;
+        else if (*s >= 'A' && *s <= 'Z')
+            d = *s - 'A' + 10;
+        else
+            break;
+        if (d >= base)
+            break;
+        v = v * base + d;
+        any = 1;
+    }
+    if (end)
+        *end = (char *)(any ? s : s);
+    return neg ? -v : v;
+}
+
+/* ==========================================================================
+ *  随机数:xorshift32。不播种时首次调用用 TSC 抖自动播 —— 连读几次取异或,
+ *  把开机时几乎固定的低位噪声抹匀。返回 0..RAND_MAX。
+ * ==========================================================================*/
+static unsigned int mc_rand_state;
+
+void srand(unsigned int seed)
+{
+    mc_rand_state = seed ? seed : 0x9E3779B9u;
+}
+
+unsigned int rand(void)
+{
+    unsigned int s = mc_rand_state;
+
+    if (s == 0) {
+        unsigned long long t = j_rdtsc();
+        unsigned int mix = (unsigned int)(t ^ (t >> 32));
+        mix ^= mix << 13;
+        mix ^= mix >> 17;
+        mix ^= mix << 5;
+        s = mix ? mix : 0x9E3779B9u;
+        mc_rand_state = s;
+    }
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    mc_rand_state = s;
+    return s & 0x7FFFFFFFu;
+}
+
 /* ==========================================================================
  *  退出:跳回 crt0 的跳板,再 ret 回 shell
  *  (本来想直接 spin,那会把整台机器挂住 —— 编辑器报个错就得重启,太过分了)
@@ -321,6 +394,33 @@ void exit(int code)
     mc_longjmp(mc_exitbuf, 1);             /* 不返回 */
     for (;;)                                /* 理论上到不了 */
         ;
+}
+
+/* ==========================================================================
+ *  计时器
+ *  TSC 是 CPU 周期数,换算成真秒要 CPU 频率 —— 这里不猜频率:
+ *      time()  ≈ TSC 高 32 位"翻一次"当 1 秒(粗,只适合测顺序/耗时)
+ *      clock() ≈ TSC >> 12,当"微秒级 tick"用(CLOCKS_PER_SEC 只是名义值)
+ *  要精确等,用 sleep() —— 它走蜂鸣器的静音等待,毫秒级由内核 PIT 保证。
+ * ==========================================================================*/
+time_t time(time_t *t)
+{
+    time_t v = (time_t)(j_rdtsc() >> 32);
+    if (t)
+        *t = v;
+    return v;
+}
+
+clock_t clock(void)
+{
+    return (clock_t)(j_rdtsc() >> 12);
+}
+
+unsigned int sleep(unsigned int seconds)
+{
+    if (seconds)
+        j_beep(0, (int)(seconds * 1000u));
+    return 0;
 }
 
 /* 环境变量:没有文件系统之外的东西,一律给 NULL(调用方该有默认值) */
@@ -785,4 +885,147 @@ int access(const char *name, int mode)
     n = j_readfile(name, buf, MC_READ_MAX);
     free(buf);
     return (n < 0) ? -1 : 0;
+}
+
+/* ==========================================================================
+ *  unistd(POSIX 子集)
+ *  内核只有"整读整写",所以这里拿 FILE 的缓冲当 fd:
+ *      open("r") → 整文件读进内存;open("w") → 攒内存,close 时写回
+ *      read/write/lseek 全在缓冲上操作
+ *  fd 0/1/2 是控制台;文件 fd 从 3 起,上限 MC_MAXFD。
+ * ==========================================================================*/
+#define MC_MAXFD 16
+
+static FILE *mc_fdt[MC_MAXFD];              /* 0/1/2 不用,留空 */
+
+static FILE *mc_fd_get(int fd)
+{
+    if (fd < 3 || fd >= MC_MAXFD || !mc_fdt[fd]) {
+        errno = EINVAL;
+        return NULL;
+    }
+    return mc_fdt[fd];
+}
+
+int open(const char *name, int flags, ...)
+{
+    int fd;
+    FILE *f;
+
+    for (fd = 3; fd < MC_MAXFD; fd++)
+        if (!mc_fdt[fd])
+            break;
+    if (fd >= MC_MAXFD) {
+        errno = ENOMEM;
+        return -1;
+    }
+    f = fopen(name, (flags & (O_WRONLY | O_RDWR)) ? "w" : "r");
+    if (!f) {
+        if (!(flags & O_CREAT))
+            errno = ENOENT;
+        return -1;
+    }
+    mc_fdt[fd] = f;
+    return fd;
+}
+
+int close(int fd)
+{
+    FILE *f = mc_fd_get(fd);
+    int r;
+
+    if (!f)
+        return -1;
+    r = fclose(f);
+    mc_fdt[fd] = NULL;
+    return r;
+}
+
+int read(int fd, void *buf, int n)
+{
+    FILE *f;
+    int k = 0;
+    char *p = (char *)buf;
+
+    if (fd == STDIN_FILENO) {               /* 控制台:读一行(回车结束) */
+        while (k < n) {
+            int c = j_getchar();
+            if (c < 0)
+                break;
+            p[k++] = (char)c;
+            if (c == '\n')
+                break;
+        }
+        return k;
+    }
+    f = mc_fd_get(fd);
+    if (!f)
+        return -1;
+    while (k < n && f->pos < f->len)
+        p[k++] = f->buf[f->pos++];
+    return k;
+}
+
+int write(int fd, const void *buf, int n)
+{
+    FILE *f;
+
+    if (fd == STDOUT_FILENO || fd == STDERR_FILENO)
+        return mc_console_write((const char *)buf, n);
+    f = mc_fd_get(fd);
+    if (!f)
+        return -1;
+    if (!(f->mode & FMODE_WRITE)) {
+        errno = EACCES;
+        return -1;
+    }
+    if (f->pos + n > MC_WRITE_MAX) {
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(f->buf + f->pos, buf, n);
+    f->pos += n;
+    if (f->pos > f->len)
+        f->len = f->pos;
+    return n;
+}
+
+int lseek(int fd, int off, int whence)
+{
+    FILE *f;
+    int base;
+
+    if (fd == STDIN_FILENO || fd == STDOUT_FILENO || fd == STDERR_FILENO)
+        return -1;                          /* 控制台不可 seek */
+    f = mc_fd_get(fd);
+    if (!f)
+        return -1;
+    if (whence == SEEK_SET)
+        base = 0;
+    else if (whence == SEEK_CUR)
+        base = f->pos;
+    else if (whence == SEEK_END)
+        base = f->len;
+    else {
+        errno = EINVAL;
+        return -1;
+    }
+    if (base + off < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    f->pos = base + off;
+    return f->pos;
+}
+
+int unlink(const char *name)
+{
+    (void)name;
+    errno = EACCES;                         /* 内核没有删除接口 */
+    return -1;
+}
+
+int getpid(void)
+{
+    return 1;                               /* 单任务,固定 1 */
 }

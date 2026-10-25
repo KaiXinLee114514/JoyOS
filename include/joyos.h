@@ -205,6 +205,24 @@ static inline void j_beep(int freq_hz, int ms)
     __asm__ volatile("int $0x30" : : "a"(14), "b"(freq_hz), "c"(ms) : "memory");
 }
 
+/* 读 TSC(时间戳计数器)。rdtsc 不是特权指令,ring 3 里也能直接执行,
+ * 所以不用占用一个 int 0x30 功能号。返回值把高低 32 位混了一下,
+ * 低 32 位单独读请用 j_rdtsc_lo()。 */
+static inline u32 j_rdtsc_lo(void)
+{
+    u32 lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    (void)hi;
+    return lo;
+}
+
+static inline unsigned long long j_rdtsc(void)
+{
+    u32 lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((unsigned long long)hi << 32) | lo;
+}
+
 /* ---- 小小工具 ---- */
 static inline void j_newline(void)
 {

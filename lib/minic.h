@@ -72,16 +72,23 @@ size_t strlen(const char *s);
 char  *strcpy(char *d, const char *s);
 char  *strncpy(char *d, const char *s, size_t n);
 char  *strcat(char *d, const char *s);
+char  *strncat(char *d, const char *s, size_t n);
 int    strcmp(const char *a, const char *b);
 int    strncmp(const char *a, const char *b, size_t n);
 char  *strchr(const char *s, int c);
 char  *strrchr(const char *s, int c);
+char  *strstr(const char *hay, const char *needle);
+char  *strtok(char *s, const char *delim);
+char  *strdup(const char *s);
+size_t strspn(const char *s, const char *accept);
 char  *index(const char *s, int c);
 char  *rindex(const char *s, int c);
 size_t strcspn(const char *s, const char *reject);
 void  *memcpy(void *d, const void *s, size_t n);
 void  *memmove(void *d, const void *s, size_t n);
 void  *memset(void *d, int c, size_t n);
+int    memcmp(const void *a, const void *b, size_t n);
+void  *memchr(const void *s, int c, size_t n);
 
 /* ---- ctype ---- */
 int isalpha(int c);
@@ -106,11 +113,46 @@ void   free(void *p);
 size_t heap_free_bytes(void);
 int    atoi(const char *s);
 long   atol(const char *s);
+long   strtol(const char *s, char **end, int base);
 int    abs(int v);
 long   labs(long v);
 void   exit(int code);
 char  *getenv(const char *name);
 int    system(const char *cmd);
+
+/* 随机数:xorshift32,种子来自 TSC 抖动;不播种时首次调用自动播 */
+#define RAND_MAX 0x7FFFFFFF
+unsigned int rand(void);
+void         srand(unsigned int seed);
+
+/* ---- time(计时器)---- */
+typedef long time_t;
+typedef unsigned int clock_t;
+#define CLOCKS_PER_SEC 1000000u             /* TSC 当 tick,绝对值只作参考 */
+time_t  time(time_t *t);
+clock_t clock(void);
+
+/* ---- unistd(POSIX 子集)----
+ * 文件模型沿用 minic.c 的"整文件缓冲":open 时读进内存/攒着,c l o s e 时写回。
+ * stdin/stdout/stderr 是 0/1/2,文件 fd 从 3 起。 */
+#define STDIN_FILENO  0
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+
+#define O_RDONLY 0
+#define O_WRONLY 1
+#define O_RDWR   2
+#define O_CREAT  0x40
+#define O_TRUNC  0x200
+
+int  open(const char *name, int flags, ...);
+int  close(int fd);
+int  read(int fd, void *buf, int n);
+int  write(int fd, const void *buf, int n);
+int  lseek(int fd, int off, int whence);
+int  unlink(const char *name);
+int  getpid(void);
+unsigned int sleep(unsigned int seconds);
 
 /* ---- 退出跳板(crt0.asm 里的汇编,exit() 靠它回到 shell)---- */
 typedef int jmp_buf[6];
