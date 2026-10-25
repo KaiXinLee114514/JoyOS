@@ -238,6 +238,7 @@ tools/unifont2bin.py   Unifont .hex → JOYF 二进制字库 / VGA 字模 / 中�
 tools/mkfontsubset.py  从完整 .hex 里抽出要用的字形(生成入库的小子集)
 tools/text2alt.py      文字 → Alt 码位序列(查字库 / 直接打进 QEMU),见上面的"日文/韩文"
 tools/run.sh           QEMU 启动脚本(软盘/硬盘/完整硬盘/panic 演示/gdb/monitor/dry-run)
+tools/onekey_push.sh   一键 push:自动重试 + GH_TOKEN 环境变量(不落盘),GitHub 时通时不通时用
 tests/qemu_test.py     无头测试:HMP 抓屏 + sendkey 注入按键 + QMP 打码位 + 离线解析镜像
 tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 节)
 ```
@@ -1308,7 +1309,7 @@ PT_LFB      equ 0x4000     ; VBE 帧缓冲窗口
 把 flags 里的 `PAGE_RW` 去掉,写它就会吃 13 号通用保护异常。
 
 想改"程序能用多大内存"看 `paging.asm` 顶部的 `SPACE_IMG_PAGES` / `SPACE_HEAP_PAGES`
-—— 现在这两个数字**只表示窗口大小**(镜像 512 KiB + 堆 320 KiB),建空间时一页都不给,
+—— 现在这两个数字**只表示窗口大小**(镜像 384 KiB + 堆 448 KiB),建空间时一页都不给,
 是程序碰到才补。想知道它是怎么补的,从 `page_fault_try_handle` 看起;
 想关掉按需分页回到"一次给满",在 `space_create` 里把清页表那几行换成
 `paging_map` 逐页映上去就行(老版本就是这么写的,git 历史里能翻到)。
@@ -1336,6 +1337,21 @@ PT_LFB      equ 0x4000     ; VBE 帧缓冲窗口
 make lst        # 生成 build/boot.lst 和 build/kernel.lst(带机器码的反汇编)
 qemu ... -s -S  # 配合 gdb:target remote :1234(或 ./tools/run.sh --gdb)
 ```
+
+### 8.10 推送到 GitHub(国内网络时通时不通)
+
+手动 `git push` 碰上 GitHub 抽风就得干等。用现成的脚本:
+
+```bash
+tools/onekey_push.sh --dry-run                       # 先看看要推什么
+GH_TOKEN=ghp_xxx tools/onekey_push.sh                # 带上 PAT 推(失败自动重试)
+tools/onekey_push.sh                                 # 配过 credential.helper / SSH 时直接推
+tools/onekey_push.sh --branch dev --retry 8 --sleep 15
+```
+
+token 只从环境变量 `GH_TOKEN` 读,**不写进 config、不落盘**。想长期免输入可以
+`git config --global credential.helper store`(明文存 `~/.git-credentials`),
+或者干脆每次拷进环境变量。
 
 ## 9. 中文与字库(详见 font/README.md)
 
