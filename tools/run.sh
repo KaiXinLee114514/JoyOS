@@ -75,7 +75,7 @@ fi
 # 镜像没构建(或源码更新了)就先构建
 make -s "$IMG"
 
-CMD=("$QEMU_BIN" "${DRIVE[@]}")
+CMD=("$QEMU_BIN" -m "${QEMU_MEM:-1024}" "${DRIVE[@]}")
 [ -n "${QEMU_DISPLAY:-}" ] && CMD+=(-display "$QEMU_DISPLAY")
 [ ${#EXTRA[@]} -gt 0 ] && CMD+=("${EXTRA[@]}")
 

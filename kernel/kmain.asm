@@ -23,7 +23,7 @@
 ;      0x11F000          程序参数块(PROG_ARG_ADDR)
 ;      0x120000-0x19FFFF 用户程序镜像(PROG_ADDR;加载器硬上限是 PROG_MAX_SIZE 896 KiB,
 ;                        但超过 512 KiB 就会压到堆 —— 以 include/joyos.h 为准)
-;      0x1A0000-0x1EFFFF 堆(malloc,320 KB)※ 和程序加载区有重叠,见 include/joyos.h
+;      0x180000-0x1EDFFF 堆(malloc,440 KB)※ 和程序加载区有重叠,见 include/joyos.h
 ;      0x1F0000          内核临时缓冲(读字库描述块)
 ;      0x200000-0x3AFFFF 完整字库(FONT_LOAD_ADDR,1.7 MB)
 ;      0x400000-0xFFFFFF 物理页池(pmem.asm 的位图分配器:3072 页 × 4 KiB)
@@ -38,7 +38,18 @@ VGA_COLS   equ 80
 VGA_ROWS   equ 25
 ; 恒等映射的上限:0~16 MiB 线性 = 物理(paging.asm 建表),页池也顶在这儿(pmem.asm)。
 ; 内核里凡是"地址能不能直接当指针用"的判断都以它为准(比如 ata.asm 的安全闸)。
-IDENT_LIMIT equ 0x1000000
+IDENT_LIMIT equ 0x1000000              ; 恒等映射的**编译期上限**(运行时用 ident_limit)
+
+; 用户程序地址窗口(与 kernel/paging.asm 的 SPACE_* 必须一致;
+; paging.asm 那边用 %ifndef 守着,只认这里的一份)。
+SPACE_IMG_VA     equ 0x120000
+SPACE_IMG_PAGES  equ 0x60              ; 384 KiB
+SPACE_HEAP_VA    equ 0x180000
+SPACE_HEAP_PAGES equ 0x70              ; 448 KiB
+SPACE_TRAMP_VA   equ SPACE_IMG_VA + (SPACE_IMG_PAGES - 1) * 4096
+SPACE_ARGS_VA    equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 2) * 4096
+SPACE_STACK_VA   equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 1) * 4096
+SPACE_USER_STACK_TOP equ SPACE_STACK_VA + 4092
 
 COL_NORMAL equ 0x07                    ; 浅灰
 COL_HEADER equ 0x0B                    ; 亮青
@@ -64,6 +75,41 @@ COL_ERR    equ 0x0C                    ; 亮红
     mov [fb_pitch], eax
     mov eax, [BOOTINFO + 32]
     mov [fb_bpp], eax
+
+    ; ---- 物理内存探测结果 → 运行时布局(阶段 1:自适应)----
+    ;   ram_top     = 引导 stub 探到的可用 RAM 顶端(字节;0 = 没探到)
+    ;   ident_limit = 恒等映射上限 = min(ram_top 向下取整到 4 MiB, 16 MiB),最少 4 MiB
+    ;   pmem        = 0x400000 ~ ident_limit(恒等映射以内才发得出去)
+    mov eax, [BOOTINFO + 96]
+    test eax, eax
+    jnz .ram_top_ok
+    mov eax, IDENT_LIMIT                ; 兜底:老约定 16 MiB
+.ram_top_ok:
+    mov [ram_top], eax
+    mov ecx, eax
+    shr ecx, 22                         ; 4 MiB 为单位
+    test ecx, ecx
+    jnz .ident_units_ok
+    mov ecx, 1                          ; 至少 4 MiB(内核低区要用)
+.ident_units_ok:
+    cmp ecx, 4                          ; 最多 16 MiB(编译期的四张页表)
+    jbe .ident_cap_ok
+    mov ecx, 4
+.ident_cap_ok:
+    shl ecx, 22
+    mov [ident_limit], ecx
+    mov dword [pmem_start], 0x400000
+    mov [pmem_end], ecx
+    mov eax, ecx
+    sub eax, 0x400000
+    shr eax, 12
+    mov [pmem_total], eax
+    mov [pmem_pages], eax
+    add eax, 31
+    shr eax, 5
+    mov [pmem_words], eax
+    mov eax, [BOOTINFO + 104]
+    mov [e820_entries], eax
 
     ; ---- 字库:先从磁盘尝试读完整版(读不到就退回内建子集)----
     call font_load_from_disk
@@ -175,15 +221,97 @@ COL_ERR    equ 0x0C                    ; 亮红
     call paging_init
     mov esi, msg_paging
     call term_print
+    mov eax, [ident_limit]
+    shr eax, 20
+    call term_print_dec
+    mov esi, msg_paging2
+    call term_print
 
     ; ---- 物理页池:开机更早的地方已经初始化过(见上面 —— fb_init 要先用)----
-    ; 这里只把数字报出来
+    ; 这里把实际布局报出来(数字来自启动时的运行时计算,不是写死的)
     mov esi, msg_pmem
     call term_print
-    mov eax, PMEM_TOTAL
+    mov eax, [pmem_start]
+    call term_print_hex
+    mov esi, msg_layout_dash
+    call term_print
+    mov eax, [pmem_end]
+    call term_print_hex
+    mov esi, msg_layout_comma
+    call term_print
+    mov eax, [pmem_total]
     call term_print_dec
     mov esi, msg_pmem2
     call term_print
+
+    ; ---- 机器可读的布局行(测试脚本/调试用,别改格式;太长就分三行)----
+    mov esi, msg_layout1
+    call term_print
+    mov eax, [ram_top]
+    shr eax, 20
+    call term_print_dec
+    mov esi, msg_layout1b
+    call term_print
+    mov eax, [e820_entries]
+    call term_print_dec
+    mov esi, msg_layout1c
+    call term_print
+    mov eax, [ident_limit]
+    shr eax, 20
+    call term_print_dec
+    mov esi, msg_layout_mib
+    call term_print
+
+    mov esi, msg_layout2
+    call term_print
+    mov eax, [pmem_start]
+    call term_print_hex
+    mov esi, msg_layout_dash
+    call term_print
+    mov eax, [pmem_end]
+    call term_print_hex
+    mov esi, msg_layout2b
+    call term_print
+    mov eax, [pmem_total]
+    call term_print_dec
+    mov al, 10
+    call term_putc
+
+    mov esi, msg_layout3
+    call term_print
+    mov eax, SPACE_IMG_VA
+    call term_print_hex
+    mov esi, msg_layout_plus
+    call term_print
+    mov eax, SPACE_IMG_PAGES
+    call term_print_dec
+    mov esi, msg_layout_p
+    call term_print
+    mov eax, SPACE_HEAP_VA
+    call term_print_hex
+    mov esi, msg_layout_plus
+    call term_print
+    mov eax, SPACE_HEAP_PAGES
+    call term_print_dec
+    mov al, 'p'
+    call term_putc
+    mov al, 10
+    call term_putc
+
+    mov esi, msg_layout4
+    call term_print
+    mov eax, SPACE_TRAMP_VA
+    call term_print_hex
+    mov esi, msg_layout_tramp
+    call term_print
+    mov eax, SPACE_ARGS_VA
+    call term_print_hex
+    mov esi, msg_layout_args
+    call term_print
+    mov eax, SPACE_USER_STACK_TOP
+    call term_print_hex
+    mov al, 10
+    call term_putc
 
     ; ---- 调度器:线程表清干净,0 号登记成"现在这个上下文"(shell 自己)----
     ; 轮转不在这儿开:开机流程本身也被 IRQ0 打着,现在就换人会把启动信息打得
@@ -764,6 +892,15 @@ term_print_byte:
 msg_title   db 'boot: Operation System', 10, 0
 msg_chain   db 'bootloader -> protected mode -> kernel', 10, 0
 msg_fbdump  db 'fb: phys=', 0
+; ---- 运行时内存布局(启动时由 BOOTINFO + paging/pmem 协商出来,见上面计算段)----
+ram_top     dd 0                       ; 可用 RAM 顶端(字节)
+ident_limit dd 0                       ; 恒等映射上限(4 MiB 对齐,≤ 16 MiB)
+e820_entries dd 0                      ; E820 条目数(0 = 兜底算法探的)
+pmem_start  dd 0                       ; 页池起点
+pmem_end    dd 0                       ; 页池终点
+pmem_total  dd 0                       ; 页池总页数
+pmem_pages  dd 0                       ; (同 pmem_total,给 shell 用)
+pmem_words  dd 0                       ; 位图需要多少个 dword
 msg_fbw     db ' w=', 0
 msg_fbh     db ' h=', 0
 msg_fbp     db ' pitch=', 0
@@ -786,9 +923,24 @@ msg_idt     db 'IDT: 256 vectors installed (errors 0-31 have handlers)', 10, 0
 msg_ring3   db 'ring 3: user segments + TSS ready (programs run at CPL=3)', 10, 0
 msg_fpu_ok  db 'fpu: x87 initialized (CR0.NE=1, #MF handler ready)', 10, 0
 msg_fpu_none db 'fpu: no x87 detected (floating point unavailable)', 10, 0
-msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-16 MiB (+ VBE LFB high window)', 10, 0
-msg_pmem    db 'pmem: page pool 0x00400000-0x00FFFFFF, ', 0
+msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-', 0
+msg_paging2 db ' MiB (+ VBE LFB high window)', 10, 0
+msg_pmem    db 'pmem: page pool 0x', 0
+msg_layout_dash db '-0x', 0
+msg_layout_comma db ', ', 0
 msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: debug pmem / debug ptest)', 10, 0
+msg_layout1 db 'layout: ram=', 0
+msg_layout1b db 'M e820=', 0
+msg_layout1c db ' ident=', 0
+msg_layout_mib db 'M', 10, 0
+msg_layout2 db 'layout: pool=0x', 0
+msg_layout2b db ' pages=', 0
+msg_layout3 db 'layout: img=0x', 0
+msg_layout_plus db '+', 0
+msg_layout_p db 'p heap=0x', 0
+msg_layout4 db 'layout: tramp=0x', 0
+msg_layout_tramp db ' args=0x', 0
+msg_layout_args db ' stack=', 0
 msg_kbd     db 'keyboard: PIC remapped to 0x20, IRQ1 enabled', 10, 0
 msg_pit     db 'timer: PIT channel 0 at 100 Hz (IRQ0 0x20; try: uptime / sleep)', 10, 0
 msg_sched   db 'sched: round-robin threads, 20 ms slice, 4 shells (Ctrl+Left / Ctrl+Right)', 10, 0

@@ -22,14 +22,12 @@
 ;  池里的页在恒等映射范围内,所以拿到地址就能直接读写 —— 不用再 paging_map 一次。
 ; ============================================================================
 
-PMEM_BITMAP  equ 0x6000                ; 位图(384 字节,放在低内存空闲处)
-PMEM_START   equ 0x400000              ; 页池起点(4 MiB)
-PMEM_END     equ IDENT_LIMIT           ; 页池终点(16 MiB,= 恒等映射边界)
+PMEM_BITMAP  equ 0x6000                ; 位图(384 字节,最多 3072 页 = 12 MiB 页池)
 PAGE_BYTES   equ 4096                  ; 一页 4 KiB
-
-PMEM_TOTAL   equ (PMEM_END - PMEM_START) / PAGE_BYTES   ; 3072 页
-PMEM_MIB     equ (PMEM_END - PMEM_START) / 0x100000     ; 12 MiB(shell 显示用)
-PMEM_WORDS   equ PMEM_TOTAL / 32                          ; 96 个 dword
+; 页池范围不写死了:kmain.asm 启动时按 E820 探到的 RAM 算好
+;   pmem_start / pmem_end / pmem_total / pmem_words
+; 注意位图缓冲区固定 384 字节,所以页池上限 3072 页(12 MiB) —— 阶段 1 的约束,
+; 阶段 2(恒等映射扩到更多 RAM)时要把位图也按需分配/扩缓冲区。
 
 ; ---------------------------------------------------------------------------
 ;  pmem_init:位图清零 = 全部空闲
@@ -37,12 +35,14 @@ PMEM_WORDS   equ PMEM_TOTAL / 32                          ; 96 个 dword
 pmem_init:
     pushad
     mov edi, PMEM_BITMAP
-    mov ecx, PMEM_WORDS
+    mov ecx, [pmem_words]              ; 运行时算出来的位图 dword 数
     xor eax, eax
     rep stosd
-    mov dword [pmem_free_count], PMEM_TOTAL
+    mov eax, [pmem_total]
+    mov [pmem_free_count], eax
     mov dword [pmem_alloced], 0
-    mov dword [pmem_hi], PMEM_START
+    mov eax, [pmem_start]
+    mov [pmem_hi], eax
     mov dword [pmem_hint], 0           ; 连续分配从第 0 页开始找
     popad
     ret
@@ -60,7 +60,7 @@ pmem_alloc:
     cmp eax, -1                        ; 全 1 = 这个 dword 全占了
     jne .found                         ; (别写成 not+jnz:not 不动标志位!踩过)
     inc edx
-    cmp edx, PMEM_WORDS
+    cmp edx, [pmem_words]
     jb .scan
     pop esi
     xor eax, eax                       ; 一页都没有了
@@ -73,7 +73,7 @@ pmem_alloc:
     shl eax, 5                         ; dword 下标 × 32
     add eax, ecx                       ; 页号
     shl eax, 12                        ; × 4096
-    add eax, PMEM_START                ; 物理地址
+    add eax, [pmem_start]              ; 物理地址
     dec dword [pmem_free_count]
     inc dword [pmem_alloced]
     cmp eax, [pmem_hi]
@@ -90,11 +90,11 @@ pmem_free:
     push ebx
     test eax, PAGE_BYTES - 1
     jnz .bad                           ; 没页对齐
-    cmp eax, PMEM_START
+    cmp eax, [pmem_start]
     jb .bad                            ; 低于池子(内核地盘,不归我们管)
-    cmp eax, PMEM_END
+    cmp eax, [pmem_end]
     jae .bad                           ; 高于池子
-    sub eax, PMEM_START
+    sub eax, [pmem_start]
     shr eax, 12                        ; 页号
     mov ebx, eax
     shr ebx, 5                         ; dword 下标
@@ -127,16 +127,26 @@ pmem_free:
 pmem_alloc_pages:
     push ecx
     mov [pap_need], ecx
+    ; 页池是空的(内存太小,恒等映射只有 4 MiB)或比要的还小:直接失败。
+    ; 不先挡一下的话,下面的扫描在 total==0 时会绕 40 亿圈,最后"凭空"分出一页
+    ; 落在恒等映射外面 —— 一写就 #PF。8 MiB 虚拟机的 panic 就是这么来的。
+    mov eax, [pmem_total]
+    test eax, eax
+    jz .nomem
+    cmp eax, ecx
+    jb .nomem
     mov dword [pap_start], 0
-    mov dword [pap_left], PMEM_TOTAL * 2   ; 最多扫两圈
+    mov eax, [pmem_total]
+    shl eax, 1
+    mov [pap_left], eax                 ; 最多扫两圈
 
     mov esi, PMEM_BITMAP
     mov edi, [pmem_hint]               ; 从上次结束的地方开始
     xor ebx, ebx                       ; 已经连续空闲了几页
 .scan:
-    cmp edi, PMEM_TOTAL
+    cmp edi, [pmem_total]
     jb .in_range
-    sub edi, PMEM_TOTAL                ; 扫到尾了,绕回开头
+    sub edi, [pmem_total]              ; 扫到尾了,绕回开头
 .in_range:
     mov eax, edi                       ; 看位 edi
     shr eax, 5
@@ -155,22 +165,25 @@ pmem_alloc_pages:
     inc edi
     dec dword [pap_left]
     jnz .scan
+.nomem:
     pop ecx
-    xor eax, eax                       ; 找不到这么长的空档
+    xor eax, eax                       ; 页池空/太小 或 找不到这么长的空档
     ret
 .found:
     mov eax, edi                       ; 起点 = 当前位置 - need + 1(可能回绕)
     sub eax, [pap_need]
     inc eax
     jns .no_wrap
-    add eax, PMEM_TOTAL
+    add eax, [pmem_total]
 .no_wrap:
     mov [pap_start], eax
     mov [pmem_hint], edi               ; 下次从这一段后面接着找
     inc dword [pmem_hint]
-    cmp dword [pmem_hint], PMEM_TOTAL
+    mov eax, [pmem_hint]
+    cmp eax, [pmem_total]
     jb .hint_ok
-    sub dword [pmem_hint], PMEM_TOTAL
+    mov eax, [pmem_total]
+    sub dword [pmem_hint], eax
 .hint_ok:
     mov ecx, [pap_need]                ; ---- 把这些位全置 1 ----
     mov edi, [pap_start]
@@ -181,9 +194,9 @@ pmem_alloc_pages:
     and edx, 31
     bts dword [esi + eax * 4], edx
     inc edi
-    cmp edi, PMEM_TOTAL
+    cmp edi, [pmem_total]
     jb .mark_in
-    sub edi, PMEM_TOTAL
+    sub edi, [pmem_total]
 .mark_in:
     dec ecx
     jnz .mark
@@ -193,7 +206,7 @@ pmem_alloc_pages:
     add dword [pmem_alloced], eax
     mov eax, [pap_start]
     shl eax, 12
-    add eax, PMEM_START
+    add eax, [pmem_start]
     cmp eax, [pmem_hi]
     jbe .no_hi
     mov [pmem_hi], eax

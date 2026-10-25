@@ -42,8 +42,95 @@ stub_entry:
     sti
     mov [boot_drive], dl
 
+
+    ; ---- 0) 探测物理内存(E820;失败退 E801,再退 0x88)----
+    ; 结果写进 BOOTINFO:+96 = 可用 RAM 顶端(字节,页对齐向下),+100 = 顶端 MiB,
+    ; +104 = E820 条目数(0 = 不是 E820 探到的,是兜底算法)。
+    ; 为什么在这里做:VBE/保护模式之前才在实模式里,BIOS 中断只有现在能调。
+    mov dword [BOOTINFO + 96], 0
+    mov dword [BOOTINFO + 100], 0
+    mov dword [BOOTINFO + 104], 0
+    mov dword [mem_top], 0
+    mov dword [e820_count], 0
+    mov ebx, 0
+    mov edi, E820_BUF
+.e820_loop:
+    mov eax, 0xE820
+    mov edx, 0x534D4150             ; 'SMAP'
+    mov ecx, 24
+    int 0x15
+    jc .e820_fail
+    cmp eax, 0x534D4150
+    jne .e820_fail
+    cmp ecx, 20                     ; 条目太短,跳过(但还是算进条目数)
+    jb .e820_advance
+    cmp dword [edi + 16], 1         ; 类型 1 = 可用 RAM
+    jne .e820_advance
+    cmp dword [edi + 4], 0          ; 只认 4 GiB 以下的段
+    jne .e820_advance
+    mov eax, [edi]                  ; 段基址
+    add eax, [edi + 8]              ; + 段长度 = 段顶端
+    jc .e820_huge
+    jmp .e820_cmp
+.e820_huge:
+    mov eax, 0xFFFFF000
+.e820_cmp:
+    cmp eax, [mem_top]
+    jbe .e820_advance
+    mov [mem_top], eax
+.e820_advance:
+    inc dword [e820_count]
+    cmp ecx, 24                     ; ACPI 3.0 的条目是 24 字节,老的是 20
+    jb .e820_adv20
+    add edi, 24
+    jmp .e820_after
+.e820_adv20:
+    add edi, 20
+.e820_after:
+    test ebx, ebx                   ; 还有下一项?
+    jnz .e820_loop
+.e820_fail:
+    cmp dword [mem_top], 0
+    jne .e820_store
+    ; ---- 退路 1:E801(1 MiB~16 MiB + 16 MiB 以上的 64 KiB 块数)----
+    mov ax, 0xE801
+    int 0x15
+    jc .try_88
+    movzx eax, ax
+    movzx ebx, bx
+    jmp .e801_calc
+.try_88:
+    ; ---- 退路 2:0x88(只报 1 MiB 以上的 KB 数,最多 64 MiB)----
+    mov ah, 0x88
+    int 0x15
+    jc .mem_done
+    movzx eax, ax
+    xor ebx, ebx
+.e801_calc:
+    shl eax, 10
+    add eax, 0x100000               ; E801 从 1 MiB 起算
+    shl ebx, 16
+    add eax, ebx
+    mov [mem_top], eax
+    mov dword [e820_count], 0       ; 0 = 不是 E820
+.e820_store:
+    mov eax, [mem_top]
+    and eax, 0xFFFFF000             ; 页对齐向下(别把最后不完整的一页算进去)
+    mov [BOOTINFO + 96], eax
+    shr eax, 20
+    mov [BOOTINFO + 100], eax
+    mov eax, [e820_count]
+    mov [BOOTINFO + 104], eax
+.mem_done:
+
     mov si, msg_hello
     call print16
+
+    ; ---- 太小就别开图形模式 ----
+    ;   图形终端要从页池拿 13 页 (52 KiB) 的"当前行"缓冲;可用内存 < 8 MiB 时
+    ;   恒等映射只有 4 MiB、页池是空的,硬开 VBE 会黑屏。退回文本模式至少能跑。
+    cmp dword [mem_top], 0x800000
+    jb .no_vbe
 
     ; ---- 1) 取 VBE 控制器信息 ----
     mov ax, 0x4F00
@@ -241,6 +328,10 @@ boot_drive db 0
 cand_mode  dw 0
 best_mode  dw 0
 have_cand  db 0
+
+E820_BUF   equ 0x9400                   ; E820 条目缓冲(64 项 × 24 B = 1536 B)
+mem_top    dd 0                         ; 探到的可用 RAM 顶端(字节)
+e820_count dd 0                         ; E820 条目数
 
 ; ---------------------------------------------------------------- 32 位
 [BITS 32]

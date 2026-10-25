@@ -815,6 +815,7 @@ def main() -> int:
                             "font: loaded from disk (ATA), ..."))
             results.append(("完整字库字数", has("40208 glyphs") and not has("416 glyphs"),
                             "40208 glyphs(内置子集是 416)"))
+
             if fat32_mode:
                 results.append(("FAT32 自动识别(BPB 的 f16 每 FAT 扇区数 = 0)",
                                 has("fat32: mounted at LBA 6144"),
@@ -894,6 +895,31 @@ def main() -> int:
                     time.sleep(step)
                 return False
 
+            # ---- 动态内存布局(阶段 1):开机打印的机器可读 layout 行 ----
+            #   格式(内核 kernel/kmain.asm):三行 "layout: k=v ..."
+            raw_boot = screen_lines()
+            layout = {}
+            for line in raw_boot.splitlines():
+                for tok in line.replace("layout:", " ").split():
+                    if "=" in tok:
+                        k, v = tok.split("=", 1)
+                        layout[k] = v
+            def layout_val(key, unit=1):
+                v = layout.get(key, "")
+                m = re.match(r"^0x([0-9a-fA-F]+)$", v)
+                if m:
+                    return int(m.group(1), 16)
+                m = re.match(r"^(\d+)([Mm])?$", v)
+                if m:
+                    n = int(m.group(1))
+                    return n * (0x100000 if m.group(2) else 1) * unit
+                return -1
+            results.append(("layout 行: RAM → 恒等映射 → 页池,大小自洽",
+                            layout_val("ram") >= 4 * 0x100000
+                            and 4 * 0x100000 <= layout_val("ident") <= 16 * 0x100000
+                            and layout_val("ident") % (4 * 0x100000) == 0
+                            and layout_val("pages") == (layout_val("ident") - 0x400000) // 4096,
+                            f"layout: {layout}"))
             run("ls")
             results.append(("ls 列目录",
                             has("README.TXT") and has("HELLO.BIN") and has("COUNT.BIN"),
@@ -983,8 +1009,8 @@ def main() -> int:
                             has("pages that did not read back what I wrote: 0"),
                             "pages that did not read back what I wrote: 0"))
             results.append((".bss 那页(文件之外)也是零页",
-                            has("page beyond the file (bss at 0x184000): was zero"),
-                            "page beyond the file (bss at 0x184000): was zero, as it should be"))
+                            has("page beyond the file (bss at 0x17E000): was zero"),
+                            "page beyond the file (bss at 0x17E000): was zero, as it should be"))
 
             run("debug pmem")
             # 3072 - 6 = 3066 是老基线:帧缓冲终端的"当前行"缓冲要在 fb_init 里
@@ -1181,9 +1207,10 @@ def main() -> int:
             results.append(("ring 3:程序自己报 CPL = 3",
                             wait_for("CPL = 3") and has("0x0000001B") and has("0x00000023"),
                             "CS = 0x0000001b(CPL=3)/ SS = 0x00000023"))
+            tramp_hex = f"0x{(layout_val('tramp') if layout_val('tramp') > 0 else 0x17F000):08X}"
             results.append(("ring 3:内核给的用户栈 + 弹床页",
-                            has("0x001EFFFC") and has("0x0019F000"),
-                            "ESP = 0x001EFFFC,[ESP] = 弹床 0x0019F000"))
+                            has("0x001EFFFC") and has(tramp_hex),
+                            f"ESP = 0x001EFFFC,[ESP] = 弹床 {tramp_hex}"))
             run("clear", wait=0.8)
             run("run FAULT.BIN", wait=2.5)
             results.append(("ring 3:摸内核内存被页错误干掉",

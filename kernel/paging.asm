@@ -73,21 +73,28 @@ paging_init:
     mov ecx, 1024
     rep stosd
 
-    ; ---- 2) 页目录前 4 项各挂一张恒等页表(0-4 / 4-8 / 8-12 / 12-16 MiB)----
+    ; ---- 2) 页目录挂恒等页表:按 ident_limit 决定挂几张(每张 4 MiB)----
+    ;   ident_limit 是 kmain.asm 启动时按 E820 探到的 RAM 算的(4/8/12/16 MiB)。
+    ;   0-4 MiB 永远要(内核/VGA/低区缓冲/字库都在里面),后面几张看内存大小。
     mov eax, PT_LOW | PAGE_P | PAGE_RW
     mov [PD_ADDR + 0 * 4], eax         ; 管 0x00000000-0x003FFFFF
+    IDENT_PT PT_LOW, 0x000000
+    cmp dword [ident_limit], 0x800000
+    jb .ident_done
     mov eax, PT_ID1 | PAGE_P | PAGE_RW
     mov [PD_ADDR + 1 * 4], eax         ; 管 0x00400000-0x007FFFFF
+    IDENT_PT PT_ID1, 0x400000
+    cmp dword [ident_limit], 0xC00000
+    jb .ident_done
     mov eax, PT_ID2 | PAGE_P | PAGE_RW
     mov [PD_ADDR + 2 * 4], eax         ; 管 0x00800000-0x00BFFFFF
+    IDENT_PT PT_ID2, 0x800000
+    cmp dword [ident_limit], 0x1000000
+    jb .ident_done
     mov eax, PT_ID3 | PAGE_P | PAGE_RW
     mov [PD_ADDR + 3 * 4], eax         ; 管 0x00C00000-0x00FFFFFF
-
-    ; ---- 3) 四张表都填成恒等映射 ----
-    IDENT_PT PT_LOW, 0x000000
-    IDENT_PT PT_ID1, 0x400000
-    IDENT_PT PT_ID2, 0x800000
     IDENT_PT PT_ID3, 0xC00000
+.ident_done:
 
     ; ---- 4) 把 VBE 线性帧缓冲也映射进来 ----
     ; 做法:按 4 MiB 对齐算出页目录索引,给它挂一张新页表,里面 1024 项都指向那 4 MiB。
@@ -284,7 +291,7 @@ paging_translate:
 ;     程序视角:                         物理内存:
 ;       0x120000 ┌──────────────┐          程序碰过的页才真的存在,
 ;                │  镜像 128 页  │          HELLO.BIN 这种小程序只拿走 1 页,
-;       0x1A0000 ├──────────────┤          而不是像以前那样一上来就占 208 页。
+;       0x180000 ├──────────────┤          而不是像以前那样一上来就占 208 页。
 ;                │   堆 80 页    │
 ;       0x1F0000 └──────────────┘
 ;
@@ -296,24 +303,23 @@ paging_translate:
 ;  内核窗口继续恒等映射 —— 所以 int 0x30 那些内核函数照旧能用,**不需要 ring 3**;
 ;  程序传给内核的指针也照旧解得开(那会儿用的就是程序这套页表)。
 ; ===========================================================================
+%ifndef SPACE_IMG_VA
+; ★ 这些常量在 kernel/kmain.asm 里定义一份(布局打印要用),这里只是兜底:
+;   如果单独汇编本文件(没有 kmain)也能过。两边必须一致。
 SPACE_IMG_VA     equ 0x120000          ; 程序镜像窗口(shell.asm 的 PROG_ADDR)
-SPACE_IMG_PAGES  equ 0x80              ; 512 KiB(0x120000-0x19FFFF,见 include/joyos.h)
-SPACE_HEAP_VA    equ 0x1A0000          ; 堆窗口(JOY_HEAP_START)
-SPACE_HEAP_PAGES equ 0x50              ; 320 KiB(0x1A0000-0x1EFFFF)
-; ---- ring 3 专用的两块页(都在窗口的最后一页,程序照样能用前面的部分)----
-SPACE_TRAMP_VA   equ SPACE_IMG_VA + (SPACE_IMG_PAGES - 1) * 4096   ; 0x19F000 弹床
-SPACE_STACK_VA   equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 1) * 4096 ; 0x1EF000 用户栈
-SPACE_USER_STACK_TOP equ SPACE_STACK_VA + 4092                      ; 0x1EFFFC
-
-; 参数页:ring 3 程序读不到内核里的参数缓冲区(PROG_ARG_ADDR 在 0x11F000,
-; 那是"supervisor only"的页),所以装载器把 4 字节魔数 + 参数字符串
-; 整个拷进程序自己空间的这一页,API 12 返回的是这儿的地址。
-SPACE_ARGS_VA    equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 2) * 4096 ; 0x1EE000 参数页
+SPACE_IMG_PAGES  equ 0x60              ; 384 KiB(0x120000-0x17FFFF,见 include/joyos.h)
+SPACE_HEAP_VA    equ 0x180000          ; 堆窗口(JOY_HEAP_START)
+SPACE_HEAP_PAGES equ 0x70              ; 448 KiB(0x180000-0x1EFFFF)
+SPACE_TRAMP_VA   equ SPACE_IMG_VA + (SPACE_IMG_PAGES - 1) * 4096
+SPACE_STACK_VA   equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 1) * 4096
+SPACE_USER_STACK_TOP equ SPACE_STACK_VA + 4092
+SPACE_ARGS_VA    equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 2) * 4096
+%endif
 SPACE_ARGS_COPY  equ (4 + 2048 + 3) / 4                            ; 拷贝长度(dword 数)
 ; ★ 栈顶那 4 字节(0x1EFFFC)就是 space_prepare_user 写进去的弹床地址:
 ;   程序 `ret` 时 [esp] 正是这里。**别**把 ESP 设成 0x1F0000(窗口外、内核临时缓冲):
 ;   程序第一次 ret 就会撞上"内核的页",错误码 bit0=1 —— 这个坑踩过一次。
-; 两个窗口在 0x120000-0x1EFFFF 里是**连着**的(128 + 80 = 208 页),
+; 两个窗口在 0x120000-0x1EFFFF 里是**连着**的(96 + 112 = 208 页),
 ; 所以在私有页表里清/扫这两个窗口用一段连续下标就够:
 ;   下标 = 0x120000>>12 = 288 起,共 208 项 → 0x120000-0x1EFFFF
 ;   后面 0x1F0000 是内核自己的临时缓冲,不能碰
@@ -690,7 +696,7 @@ space_user_page:
 
 ; ---------------------------------------------------------------------------
 ;  space_prepare_user:准备 ring 3 的两块页
-;    · 弹床页(镜像窗口最后一页 0x19F000)写三条指令:mov eax,15 / int 0x30 / jmp $
+;    · 弹床页(镜像窗口最后一页 0x17F000)写三条指令:mov eax,15 / int 0x30 / jmp $
 ;    · 用户栈页(堆窗口最后一页 0x1EF000)的栈顶放一个返回地址 = 弹床
 ;  返回 eax = 弹床虚拟地址;0 = 页池不够(调用方按 OOM 处理)
 ;  为什么要弹床:现有程序的结尾都是 `ret`(汇编写的,C 那套也是),而 ret 的目标

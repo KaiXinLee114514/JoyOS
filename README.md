@@ -69,13 +69,13 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **多扇区读盘** | 一次读多个扇区把 128 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
 | 保护模式 | GDT(代码段 + 数据段,平坦 4 GiB)、`CR0.PE`、32 位段寄存器全部就位 |
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
-| 分页 | 页目录 + 页表,**恒等映射 0~16 MiB**(所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`debug pmap`),物理页池 = 位图分配器 12 MiB(`debug pmem` / `debug ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
+| 分页 | 页目录 + 页表,**恒等映射 0~ident**(按可用内存自适应,最多 16 MiB;所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`debug pmap`),物理页池 = 位图分配器(按可用内存 0~12 MiB,`debug pmem` / `debug ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift)、**Caps Lock**(顺带给键盘发 `0xED` 点灯)、方向键/PgUp 等扩展键、64 字节环形缓冲 |
 | **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);**抢占式多任务就是在 IRQ0 里切栈**(见 §5「线程与调度」) |
 | **内核线程 + 抢占式轮转** | 6 个线程槽、每个线程 **20 ms 时间片**(`kernel/sched.asm`):IRQ0 里存 esp/CR3、轮转、换栈;`ps` 看线程表、`spawn` 起演示线程(alpha / beta 每秒各打一行)、`kill` 杀掉并把栈还给物理页池;要是被杀的那条正占着程序的地址空间,顺手把那套页目录 + 私有页表也收摊还回去(见 §5) |
 | **多 shell(4 条)** | 4 条 shell 各是一条内核线程,**Ctrl+←/→ 换键盘焦点**(在键盘中断里切,所以卡在程序里的那条也能被换走);`shell` 列出、`shell 3` 直接跳;每条 shell 有自己的行缓冲和当前目录,切换时没敲完的半行会跟着走;**一次只让一个程序跑**(别人在跑就拒绝),shell 线程本身杀不掉(见 §5) |
 | **提示符样式** | `style` 一条命令换提示符:**plain(朴素 `>`)** / **moe(萌,粉色的 `じょいおす>`,报错也换成吐槽)** / **DOS(`C:\>`)** / **C64(`READY.`)**;也能在 `RC.CONF` 里写 `style = moe` 开机就生效 |
-| **ring 3 用户态** | 程序不再由内核 `call` 进去,而是 `iret` 到 **CPL=3**:内核运行时重建 GDT(0x1B 用户代码 / 0x23 用户数据 / 0x28 TSS)+ `ltr` 装 TSS(从 ring 3 掉回内核的栈只能从 TSS 取);程序页表项带 U/S 位,**内核的页它碰不到** —— 故意读内核内存会被页错误干掉、内核自己接着用(`run FAULT` 现场演示);程序结尾照旧 `ret`:内核在用户栈顶压了**弹床页**(0x19F000,三条指令 `int 0x30` 功能号 15 退出),所以现有程序一行都不用改(见 §5) |
+| **ring 3 用户态** | 程序不再由内核 `call` 进去,而是 `iret` 到 **CPL=3**:内核运行时重建 GDT(0x1B 用户代码 / 0x23 用户数据 / 0x28 TSS)+ `ltr` 装 TSS(从 ring 3 掉回内核的栈只能从 TSS 取);程序页表项带 U/S 位,**内核的页它碰不到** —— 故意读内核内存会被页错误干掉、内核自己接着用(`run FAULT` 现场演示);程序结尾照旧 `ret`:内核在用户栈顶压了**弹床页**(0x17F000,三条指令 `int 0x30` 功能号 15 退出),所以现有程序一行都不用改(见 §5) |
 | **rc.conf 服务 / 事件库** | 根目录的 `RC.CONF` 是**纯 `key=value`**(BSD / OpenRC 那种,不是 systemd 段):`hostname` / `boot_msg` / `autostart` / `on_crash` + `service_N`(程序、参数、启用开关)。`rc` 一条命令管起来:`rc list` 看服务、`rc get KEY` 取值、`rc start N` **把服务当程序跑**(借 `run` 那条路:ring 3 + 按需分页)、`rc reload` 重读刚写的配置;另有**事件账本**:开机 / 读配置 / 服务起停 / 程序跑完 / 程序崩了 / 线程被 kill / 换 shell,每种连 100 Hz 的 tick 一起记 16 条(`rc log`);`autostart=YES` 就是开机按配置跑服务,`on_crash=reboot` 则程序崩了直接重启(见 [docs/rc-conf.md](docs/rc-conf.md)) |
 | **拼音输入法** | 按 **Shift** 切中英;打 `shuang` 出候选行「1.双 2.爽 3.霜 …」,**数字 1-9 或空格**选字,回车出候选、Esc 取消;一页 9 个、**`,` / `.` 翻页**(提示里有页码)。词表是盘上的 `PINYIN.BIN`(6000 常用字,按词频排序,`tools/mkpinyin.py` 生成) |
 | **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
@@ -246,35 +246,52 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 所以 `kernel/*.asm` 之间可以直接互相调用。这样简单,代价是符号名不能重复,
 而且**第一个被 include 的文件决定入口地址**(`kernel/start.asm` 里有注释说明)。
 
-内存布局(写死在代码里):
+内存布局(上半段写死,页池大小按机器内存自适应):
 
 ```
 0x000000 - 0x0004FF   中断向量表 / BIOS 数据区
 0x001000              页目录                  (paging.asm,PD_ADDR)
 0x002000              页表:恒等 0-4 MiB        (PT_LOW)
-0x003000              页表:恒等 4-8 MiB        (PT_ID1)
+0x003000              页表:恒等 4-8 MiB        (PT_ID1,8 MiB 以上内存才有)
 0x004000              页表:VBE 线性帧缓冲      (PT_LFB,按帧缓冲物理地址对齐)
-0x005000              页表:恒等 8-12 MiB       (PT_ID2)
-0x006000              页池位图(384 字节)      (pmem.asm,PMEM_BITMAP)
-0x007000              页表:恒等 12-16 MiB      (PT_ID3)
+0x005000              页表:恒等 8-12 MiB       (PT_ID2,12 MiB 以上内存才有)
+0x006000              页池位图(384 字节)      (pmem.asm,PMEM_BITMAP;最多记 3072 页 = 12 MiB)
+0x007000              页表:恒等 12-16 MiB      (PT_ID3,16 MiB 以上内存才有)
 0x007C00              引导扇区(512 字节)
 0x010000 - 0x02FFFF   内核区(128 KiB = 256 扇区,实到约 70 KiB)
 0x090000              内核栈(往下长)
 0x0B8000              VGA 文本缓冲(80×25,每格 2 字节:字符 + 颜色)
 0x100000              FAT 扇区缓冲           (fat.asm 的 FAT_BUF)
 0x110000              cat 的文件缓冲         (shell.asm 的 FILE_BUF)
-0x120000 - 0x19FFFF   程序镜像(虚拟地址)    (shell.asm 的 PROG_ADDR;物理页每次运行都换,按需才给)
-0x1A0000 - 0x1EFFFF   堆(malloc,320 KB,虚拟) (include/joyos.h;同样是每程序私有页,按需才给)
+0x120000 - 0x17FFFF   程序镜像(384 KB,虚拟地址)    (shell.asm 的 PROG_ADDR;物理页每次运行都换,按需才给)
+0x180000 - 0x1EFFFF   堆(malloc,约 440 KB,虚拟) (include/joyos.h;同样是每程序私有页,按需才给)
 0x1F0000              读磁盘描述块的临时缓冲 (fontdisk.asm)
 0x200000 - 0x3AF110   完整字库(从磁盘读进来,1.7 MB)
-0x400000 - 0xFFFFFF   物理页池(12 MiB)       (pmem.asm,3072 页 × 4 KiB,位图记账)
+0x400000 - ident      物理页池(按可用内存 0~12 MiB,最多 3072 页 × 4 KiB,位图记账)
 0xFD000000            VBE 线性帧缓冲(单独挂一张页表,映射到它所在的 4 MiB 窗口)
 ```
 
-0~16 MiB 全是**恒等映射**(虚拟地址 = 物理地址),所以内核里指针就是物理地址,
-写代码不用想 MMU;16 MiB 以上没映射(踩了就吃 14 号页错误)。页池只从 0x400000
-往上发,因为低 4 MiB 被上表这些固定区域占满了 —— 与其一条条列"这些不许用",
-不如整段划出去。
+**可变的两样**(阶段 1,见 `kernel/kmain.asm` 的"内存布局"计算):
+
+- **恒等映射范围** `ident`:开机 E820 探测出的可用内存 → 向下取整到 4 MiB,
+  夹在 [4 MiB, 16 MiB]。4/8/12/16 MiB 四挡,页表 0x2000/0x3000/0x5000/0x7000
+  对应四张 PT,没用到的不建。
+- **页池** `0x400000 ~ ident`:池大小 = ident - 4 MiB(0/4/8/12 MiB)。
+  所以 `-m 8` 这种小机器页池是 0 页(只能跑内置命令,开不了图形模式),
+  `-m 9` 有 1024 页,`-m 16` 有 2048 页,默认 128 MiB 的 QEMU 封顶 3072 页。
+
+开机打印四行机器可读的布局(测试脚本解析它们做断言):
+
+```
+layout: ram=127M e820=6 ident=16M
+layout: pool=0x00400000-0x01000000 pages=3072
+layout: img=0x00120000+96p heap=0x00180000+112p
+layout: tramp=0x0017F000 args=0x001EE000 stack=0x001EFFFC
+```
+
+内核里指针就是物理地址(恒等映射),写代码不用想 MMU;`ident` 以上没映射
+(踩了就吃 14 号页错误)。页池只从 0x400000 往上发,因为低 4 MiB 被上表这些
+固定区域占满了 —— 与其一条条列"这些不许用",不如整段划出去。
 
 **唯一的例外是跑程序的时候**:0x120000~0x1EFFFF 那 208 页在内核里照旧是恒等映射
 (所以 shell 能读能写),但在程序那套页表里它们是"不存在"的 —— 程序碰到哪页,
@@ -288,7 +305,7 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 ```
 实模式 stub    int 0x10 AX=4F00/4F01 列模式 → AX=4F02 设成 800×600×32(带线性帧缓冲)
                → 把 帧缓冲物理地址/宽/高/pitch/色深 写进 BOOTINFO(0x8000)
-分页           帧缓冲在 0xFD000000,不在恒等映射的 0~16 MiB 里
+分页           帧缓冲在 0xFD000000,不在恒等映射窗口(0~ident)里
                → 按 4 MiB 对齐算页目录项,挂一张页表把它映射进来(不映射第一次写像素就吃页错误)
 帧缓冲终端     kernel/fbterm.asm:码位 → 二分查找字库 → 逐行取位 → 往显存写 4 字节像素
                (颜色从文本模式的属性字节换算成 RGB;滚屏就是 memmove 整块显存往上 16 行)
@@ -349,7 +366,7 @@ demand paging: 1 page(s) faulted in (image 1 + heap 0), first page 0x00402000
   heap: touched 32 pages (4 KiB each), wrote 0xA5 into every one of them
   pages that were NOT zero before my write: 0     ← 现给的页必须是干净零页
   pages that did not read back what I wrote: 0     ← 每页都真的归自己
-  page beyond the file (bss at 0x184000): was zero, as it should be
+  page beyond the file (bss at 0x17E000): was zero, as it should be
 demand paging: 34 page(s) faulted in (image 2 + heap 32), first page 0x00425000
 ```
 
@@ -362,7 +379,7 @@ demand paging: 34 page(s) faulted in (image 2 + heap 32), first page 0x00425000
 几个老实交代的地方:
 
 - 没有 swap、没有页置换、没有写时复制:页一旦补进来就留到程序结束;
-- 窗口里的**空洞也会给页**(程序只是读一下 0x1A0000 附近的地址,也会拿到一页零页);
+- 窗口里的**空洞也会给页**(程序只是读一下 0x180000 附近的地址,也会拿到一页零页);
 - 暂时**不给程序自己长栈**:栈还是 shell 的栈(内核那套页表里);
 - 内核窗口继续恒等映射,所以 `int 0x30` 照旧能用 —— **不需要 ring 3**,
   程序传给内核的指针也照旧解得开(那会儿用的就是程序这套页表)。
@@ -388,7 +405,7 @@ if CS is 0x001b and CPL is 3, this program is not the kernel any more.
 program returned to the shell
 ```
 
-`[ESP]` 那个 `0x19F000` 是内核替它压进去的**弹床页**:程序最后一句 `ret` 会跳到那儿,
+`[ESP]` 那个 `0x17F000` 是内核替它压进去的**弹床页**:程序最后一句 `ret` 会跳到那儿,
 弹床里就三条指令(`mov eax,15 / int 0x30 / jmp $`)—— 喊一声"我退出了"就回 shell。
 **现成程序一个都不用改**(C 程序的 crt0 也是 `ret`)。
 
@@ -404,7 +421,7 @@ kernel, not to you
 program was killed, the kernel is fine
 ```
 
-页表是**逐级**查权限的:内核恒等映射的那些页(0~16 MiB)U/S=0,程序页才是 U/S=1,
+页表是**逐级**查权限的:内核恒等映射的那些页(0~ident)U/S=0,程序页才是 U/S=1,
 所以 `mov ebx,[0x100000]` 直接页错误;内核的处理是**把程序干掉、自己接着跑**
 (以前是 panic,现在是 `program was killed`)。用户态异常也不再是内核 panic:
 `isr_common` 先看错误码里的 CS(CPL),是 3 就交给 `prog_kill_from_fault`。
@@ -413,8 +430,8 @@ program was killed, the kernel is fine
 
 | 地址 | 干什么 |
 | --- | --- |
-| `0x120000`-`0x19EFFF` | 程序镜像(弹床占最后一页 0x19F000) |
-| `0x1A0000`-`0x1EDFFF` | 堆(`malloc` 从这儿长) |
+| `0x120000`-`0x17EFFF` | 程序镜像(弹床占最后一页 0x17F000) |
+| `0x180000`-`0x1EDFFF` | 堆(`malloc` 从这儿长) |
 | `0x1EE000` | 参数页:内核里那份参数(0x11F000)对 ring 3 是"别人家的内存",装载器整块拷过来 |
 | `0x1EF000` | 用户栈(栈顶 0x1EFFFC,那 4 字节是弹床地址) |
 
@@ -1267,7 +1284,7 @@ make hd
 
 ### 8.6 改分页怎么映射
 
-`kernel/paging.asm` 顶部那几张页表是**开机用**的,恒等映射 0~16 MiB:
+`kernel/paging.asm` 顶部那几张页表是**开机用**的,恒等映射 0~ident(最多 16 MiB):
 
 ```asm
 PD_ADDR     equ 0x1000     ; 页目录

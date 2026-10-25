@@ -62,7 +62,7 @@ ld -m elf_i386 -T lib/joyos.ld build/crt0.o build/Foo.o build/minic.o -o build/F
 ```
 0x120000            程序被 shell 读到这里(链接地址就是它)   ← 虚拟地址
 0x120000..0x19FFFF  程序镜像(代码 + 只读数据 + 已初始化数据)
-0x1A0000..0x1EFFFF  堆(malloc 从这儿切,320 KB)
+0x180000..0x1EDFFF  堆(malloc 从这儿切,440 KB)
 0x1F0000            内核临时用(读字库描述块)
 0x200000 起         完整字库 —— 谁都不许碰
 ```

@@ -1894,22 +1894,24 @@ cmd_pmem:
     call term_print
     mov esi, msg_pmem_pool
     call term_print
-    mov eax, PMEM_START
+    mov eax, [pmem_start]
     call term_print_hex
     mov esi, msg_pmem_dash
     call term_print
-    mov eax, PMEM_END
+    mov eax, [pmem_end]
     call term_print_hex
     mov esi, msg_pmem_lparen
     call term_print
-    mov eax, PMEM_MIB
+    mov eax, [pmem_end]
+    sub eax, [pmem_start]
+    shr eax, 20
     call term_print_dec
     mov esi, msg_pmem_mib
     call term_print
 
     mov esi, msg_pmem_total
     call term_print
-    mov eax, PMEM_TOTAL
+    mov eax, [pmem_total]
     call term_print_dec
     mov esi, msg_pmem_pages
     call term_print
