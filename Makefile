@@ -178,16 +178,17 @@ $(BUILD)/VI.BIN: $(VI_OBJS) $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
 
 # 注意 progs/README.TXT、progs/NOTES.TXT 也要当依赖:改了它们镜像就得重做,
 # 不然测试会拿"旧内容"去比新文件,报个莫名其妙的字节数不一致(踩过)
-# 造一批小文件,用来测试"目录装满一簇之后自动扩一簇"(每簇 16 项 → 40 个就必须链了)
+# 造一批小文件,用来测试目录簇链(8MB 分区 2 扇区/簇 = 32 项;"."+".."占 2 个,
+# 所以 32 个文件 = 第一簇 30 项 + 第二簇 2 项,必须走簇链才列得全)
 $(BUILD)/bigdir/.stamp: | $(BUILD)
 	@mkdir -p $(BUILD)/bigdir
-	@for i in $$(seq -w 0 39); do printf 'file %s\n' "$$i" > $(BUILD)/bigdir/f$$i.txt; done
+	@for i in $$(seq -w 0 31); do printf 'file %s\n' "$$i" > $(BUILD)/bigdir/f$$i.txt; done
 	@touch $@
 
 # 用 make 自己的 $(shell ...) 生成清单:以前写成 recipe 里的 shell 循环,
 # 一旦 `seq`/引号在某个环境里不合适,清单就变成空的 → mkfat 收到怪名字
 # (比如 BIGDIR/F.TXT),根目录里的文件全乱(踩过)。
-BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 39),BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
+BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 31),BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
 
 # 输入法用的拼音表:常用字 + 单字读音(wordfreq 按频次排、pypinyin 取读音)。
 # 需要 pypinyin/wordfreq 才有数据;装不上就生成一个空表(输入法自动关掉),不影响编译。

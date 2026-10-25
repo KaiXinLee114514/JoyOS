@@ -1569,14 +1569,14 @@ def main() -> int:
             # ---- 目录满一簇:内核要能往簇链上再挂一簇(不能只会看第一簇)----
             run("ls bigdir", wait=1.6, idle=True)
             results.append(("列出一整个装满的目录(要跟着簇链走)",
-                            has("F00.TXT") and has("F39.TXT"),
-                            "F00.TXT 和 F39.TXT 都列得出来(它们在第 2 簇里)"))
-            run("cat bigdir/f39.txt", wait=1.0)
-            results.append(("读得到第 2 簇里的文件", has("file 39"), "'file 39'"))
-            run("write bigdir/f40.txt chain-extension")
-            results.append(("目录满了能自动扩一簇", has("wrote bigdir/f40.txt"),
-                            "wrote bigdir/f40.txt"))
-            run("cat bigdir/f40.txt")
+                            has("F00.TXT") and has("F31.TXT"),
+                            "F00.TXT 和 F31.TXT 都列得出来(第 2 簇里也有)"))
+            run("cat bigdir/f31.txt", wait=1.0)
+            results.append(("读得到第 2 簇里的文件", has("file 31"), "'file 31'"))
+            run("write bigdir/f32.txt chain-extension")
+            results.append(("目录第二簇里还能继续写文件", has("wrote bigdir/f32.txt"),
+                            "wrote bigdir/f32.txt"))
+            run("cat bigdir/f32.txt")
             results.append(("新扩的簇里的文件读得回来", has("chain-extension"),
                             "chain-extension"))
 

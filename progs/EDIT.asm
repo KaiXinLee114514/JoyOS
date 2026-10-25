@@ -39,7 +39,7 @@
 
 TEXT        equ 0x180000                ; 文本缓冲区(程序镜像在 0x120000,字库在 0x200000)
 TEXT_MAX    equ 8192                    ; 8 KB:够写几千字
-NAME        equ 0x17F000                ; 文件名(从程序参数抄过来)
+NAME        equ 0x17E000                ; 文件名(从程序参数抄过来);0x17F000 是内核弹床页,别占
 NAME_MAX    equ 24
 ROW_FIRST   equ 1                       ; 正文第一行
 CURSOR_CHAR equ '_'                     ; 可见光标画什么字符(想换成 '|' 就改这一行)

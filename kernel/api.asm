@@ -156,6 +156,8 @@ api_dispatch:
     mov [api_name], esi                 ; 先存原始名字(可能带目录)
     mov [api_buf], edi
     mov [api_max], ecx
+    mov eax, [fat_dir]                  ; 记下内核当前目录:fat_path 会 chdir 进去,
+    mov [api_saved_dir], eax            ; 调完必须还回来(不然程序连存两次会跑错目录)
     mov esi, [api_name]                 ; 支持 DOCS/NOTE.TXT(相对当前目录)
     call fat_path
     jc .read_fail
@@ -171,8 +173,14 @@ api_dispatch:
     call fat_read_file
     cmp eax, -1
     je .read_fail
+    push eax                            ; 成功:恢复 cwd 再把返回值交回去
+    mov eax, [api_saved_dir]
+    mov [fat_dir], eax
+    pop eax
     ret
 .read_fail:
+    mov eax, [api_saved_dir]            ; 失败也恢复:别把 cwd 留在半路
+    mov [fat_dir], eax
     mov eax, -1
     ret
 ; ---- 写文件:esi = 名字,edi = 数据,ecx = 字节数 ----
@@ -180,6 +188,8 @@ api_dispatch:
     mov [api_name], esi                 ; 同样支持带目录的名字
     mov [api_buf], edi
     mov [api_max], ecx
+    mov eax, [fat_dir]                  ; 同读文件:记下 cwd,调完还回来
+    mov [api_saved_dir], eax
     mov esi, [api_name]
     call fat_path
     jc .write_fail
@@ -187,8 +197,14 @@ api_dispatch:
     mov edi, [api_buf]
     mov ecx, [api_max]
     call fat_write_file
+    push eax                            ; 恢复 cwd 再交还结果
+    mov eax, [api_saved_dir]
+    mov [fat_dir], eax
+    pop eax
     ret
 .write_fail:
+    mov eax, [api_saved_dir]
+    mov [fat_dir], eax
     mov eax, -1
     ret
 .set_cursor:
@@ -269,3 +285,4 @@ api_empty   db 0                        ; "没有参数"时给程序的空字符
 api_name    dd 0
 api_buf     dd 0
 api_max     dd 0
+api_saved_dir dd 0                      ; 文件 API 调用前的 [fat_dir](调完恢复)

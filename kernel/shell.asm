@@ -1332,7 +1332,10 @@ cmd_write:
     mov edi, esi                        ; 内容是 UTF-8,原样写
     call strlen
     mov ecx, eax
-    mov esi, name_buf
+    mov esi, name_buf                   ; 支持子目录路径:先解析 DOCS/ 这样的前缀
+    call fat_path                       ; (fat_path 保留 edi/ecx,只改 eax)
+    jc .failed
+    mov esi, eax                        ; 剩下这截才是文件名
     call fat_write_file
     cmp eax, -1
     je .failed
