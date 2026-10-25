@@ -224,7 +224,7 @@ char    *fixname();
 void    windinit(), windexit(), windgoto();
 void    delay();
 void    doshell();
-void    sleep(int);
+void    vi_sleep(int);
 void    setviconsoletitle();
 void    dochdir();
 

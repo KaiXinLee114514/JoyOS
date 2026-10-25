@@ -66,6 +66,12 @@ void windexit(void)
     flush_line();
     j_clrscr();
     j_print("vi closed.\n");
+    /* 退出去之后 shell 的提示符还没重画(改了帧缓冲,shell 不知情),
+       这里补一个青色 > 让屏幕看起来是干净的 shell —— 只是视觉效果,
+       真正的 shell 提示符在它自己下一次重画时会盖过来。 */
+    j_color(JOY_LCYAN);
+    j_print("> ");
+    j_color(JOY_GREY);
 }
 
 void wchangescreen(void)
@@ -171,7 +177,7 @@ void delay(int n)
             ;
 }
 
-void sleep(int n)
+void vi_sleep(int n)
 {
     delay(n * 50);
 }
