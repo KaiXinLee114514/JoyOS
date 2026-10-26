@@ -2172,7 +2172,7 @@ cmd_fault:
     call term_set_color
     mov esi, msg_fault
     call term_print
-    mov eax, [0x02000000]                 ; 32 MiB:恒等映射(16 MiB)之外,页目录里没这一项
+    mov eax, [0x20000000]                 ; 512 MiB:恒等映射(封顶 256 MiB)之外,页目录里没这一项
     ret                                   ; 走不到这里
 
 ; 重启:传统做法是让 8042 键盘控制器拉复位线(0xFE)

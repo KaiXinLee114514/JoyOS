@@ -914,9 +914,14 @@ def main() -> int:
                     n = int(m.group(1))
                     return n * (0x100000 if m.group(2) else 1) * unit
                 return -1
+            def expected_free_pages():
+                """boot 后页池固定占用:19 页常驻(6 页 + 行缓冲 13 页)
+                + 恒等映射 4 MiB 以上每 4 MiB 一张页表(动态从页池拿)"""
+                return (layout_val("pages") - 19
+                        - (layout_val("ident") // 0x400000 - 1))
             results.append(("layout 行: RAM → 恒等映射 → 页池,大小自洽",
                             layout_val("ram") >= 4 * 0x100000
-                            and 4 * 0x100000 <= layout_val("ident") <= 16 * 0x100000
+                            and 4 * 0x100000 <= layout_val("ident") <= 256 * 0x100000
                             and layout_val("ident") % (4 * 0x100000) == 0
                             and layout_val("pages") == (layout_val("ident") - 0x400000) // 4096,
                             f"layout: {layout}"))
@@ -1013,11 +1018,11 @@ def main() -> int:
                             "page beyond the file (bss at 0x17E000): was zero, as it should be"))
 
             run("debug pmem")
-            # 3072 - 6 = 3066 是老基线:帧缓冲终端的"当前行"缓冲要在 fb_init 里
-            # 常驻 13 页(52 KiB,逐字直写退路不要),所以现在固定占用 19 页 → 3053。
-            # 这条断言要抓的是"跑完程序没泄漏",数字只是当前基线,常驻量变了就跟着改。
-            results.append(("程序退出后页池没泄漏", has("free: 3053 pages"),
-                            "free: 3053 pages(6 页常驻 + 行缓冲 13 页)"))
+            # 基线 = 池总页数 - 19(6 页常驻 + 行缓冲 13 页)
+            #        - 恒等映射页表页数(4 MiB 以上每 4 MiB 一张,动态从池里拿)。
+            # 这条断言要抓的是"跑完程序没泄漏",数字按 layout 行动态算。
+            results.append(("程序退出后页池没泄漏", has(f"free: {expected_free_pages()} pages"),
+                            f"free: {expected_free_pages()} pages(19 页常驻 + 动态页表 {layout_val('ident')//0x400000 - 1} 页)"))
 
             # ---- 定时器(PIT):tick 在涨、uptime 读得到、sleep 真的等够 ----
             def uptime_ticks() -> int:
@@ -1362,8 +1367,8 @@ def main() -> int:
             results.append(("kill 0 被拒", has("cannot kill"),
                             "0 号是 shell 自己,杀不掉"))
             run("debug pmem", wait=1.2)
-            results.append(("线程栈还回页池", has("free: 3053 pages"),
-                            "kill 完页池还是 3053 页空闲(行缓冲 13 页常驻)"))
+            results.append(("线程栈还回页池", has(f"free: {expected_free_pages()} pages"),
+                            f"kill 完页池还是 {expected_free_pages()} 页空闲"))
             run("echo after-sched", wait=0.8)
             results.append(("调度器没弄死 shell", has("after-sched"),
                             "线程起起落落之后 shell 照常响应"))
@@ -1661,8 +1666,10 @@ def main() -> int:
 
             # ---- 物理页池 + 动态建表:pmap 现建页表 → page 复查 → pumap 回收 ----
             run("debug pmem")
-            results.append(("pmem 页池", has("3072 total") and has("12 MiB"),
-                            "3072 页 / 12 MiB"))
+            _pool_pages = layout_val("pages")
+            _pool_mib = (layout_val("ident") - 0x400000) // 0x100000
+            results.append(("pmem 页池", has(f"{_pool_pages} total") and has(f"({_pool_mib} MiB)"),
+                            f"{_pool_pages} 页 / {_pool_mib} MiB"))
 
             run("debug pmap 0x8000000")
             results.append(("pmap 自动建页表", has("mapped") and has("0x08000000"),
@@ -1724,7 +1731,7 @@ def main() -> int:
                 ("停机提示",        "system halted"),
             ]
         elif pgfault_mode:
-            # shell 里敲 debug fault:访问恒等映射(16 MiB)之外 → 14 号页错误,
+            # shell 里敲 debug fault:访问恒等映射(封顶 256 MiB)之外 → 14 号页错误,
             # CR2 应记下那个地址(以前是裸的 `fault`,现在收进 debug 子命令了)
             mon.type_text("debug fault")
             mon.sendkey("ret")
@@ -1733,7 +1740,7 @@ def main() -> int:
             checks = [
                 ("panic 标题",      "*** KERNEL PANIC ***"),
                 ("页错误 + 名字",   "EXCEPTION 0E: page fault"),
-                ("CR2 = 出错地址",  "CR2 (faulting address) = 0x02000000"),
+                ("CR2 = 出错地址",  "CR2 (faulting address) = 0x20000000"),
                 ("故障指令地址",    "EIP = 0x"),
                 ("停机提示",        "system halted"),
             ]

@@ -69,7 +69,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **多扇区读盘** | 一次读多个扇区把 128 KiB 内核搬进内存;**LBA(EDD)和 CHS 两条路径都有**,自动探测 |
 | 保护模式 | GDT(代码段 + 数据段,平坦 4 GiB)、`CR0.PE`、32 位段寄存器全部就位 |
 | IDT | 256 个中断门,0~31 号 CPU 异常都有处理程序,出错就红屏报**异常名 / 错误码 / EIP / CS / EFLAGS**(页错误还会报 CR2) |
-| 分页 | 页目录 + 页表,**恒等映射 0~ident**(按可用内存自适应,最多 16 MiB;所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`debug pmap`),物理页池 = 位图分配器(按可用内存 0~12 MiB,`debug pmem` / `debug ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
+| 分页 | 页目录 + 页表,**恒等映射 0~ident**(按可用内存自适应,最多 256 MiB;所以指针就是物理地址)+ VBE 帧缓冲高地址窗口;运行期能**动态建表**(`debug pmap`),物理页池 = 位图分配器(按可用内存自适应,最大 252 MiB,`debug pmem` / `debug ptest`);**跑程序时进按需分页**:每个程序一套空地址空间,碰到哪页才补哪页(见第 5 节) |
 | 键盘 | 8259A 重映射到 `0x20`,IRQ1 中断方式收键,扫描码翻译表(含 Shift)、**Caps Lock**(顺带给键盘发 `0xED` 点灯)、方向键/PgUp 等扩展键、64 字节环形缓冲 |
 | **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);**抢占式多任务就是在 IRQ0 里切栈**(见 §5「线程与调度」) |
 | **内核线程 + 抢占式轮转** | 6 个线程槽、每个线程 **20 ms 时间片**(`kernel/sched.asm`):IRQ0 里存 esp/CR3、轮转、换栈;`ps` 看线程表、`spawn` 起演示线程(alpha / beta 每秒各打一行)、`kill` 杀掉并把栈还给物理页池;要是被杀的那条正占着程序的地址空间,顺手把那套页目录 + 私有页表也收摊还回去(见 §5) |
@@ -253,11 +253,7 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 0x000000 - 0x0004FF   中断向量表 / BIOS 数据区
 0x001000              页目录                  (paging.asm,PD_ADDR)
 0x002000              页表:恒等 0-4 MiB        (PT_LOW)
-0x003000              页表:恒等 4-8 MiB        (PT_ID1,8 MiB 以上内存才有)
 0x004000              页表:VBE 线性帧缓冲      (PT_LFB,按帧缓冲物理地址对齐)
-0x005000              页表:恒等 8-12 MiB       (PT_ID2,12 MiB 以上内存才有)
-0x006000              页池位图(384 字节)      (pmem.asm,PMEM_BITMAP;最多记 3072 页 = 12 MiB)
-0x007000              页表:恒等 12-16 MiB      (PT_ID3,16 MiB 以上内存才有)
 0x007C00              引导扇区(512 字节)
 0x010000 - 0x02FFFF   内核区(128 KiB = 256 扇区,实到约 70 KiB)
 0x090000              内核栈(往下长)
@@ -268,24 +264,29 @@ tests/probe_disk.asm   探针:实测"软盘到底支不支持 LBA 读"(见第 6 
 0x180000 - 0x1EFFFF   堆(malloc,约 440 KB,虚拟) (include/joyos.h;同样是每程序私有页,按需才给)
 0x1F0000              读磁盘描述块的临时缓冲 (fontdisk.asm)
 0x200000 - 0x3AF110   完整字库(从磁盘读进来,1.7 MB)
-0x400000 - ident      物理页池(按可用内存 0~12 MiB,最多 3072 页 × 4 KiB,位图记账)
+0x3B0000 - 0x3BFFFF   PINYIN 拼音表(ime.asm,最多 60 KiB)
+0x3C0000 - 0x3C1FFF   USB 帧列表/QH/TD(usb.asm)
+0x3D0000 - 0x3D1FFF   页池位图(8 KiB)          (pmem.asm,PMEM_BITMAP;最多记 64512 页 = 252 MiB)
+0x400000 - ident      物理页池(4 MiB ~ 恒等映射上限;上界按 RAM 自适应,最大 252 MiB)
 0xFD000000            VBE 线性帧缓冲(单独挂一张页表,映射到它所在的 4 MiB 窗口)
 ```
 
-**可变的两样**(阶段 1,见 `kernel/kmain.asm` 的"内存布局"计算):
+**可变的两样**(见 `kernel/kmain.asm` 的"内存布局"计算 + `kernel/paging.asm`):
 
 - **恒等映射范围** `ident`:开机 E820 探测出的可用内存 → 向下取整到 4 MiB,
-  夹在 [4 MiB, 16 MiB]。4/8/12/16 MiB 四挡,页表 0x2000/0x3000/0x5000/0x7000
-  对应四张 PT,没用到的不建。
-- **页池** `0x400000 ~ ident`:池大小 = ident - 4 MiB(0/4/8/12 MiB)。
-  所以 `-m 8` 这种小机器页池是 0 页(只能跑内置命令,开不了图形模式),
-  `-m 9` 有 1024 页,`-m 16` 有 2048 页,默认 128 MiB 的 QEMU 封顶 3072 页。
+  夹在 [4 MiB, 256 MiB]。0-4 MiB 用固定的 PT_LOW;4 MiB 以上每 4 MiB 一张页表,
+  **页表页直接从页池拿** —— paging_init 在 pmem_init 之后跑,建表时还没开分页,
+  按物理地址写完、开分页后它们天然落在恒等映射里,同时被页池记账占住。
+- **页池** `0x400000 ~ ident`:池大小 = ident - 4 MiB(最大 252 MiB)。
+  位图在 0x3D0000(8 KiB),一页一位。所以 `-m 8` 这种小机器恒等只有 4 MiB、
+  页池 0 页(只能跑内置命令,开不了图形模式);`-m 9` 有 1024 页,`-m 16` 有 2048 页,
+  默认 128 MiB 的 QEMU 是 `ident=124 MiB`、页池 30720 页。
 
 开机打印四行机器可读的布局(测试脚本解析它们做断言):
 
 ```
-layout: ram=127M e820=6 ident=16M
-layout: pool=0x00400000-0x01000000 pages=3072
+layout: ram=127M e820=6 ident=124M
+layout: pool=0x00400000-0x007C00000 pages=30720
 layout: img=0x00120000+96p heap=0x00180000+112p
 layout: tramp=0x0017F000 args=0x001EE000 stack=0x001EFFFC
 ```
@@ -484,8 +485,9 @@ killed thread 4 (alpha)
 ```
 
 `ticks` 和 `runs` 都在涨,说明这几个线程是**真的轮流在 CPU 上跑**,而不是"登记了一下
-躺在那儿";`kill` 完再 `debug pmem`,空闲页数会回到 3066 —— 栈是借的,还得还。
-(3066 而不是 3072,是因为 4 条 shell 各占 2 页栈;0 号用的是开机栈,不占池子。)
+躺在那儿";`kill` 完再 `debug pmem`,空闲页数会回到开跑前的基线 —— 栈是借的,还得还。
+(基线数字随内存大小变:boot 常驻 19 页 + 恒等映射的页表页;4 条 shell 各占 2 页栈,
+0 号用的是开机栈,不占池子。)
 
 ### 多 shell:卡死一条,还有三条
 
@@ -700,7 +702,7 @@ prompt style -> じょいおす>
 ```
 
 `not` 和 `mov` 一样**不影响标志位**。于是 `jnz` 判断的是别人剩下的标志,
-结果全看运气:页池明明 3072 页全空,`debug ptest` 第一次分配却拿到第 33 页(`0x00420000`),
+结果全看运气:页池明明全空,`debug ptest` 第一次分配却拿到第 33 页(`0x00420000`),
 前面 32 页像"已被占用"一样被跳过。换成真正会设标志的指令就好:
 
 ```asm
@@ -1200,9 +1202,9 @@ virtual      = 0x00400000
 PDE index    = 0x00000001 [1] = 0x00003003  present + writable
 PTE index    = 0x00000000 [0] = 0x00400003  present
 physical     = 0x00400000
-> debug page 0x2000000   ← 16 MiB 以外没映射
-virtual      = 0x02000000
-PDE index    = 0x00000008 [8] = 0x00000000  PDE not present -> would page-fault
+> debug page 0x20000000  ← 恒等映射封顶(256 MiB)以外没映射
+virtual      = 0x20000000
+PDE index    = 0x00000080 [128] = 0x00000000  PDE not present -> would page-fault
 > debug pmap 0x8000000   ← 现建一张页表,拿页池里的物理页映上去
 mapped 0x08000000 -> physical 0x00400000  (page table created on demand; check with: debug page <va>)
 > debug page 0x8000000
@@ -1286,13 +1288,14 @@ make hd
 
 ### 8.6 改分页怎么映射
 
-`kernel/paging.asm` 顶部那几张页表是**开机用**的,恒等映射 0~ident(最多 16 MiB):
+`kernel/paging.asm` 顶部那两张页表是**开机固定**的;恒等映射 0~ident(最多 256 MiB),
+4 MiB 以上的页表页运行时从页池拿:
 
 ```asm
 PD_ADDR     equ 0x1000     ; 页目录
 PT_LOW      equ 0x2000     ; 恒等 0-4 MiB
-PT_ID1      equ 0x3000     ; 恒等 4-8 MiB   (往上:PT_ID2 = 0x5000,PT_ID3 = 0x7000)
 PT_LFB      equ 0x4000     ; VBE 帧缓冲窗口
+; 4 MiB 以上的恒等页表:没有固定地址,运行时 pmem_alloc 一页一页拿
 ```
 
 想玩"虚拟地址 ≠ 物理地址"不用改代码,shell 里现成有:

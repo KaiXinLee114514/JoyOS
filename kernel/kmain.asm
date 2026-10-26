@@ -12,7 +12,10 @@
 ;
 ;  内存布局(这个阶段的约定):
 ;      0x00000-0x004FF   中断向量表 / BIOS 数据区
-;      0x01000-0x03FFF   页目录 + 页表(paging.asm 里硬编码)
+;      0x01000-0x01FFF   页目录(PD_ADDR)
+;      0x02000           恒等 0-4 MiB 页表(PT_LOW)
+;      0x04000           VBE 帧缓冲页表(PT_LFB,仅图形模式)
+;      (4 MiB 以上的恒等页表:运行时从页池拿,没固定地址)
 ;      0x07C00           引导扇区(512 字节)
 ;      0x10000-0x2FFFF   内核区(128 KiB = 256 扇区,引导扇区读进来的;
 ;                        内核映像本身约 48 KiB,后面是补零)
@@ -26,10 +29,14 @@
 ;      0x180000-0x1EDFFF 堆(malloc,440 KB)※ 和程序加载区有重叠,见 include/joyos.h
 ;      0x1F0000          内核临时缓冲(读字库描述块)
 ;      0x200000-0x3AFFFF 完整字库(FONT_LOAD_ADDR,1.7 MB)
-;      0x400000-0xFFFFFF 物理页池(pmem.asm 的位图分配器:3072 页 × 4 KiB)
+;      0x3B0000-0x3BFFFF PINYIN 拼音表(ime.asm)
+;      0x3C0000-0x3C1FFF USB 帧列表/QH/TD(usb.asm)
+;      0x3D0000-0x3D1FFF 页池位图(pmem.asm;8 KiB,最多记 64512 页 = 252 MiB)
+;      0x400000-ident    物理页池(pmem.asm 的位图分配器;上界按 RAM 自适应,最大 252 MiB)
 ;      0xFD000000…       VBE 线性帧缓冲(页表按 4 MiB 窗口映射,真实基址看 fb_phys)
-;      0~16 MiB 全是恒等映射(虚拟地址 = 物理地址),所以指针就是物理地址;
-;      页池只从 0x400000 往上发,低 4 MiB 被上面这些固定区域占满了。
+;      0~ident 全是恒等映射(ident 按 E820 自适应,4~256 MiB;虚拟地址 = 物理地址),
+;      所以指针就是物理地址;页池只从 0x400000 往上发,
+;      低 4 MiB 被上面这些固定区域占满了。
 ; ============================================================================
 
 BOOTINFO   equ 0x8000
@@ -38,7 +45,7 @@ VGA_COLS   equ 80
 VGA_ROWS   equ 25
 ; 恒等映射的上限:0~16 MiB 线性 = 物理(paging.asm 建表),页池也顶在这儿(pmem.asm)。
 ; 内核里凡是"地址能不能直接当指针用"的判断都以它为准(比如 ata.asm 的安全闸)。
-IDENT_LIMIT equ 0x1000000              ; 恒等映射的**编译期上限**(运行时用 ident_limit)
+IDENT_LIMIT equ 0x10000000             ; 恒等映射的**编译期上限** 256 MiB(运行时用 ident_limit)
 
 ; 用户程序地址窗口(与 kernel/paging.asm 的 SPACE_* 必须一致;
 ; paging.asm 那边用 %ifndef 守着,只认这里的一份)。
@@ -78,7 +85,7 @@ COL_ERR    equ 0x0C                    ; 亮红
 
     ; ---- 物理内存探测结果 → 运行时布局(阶段 1:自适应)----
     ;   ram_top     = 引导 stub 探到的可用 RAM 顶端(字节;0 = 没探到)
-    ;   ident_limit = 恒等映射上限 = min(ram_top 向下取整到 4 MiB, 16 MiB),最少 4 MiB
+    ;   ident_limit = 恒等映射上限 = min(ram_top 向下取整到 4 MiB, 256 MiB),最少 4 MiB
     ;   pmem        = 0x400000 ~ ident_limit(恒等映射以内才发得出去)
     mov eax, [BOOTINFO + 96]
     test eax, eax
@@ -92,9 +99,9 @@ COL_ERR    equ 0x0C                    ; 亮红
     jnz .ident_units_ok
     mov ecx, 1                          ; 至少 4 MiB(内核低区要用)
 .ident_units_ok:
-    cmp ecx, 4                          ; 最多 16 MiB(编译期的四张页表)
+    cmp ecx, 64                         ; 最多 256 MiB(页池位图 8 KiB 记 64512 页)
     jbe .ident_cap_ok
-    mov ecx, 4
+    mov ecx, 64
 .ident_cap_ok:
     shl ecx, 22
     mov [ident_limit], ecx
@@ -114,10 +121,10 @@ COL_ERR    equ 0x0C                    ; 亮红
     ; ---- 字库:先从磁盘尝试读完整版(读不到就退回内建子集)----
     call font_load_from_disk
 
-    ; ---- 物理页池(位图分配器):4 MiB 以上 12 MiB 交给它 ----
+    ; ---- 物理页池(位图分配器):4 MiB ~ ident 交给它 ----
     ;  ★ 必须赶在 fb_init 之前:帧缓冲终端的"当前行"缓冲要从这里要 13 页
-    ;    (52 KiB,内核静态区塞不下)。pmem_init 只动 0x6000 的位图和几个计数器,
-    ;    那时还没开分页,0x6000 本来就是线性=物理,直接访问没有问题。
+    ;    (52 KiB,内核静态区塞不下)。pmem_init 只动 0x3D0000 的位图和几个计数器,
+    ;    那时还没开分页,地址本来就是线性=物理,直接访问没有问题。
     call pmem_init
 
     ; 图形模式:先把帧缓冲终端初始化(它自己会清屏,所以要在任何打印之前)

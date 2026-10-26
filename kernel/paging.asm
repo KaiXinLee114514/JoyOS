@@ -29,17 +29,15 @@
 ;
 ;  开分页之前必须先把要用的表都填好,开之后下一条指令就得在映射范围内 —— 顺序不能错。
 ;
-;  表放哪儿:页目录 0x1000,四张恒等页表 0x2000/0x3000/0x5000/0x7000,
-;  帧缓冲页表 0x4000;0x6000 留给 pmem.asm 的页池位图。
-;  这些还是硬编码的(开机太早,页池还没起来),运行期新建的页表才走页池。
+;  表放哪儿:页目录 0x1000,恒等页表 0-4 MiB 固定用 0x2000(PT_LOW),
+;  帧缓冲页表 0x4000(PT_LFB)。4 MiB 以上的恒等页表**从页池动态要** ——
+;  paging_init 在 pmem_init 之后跑,此时页池已经可用;这些页在开分页前
+;  按物理地址写,开分页后它们天然落在恒等映射里。
 ; ============================================================================
 
 PD_ADDR     equ 0x1000                 ; 页目录(4 KiB)
 PT_LOW      equ 0x2000                 ; 页表:恒等 0x000000-0x3FFFFF
-PT_ID1      equ 0x3000                 ; 页表:恒等 0x400000-0x7FFFFF
 PT_LFB      equ 0x4000                 ; 页表:给 VBE 线性帧缓冲用
-PT_ID2      equ 0x5000                 ; 页表:恒等 0x800000-0xBFFFFF
-PT_ID3      equ 0x7000                 ; 页表:恒等 0xC00000-0xFFFFFF
 
 PAGE_P      equ 1                      ; bit0 present
 PAGE_RW     equ 2                      ; bit1 writable
@@ -73,27 +71,40 @@ paging_init:
     mov ecx, 1024
     rep stosd
 
-    ; ---- 2) 页目录挂恒等页表:按 ident_limit 决定挂几张(每张 4 MiB)----
-    ;   ident_limit 是 kmain.asm 启动时按 E820 探到的 RAM 算的(4/8/12/16 MiB)。
-    ;   0-4 MiB 永远要(内核/VGA/低区缓冲/字库都在里面),后面几张看内存大小。
+    ; ---- 2) 页目录挂恒等页表:0-4 MiB 固定,4 MiB 以上按 ident_limit 动态要页表 ----
+    ;   ident_limit 是 kmain.asm 启动时按 E820 探到的 RAM 算的
+    ;   (4 MiB 起步,4 MiB 对齐,封顶 256 MiB)。
+    ;   0-4 MiB 永远要(内核/VGA/低区缓冲/字库都在里面);往后每 4 MiB 一张页表,
+    ;   页表页从页池拿(此时还没开分页,物理地址直接写;开分页后自动可见)。
     mov eax, PT_LOW | PAGE_P | PAGE_RW
     mov [PD_ADDR + 0 * 4], eax         ; 管 0x00000000-0x003FFFFF
     IDENT_PT PT_LOW, 0x000000
-    cmp dword [ident_limit], 0x800000
-    jb .ident_done
-    mov eax, PT_ID1 | PAGE_P | PAGE_RW
-    mov [PD_ADDR + 1 * 4], eax         ; 管 0x00400000-0x007FFFFF
-    IDENT_PT PT_ID1, 0x400000
-    cmp dword [ident_limit], 0xC00000
-    jb .ident_done
-    mov eax, PT_ID2 | PAGE_P | PAGE_RW
-    mov [PD_ADDR + 2 * 4], eax         ; 管 0x00800000-0x00BFFFFF
-    IDENT_PT PT_ID2, 0x800000
-    cmp dword [ident_limit], 0x1000000
-    jb .ident_done
-    mov eax, PT_ID3 | PAGE_P | PAGE_RW
-    mov [PD_ADDR + 3 * 4], eax         ; 管 0x00C00000-0x00FFFFFF
-    IDENT_PT PT_ID3, 0xC00000
+
+    mov ebx, 1                         ; 页目录项下标
+    mov esi, 0x400000                  ; 当前这 4 MiB 段的物理基址
+.dyn_pt_loop:
+    cmp esi, [ident_limit]
+    jae .ident_done
+    call pmem_alloc                    ; 要一页当页表
+    test eax, eax
+    jz .ident_done                     ; 页池空了(理论上不会:页池 >= 页表数)
+    mov edx, eax                       ; 留一份页表物理地址
+    mov edi, eax
+    mov ecx, 1024
+    mov eax, esi
+    or  eax, PAGE_P | PAGE_RW
+.dyn_fill:
+    mov [edi], eax
+    add edi, 4
+    add eax, 4096
+    dec ecx
+    jnz .dyn_fill
+    mov eax, edx
+    or  eax, PAGE_P | PAGE_RW
+    mov [PD_ADDR + ebx * 4], eax       ; 挂进页目录
+    inc ebx
+    add esi, 0x400000
+    jmp .dyn_pt_loop
 .ident_done:
 
     ; ---- 4) 把 VBE 线性帧缓冲也映射进来 ----
