@@ -788,13 +788,16 @@ fat_write_file:
     jmp .write_data
 .link:
     ; 把上一个簇的链尾指向这个簇
+    ; fat_set_entry 用 [fat_cluster] 当"要改哪一个表项",eax 当新值,
+    ; 所以先存下新簇(edx),改完表项再恢复 —— 原先这里最后 mov eax,[fat_cluster]
+    ; 拿到的是上一簇,导致下一簇的数据又被写回上一簇,多簇文件后半段就丢了。
     mov eax, [fat_cluster]
-    push eax
+    mov edx, eax                        ; edx = 新簇(调用会保存 edx)
     mov eax, [fat_prev_cluster]
     mov [fat_cluster], eax
-    pop eax
+    mov eax, edx
     call fat_set_entry
-    mov eax, [fat_cluster]
+    mov eax, edx                        ; eax = 新簇,下面把数据写到这里
 .write_data:
     mov [fat_prev_cluster], eax
     ; 数据写到:数据区起点 + (簇 - 2) * 每簇扇区数

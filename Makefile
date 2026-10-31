@@ -75,8 +75,9 @@ C_CFLAGS    := -m32 -std=gnu89 -ffreestanding -fno-pic -fno-stack-protector \
 C_LD        := ld -m elf_i386 -T lib/joyos.ld
 CRT0_OBJ    := $(BUILD)/crt0.o
 MINIC_OBJ   := $(BUILD)/minic.o
+CRT_TCC_OBJ := $(BUILD)/crt_tcc.o      # TCC 链接 ELF 用的最小 crt(见 lib/crt_tcc.asm)
 ifeq ($(CC_OK),yes)
-C_PROGS     := CHELLO.BIN PLAY.BIN RNGTEST.BIN P2TEST.BIN FPU.BIN FCALC.BIN ECHO.BIN MEMTEST.BIN
+C_PROGS     := CHELLO.BIN PLAY.BIN RNGTEST.BIN P2TEST.BIN FPU.BIN FCALC.BIN ECHO.BIN MEMTEST.BIN IOTEST.BIN
 else
 C_PROGS     :=
 endif
@@ -99,6 +100,11 @@ $(BUILD)/tcc.o: $(wildcard $(TCCSRC)/*.c) $(wildcard $(TCCSRC)/*.h) | $(BUILD)
 
 $(BUILD)/TCC.BIN: $(BUILD)/joymain.o $(BUILD)/tcc.o $(CRT0_OBJ) $(MINIC_OBJ)
 	$(C_LD) $(CRT0_OBJ) $(BUILD)/joymain.o $(BUILD)/tcc.o $(MINIC_OBJ) -o $@
+
+# TCC 在系统内链接程序时用的最小 crt(elf32 目标文件,不是平铺 BIN)
+$(CRT_TCC_OBJ): lib/crt_tcc.asm | $(BUILD)
+	$(NASM) -f elf32 $< -o $@ -l $(BUILD)/crt_tcc.lst
+	@printf '   TCC crt: %s 字节\n' "$$(stat -c %s $@)"
 
 # 扩展:vi(STEVIE 公版 vi 克隆,现在住在 extensions/vi)。
 # 默认构建**不含**它 —— 扩展是可选玩具,main 线不该被它拖住;`make ext` 才构建。
@@ -204,7 +210,7 @@ $(PINYIN_BIN): progs/PINYIN.BIN tools/mkpinyin.py | $(BUILD)
 pinyin:
 	python3 tools/mkpinyin.py 6000 progs/PINYIN.BIN
 
-$(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
+$(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-joyf.bin \
           $(PINYIN_BIN) $(BUILD)/TCC.BIN \
           $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
           tools/mkimg.py tools/mkfat.py \
@@ -214,8 +220,9 @@ $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
 	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \
-	    TCC.BIN=$(BUILD)/TCC.BIN T1.C=progs/T1.C \
-	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
+	    TCC.BIN=$(BUILD)/TCC.BIN T1.C=progs/T1.C T2.C=progs/T2.C \
+	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p)) \
+	    CRT_TCC.O=$(CRT_TCC_OBJ) MINIC.O=$(MINIC_OBJ)
 
 hd: $(HDIMG)
 	@rm -f $(QMP_SOCK)
@@ -227,7 +234,7 @@ hd: $(HDIMG)
 # ---------------------------------------------------------------------------
 HD32IMG := $(BUILD)/joyos-hd32.img
 
-$(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-joyf.bin \
+$(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-joyf.bin \
             $(PINYIN_BIN) $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
             tools/mkimg.py tools/mkfat.py \
             $(BUILD)/bigdir/.stamp
@@ -237,7 +244,8 @@ $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin font/full-jo
 	    NOTES.TXT=progs/NOTES.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
 	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \
-	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p))
+	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p)) \
+	    CRT_TCC.O=$(CRT_TCC_OBJ) MINIC.O=$(MINIC_OBJ)
 
 hd32: $(HD32IMG)
 	@rm -f $(QMP_SOCK)

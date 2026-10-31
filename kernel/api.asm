@@ -125,6 +125,8 @@ api_dispatch:
     je .beep
     cmp eax, 15
     je .exit
+    cmp eax, 16
+    je .meminfo
     ret
 .print_str:
     call term_print
@@ -219,9 +221,10 @@ api_dispatch:
 .get_arg:
     ; ★ ring 3 的坑:以前这里返回内核里的 PROG_ARG_STR(0x11F004),那是
     ;   supervisor only 的页 —— 程序一读就吃页错误(CHELLO.BIN 就这么崩的)。
-    ;   现在返回的是装载器拷进**程序自己空间**的那一页(SPACE_ARGS_VA),
+    ;   现在返回的是装载器拷进**程序自己空间**的那一页(堆顶-0x2000 的参数页),
     ;   布局一样:前面 4 字节魔数,后面跟着以 0 结尾的字符串(没参数就是空串)。
-    mov esi, SPACE_ARGS_VA + 4
+    mov esi, [space_args_va]
+    add esi, 4
     ret
 .puts_at:
     call term_puts_at
@@ -232,6 +235,11 @@ api_dispatch:
 .beep:
     call speaker_beep
     ret
+; ---- 16:取堆末尾(堆起点固定 0x180000,大小随机器内存/字库位置变)----
+.meminfo:
+    mov eax, [space_args_va]
+    ret
+
 ; ---- 退出(ring 3 的弹床页用它,不返回)----
 .exit:
     jmp api_exit

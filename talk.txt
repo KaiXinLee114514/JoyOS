@@ -1,0 +1,24 @@
+# JoyOS 协作状态（给子智能体看）
+
+更新时间: 2026-10-31
+
+## 最近完成
+- TCC ELF 自举打通：系统内 `tcc -c` → `tcc -static -nostdlib ... -o x.elf` → `run x.elf`
+  全流程可用；内核新增 kernel/elf.asm（PT_LOAD 展开成平铺镜像），
+  lib/crt_tcc.asm 给 TCC 链接 ELF 提供最小 _start/exit；
+  lib/minic.c 修 fputc(pos/len) 与多簇文件写入 bug；
+  kernel/fat.asm 修 fat_write_file 多簇链接时"数据写回上一簇"的 bug。
+- 验证程序：progs/IOTEST.c（文件 I/O 保真，2000 字节多簇）、progs/T2.C（TCC ELF 编译运行）。
+
+## 当前状态
+- 未提交改动：阶段 2-B（字库高位/堆窗口动态）+ 上述 TCC ELF 改动，等回归后一起提交。
+- 回归：test-hda / test-hd-font 需要重跑（fat.asm 改动影响所有写文件路径）。
+
+## 下一步
+1. `make test-hda`、`make test-hd-font` 回归。
+2. 通过后 commit + push（tools/onekey_push.sh，GH_TOKEN 环境变量）。
+3. 之后可做：TCC 输出 flat BIN 的兜底、ELF loader 支持更多段、文档补充 ELF 用法。
+
+## 注意
+- 内核窗口：镜像 96 页(384KiB)，堆 560 页（0x180000 起，动态），程序入口默认 0x120000。
+- TCC 链接必须加 `-static`（动态 ELF 会带 PT_INTERP，系统里没有动态链接器）。

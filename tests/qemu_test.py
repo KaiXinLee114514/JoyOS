@@ -28,13 +28,13 @@ class Monitor:
     def __init__(self, sock_path: str, timeout: float = 10.0):
         self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.s.settimeout(timeout)
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 self.s.connect(sock_path)
                 break
             except (FileNotFoundError, ConnectionRefusedError):
-                if time.time() > deadline:
+                if time.monotonic() > deadline:
                     raise RuntimeError("连不上 QEMU monitor")
                 time.sleep(0.1)
         self.buf = b""
@@ -99,10 +99,10 @@ class Monitor:
         self._drain()                     # 先排空残留,防止缓冲互相堵死
         self._write((line + chr(10)).encode())
         time.sleep(wait)
-        deadline = time.time() + budget
+        deadline = time.monotonic() + budget
         self.s.settimeout(0.3)
         try:
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 try:
                     chunk = self.s.recv(65536)
                 except socket.timeout:
@@ -833,8 +833,8 @@ def main() -> int:
                 (敲进去的命令排在那次输出后面,断言时屏幕上还没有结果)。
                 """
                 last = None
-                t0 = time.time()
-                while time.time() - t0 < max_wait:
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < max_wait:
                     blob = mon.screendump().tobytes()
                     if blob == last:
                         return
@@ -887,8 +887,8 @@ def main() -> int:
 
                 返回 True/False;断言用它就不会因为"字还没画完"而假失败。
                 """
-                t0 = time.time()
-                while time.time() - t0 < timeout:
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < timeout:
                     rescan()
                     if has(text):
                         return True
@@ -914,16 +914,24 @@ def main() -> int:
                     n = int(m.group(1))
                     return n * (0x100000 if m.group(2) else 1) * unit
                 return -1
+            def layout_pool():
+                """解析 layout 行的 pool=0x起点-0x终点 → (起点, 终点)"""
+                m = re.match(r"^0x([0-9a-fA-F]+)-0x([0-9a-fA-F]+)$",
+                             layout.get("pool", ""))
+                return (int(m.group(1), 16), int(m.group(2), 16)) if m else (-1, -1)
             def expected_free_pages():
                 """boot 后页池固定占用:19 页常驻(6 页 + 行缓冲 13 页)
                 + 恒等映射 4 MiB 以上每 4 MiB 一张页表(动态从页池拿)"""
                 return (layout_val("pages") - 19
                         - (layout_val("ident") // 0x400000 - 1))
+            pool_start, pool_end = layout_pool()
             results.append(("layout 行: RAM → 恒等映射 → 页池,大小自洽",
                             layout_val("ram") >= 4 * 0x100000
                             and 4 * 0x100000 <= layout_val("ident") <= 256 * 0x100000
                             and layout_val("ident") % (4 * 0x100000) == 0
-                            and layout_val("pages") == (layout_val("ident") - 0x400000) // 4096,
+                            and pool_start == 0x400000
+                            and pool_start <= pool_end <= layout_val("ident")
+                            and layout_val("pages") == (pool_end - pool_start) // 4096,
                             f"layout: {layout}"))
             run("ls")
             results.append(("ls 列目录",
@@ -1030,7 +1038,7 @@ def main() -> int:
                 hits = re.findall(r"up (\d+) s \((\d+) ticks at 100 Hz\)", screen_lines())
                 return int(hits[-1][1]) if hits else -1
 
-            t_wall0 = time.time()
+            t_wall0 = time.monotonic()
             run("uptime")
             t_before = uptime_ticks()
             results.append(("uptime 读得到计时器", t_before > 0,
@@ -1042,7 +1050,7 @@ def main() -> int:
                             "slept 2 s (200 ticks)"))
             run("uptime")
             t_after = uptime_ticks()
-            wall = time.time() - t_wall0
+            wall = time.monotonic() - t_wall0
             delta = t_after - t_before
             # 注意:两次 uptime 之间还夹着 harness 抓屏/等屏幕稳定的时间(好几秒),
             # 所以别拿 200 当上界 —— 该比的是"guest 数出来的 tick"和"宿主墙钟"一致。
@@ -1213,9 +1221,10 @@ def main() -> int:
                             wait_for("CPL = 3") and has("0x0000001B") and has("0x00000023"),
                             "CS = 0x0000001b(CPL=3)/ SS = 0x00000023"))
             tramp_hex = f"0x{(layout_val('tramp') if layout_val('tramp') > 0 else 0x17F000):08X}"
+            stack_hex = f"0x{(layout_val('stack') if layout_val('stack') > 0 else 0x1EFFFC):08X}"
             results.append(("ring 3:内核给的用户栈 + 弹床页",
-                            has("0x001EFFFC") and has(tramp_hex),
-                            f"ESP = 0x001EFFFC,[ESP] = 弹床 {tramp_hex}"))
+                            has(stack_hex) and has(tramp_hex),
+                            f"ESP = {stack_hex},[ESP] = 弹床 {tramp_hex}"))
             run("clear", wait=0.8)
             run("run FAULT.BIN", wait=2.5)
             results.append(("ring 3:摸内核内存被页错误干掉",
@@ -1620,8 +1629,8 @@ def main() -> int:
                 软盘跑 --shell 时还没轮到它(踩过:直接调用 → NameError)。
                 """
                 last = None
-                t0 = time.time()
-                while time.time() - t0 < max_wait:
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < max_wait:
                     blob = mon.screendump().tobytes()
                     if blob == last:
                         return

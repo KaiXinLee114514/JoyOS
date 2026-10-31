@@ -1376,7 +1376,8 @@ cmd_write:
 ;    0x300000 正好落在字库的**点阵数据中间**!程序一载入就把几个汉字的点阵改掉了
 ;    (实测被踩掉的是 U+BF11~U+BF16 六个谚文字,屏幕上那几个字会变成花屏)。
 ;    现在选 0x120000:上有 FILE_BUF(0x110000),下有字库(0x200000),
-;    中间 896 KB 都是空的,程序再大也踩不到字库(超了就直接拒绝,见 PROG_MAX_SIZE)。
+;    镜像窗口只有 384 KiB,程序再大就直接拒绝(见 PROG_MAX_SIZE;字库现在运行时
+;    搬到恒等映射顶部了,这个静态上限只是保守值)。
 ; ---------------------------------------------------------------------------
 cmd_run:
     cmp byte [fat_ok], 0
@@ -1489,6 +1490,19 @@ cmd_run:
     call fat_read_file                  ; 读进暂存区 —— 它就留在这儿当"页面来源"
     cmp eax, -1
     je .notfound
+    mov [prog_size], eax                ; 实际读到的字节数(ELF 展开要按它算)
+    mov dword [prog_entry], PROG_ADDR   ; 默认:平铺 BIN 的入口就是 0x120000
+    ; ---- 如果是 ELF(TCC 的产物):先展开成平铺镜像 ----
+    mov esi, PROG_ADDR
+    cmp dword [esi], 0x464C457F         ; "\x7fELF"
+    jne .flat_ready
+    mov eax, [prog_size]
+    call elf_load                       ; 返回 eax=展开后大小, edx=入口
+    test eax, eax
+    jz .toobig                          ; 格式不对/超出窗口/页池不够
+    mov [prog_size], eax
+    mov [prog_entry], edx
+.flat_ready:
     mov al, COL_HEADER
     call term_set_color
     mov esi, msg_running
@@ -1535,12 +1549,12 @@ cmd_run:
     ; 参数页:内核里的 PROG_ARG_ADDR(0x11F000)对 ring 3 是"别人家的内存",
     ; 所以先现拿一页挂进程序空间,再把整个参数块原样搬过去(现在还是 ring 0,
     ; 程序页表和内核的恒等映射都在,两边的地址都看得见)。
-    mov eax, SPACE_ARGS_VA
+    mov eax, [space_args_va]
     call space_user_page
     test eax, eax
     jz .nomem_user
     mov esi, PROG_ARG_ADDR
-    mov edi, SPACE_ARGS_VA
+    mov edi, [space_args_va]
     mov ecx, SPACE_ARGS_COPY
     rep movsd
     mov [run_esp], esp                  ; ★ 记住内核现场:正常退出/被杀都回到这儿
@@ -1551,10 +1565,10 @@ cmd_run:
     mov fs, ax
     mov gs, ax
     push dword USER_DATA_SEG            ; SS3
-    push dword SPACE_USER_STACK_TOP     ; ESP3(栈顶那 4 字节就是弹床地址)
+    push dword [space_user_stack_top]     ; ESP3(栈顶那 4 字节就是弹床地址)
     push dword EFLAGS_IF                ; IF=1:新程序一上来就能被定时器打断
     push dword USER_CODE_SEG            ; CS3
-    push dword PROG_ADDR                ; EIP = 程序入口
+    push dword [prog_entry]             ; EIP = 程序入口(平铺 BIN / ELF 的 e_entry)
     iret                                ; ★ 这一句之后就进 ring 3 了(再也不会往下走)
 .nomem_user:                            ; 页池不够连弹床/用户栈都建不出来
     call space_deactivate
@@ -3077,7 +3091,7 @@ msg_file_toobig db 'file too big to print (over 60 KiB)', 10, 0
 
 PROG_ADDR      equ 0x120000             ; 程序加载地址(progs/*.asm 里的 ORG 要和它一致)
 PROG_MAX_SIZE  equ FONT_LOAD_ADDR - PROG_ADDR
-                                        ; 0xE0000 = 896 KB:再往上就是磁盘字库(0x200000)了
+                                        ; 0xE0000 = 896 KB 保守值(实际镜像窗口 384 KiB)
 FILE_BUF       equ 0x110000             ; cat 用的文件缓冲(1 MiB 往上,别压到字库)
 FILE_MAX       equ PROG_ARG_ADDR - FILE_BUF
                                         ; 0xF000 = 60 KB:再往上就是程序参数块(0x11F000)
@@ -3085,6 +3099,7 @@ FILE_MAX       equ PROG_ARG_ADDR - FILE_BUF
 name_buf   times 64 db 0              ; 名字里可能带目录(DOCS/NOTE.TXT),留宽一点
 prog_name_ptr dd 0                      ; run 用的:去掉目录部分之后的程序名
 prog_size   dd 0                        ; run 用的:程序文件多大(按它往私有页里拷)
+prog_entry  dd 0                        ; run 用的:进 ring 3 的入口(平铺=0x120000, ELF 用 e_entry)
 space_freed dd 0                        ; run 用的:收摊时还回去的页数
 run_esp     dd 0                        ; run 用的:进 ring 3 前的内核栈(退出/被杀都回它)
 run_status  dd 0                        ; run 用的:0 = 程序正常 ret,1 = 被内核干掉了

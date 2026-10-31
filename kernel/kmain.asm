@@ -24,11 +24,10 @@
 ;      0x100000-0x10FFFF FAT 扇区缓冲(FAT_BUF)
 ;      0x110000-0x11EFFF cat 的文件缓冲(FILE_BUF)
 ;      0x11F000          程序参数块(PROG_ARG_ADDR)
-;      0x120000-0x19FFFF 用户程序镜像(PROG_ADDR;加载器硬上限是 PROG_MAX_SIZE 896 KiB,
-;                        但超过 512 KiB 就会压到堆 —— 以 include/joyos.h 为准)
-;      0x180000-0x1EDFFF 堆(malloc,440 KB)※ 和程序加载区有重叠,见 include/joyos.h
-;      0x1F0000          内核临时缓冲(读字库描述块)
-;      0x200000-0x3AFFFF 完整字库(FONT_LOAD_ADDR,1.7 MB)
+;      0x120000-0x17FFFF 用户程序镜像窗口(96 页,384 KiB;加载器硬上限 PROG_MAX_SIZE)
+;      0x180000-堆顶      堆窗口(malloc;大小运行时定:4 MiB 以内、顶到字库槽/PINYIN 前,
+;                        默认 128 MiB 机器约 2.1 MiB;参数页/用户栈占窗口最后两页)
+;      (字库/字库临时缓冲:运行时放在恒等映射顶部 ident-2 MiB 的 2 MiB 槽里,不再固定 0x200000)
 ;      0x3B0000-0x3BFFFF PINYIN 拼音表(ime.asm)
 ;      0x3C0000-0x3C1FFF USB 帧列表/QH/TD(usb.asm)
 ;      0x3D0000-0x3D1FFF 页池位图(pmem.asm;8 KiB,最多记 64512 页 = 252 MiB)
@@ -51,12 +50,8 @@ IDENT_LIMIT equ 0x10000000             ; 恒等映射的**编译期上限** 256 
 ; paging.asm 那边用 %ifndef 守着,只认这里的一份)。
 SPACE_IMG_VA     equ 0x120000
 SPACE_IMG_PAGES  equ 0x60              ; 384 KiB
-SPACE_HEAP_VA    equ 0x180000
-SPACE_HEAP_PAGES equ 0x70              ; 448 KiB
+SPACE_HEAP_VA    equ 0x180000          ; 堆窗口起点(页数/参数页/栈顶运行时算)
 SPACE_TRAMP_VA   equ SPACE_IMG_VA + (SPACE_IMG_PAGES - 1) * 4096
-SPACE_ARGS_VA    equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 2) * 4096
-SPACE_STACK_VA   equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 1) * 4096
-SPACE_USER_STACK_TOP equ SPACE_STACK_VA + 4092
 
 COL_NORMAL equ 0x07                    ; 浅灰
 COL_HEADER equ 0x0B                    ; 亮青
@@ -106,8 +101,52 @@ COL_ERR    equ 0x0C                    ; 亮红
     shl ecx, 22
     mov [ident_limit], ecx
     mov dword [pmem_start], 0x400000
-    mov [pmem_end], ecx
+    mov eax, [BOOTINFO + 104]
+    mov [e820_entries], eax
+
+    ; ---- 字库位置 + 程序堆窗口(阶段 2-B:字库搬到恒等映射顶部,堆窗口跟着长大)----
+    ;   字库占 ident-2 MiB 起的 2 MiB 槽(1.7 MB 放得下),临时缓冲在它前面一页;
+    ;   堆窗口 = 0x180000 ~ min(字库临时缓冲, PINYIN 起点 0x3B0000),
+    ;   但要留在 4 MiB 以内(程序页表只有低 4 MiB 那一张私有 PT)。
+    ;   参数页/用户栈占堆窗口最后两页。
+    mov eax, [ident_limit]
+    sub eax, 0x200000                   ; 字库槽起点
+    mov [font_load_addr], eax
+    sub eax, 0x1000                     ; 字库临时缓冲(读描述块)
+    mov [font_tmp_addr], eax
+    mov ecx, 0x3B0000                   ; PINYIN 起点,堆窗口不能压它
+    cmp eax, ecx
+    jbe .heap_end_ok
     mov eax, ecx
+.heap_end_ok:
+    sub eax, 0x180000
+    shr eax, 12
+    mov [space_heap_pages], eax         ; 堆窗口页数(含参数页+栈页)
+    mov ecx, eax
+    sub ecx, 2
+    shl ecx, 12
+    add ecx, 0x180000
+    mov [space_args_va], ecx
+    add ecx, 0x1000
+    mov [space_stack_va], ecx
+    add ecx, 4092
+    mov [space_user_stack_top], ecx
+
+    ; ---- 物理页池顶端: min(ident_limit, 字库槽下界) ----
+    ;   字库(1.7 MB)在恒等映射里、却不是"随便能发出去的页":页池必须停在它下面,
+    ;   否则 pmem_alloc 拿走的物理页会正好盖掉字形数据(跑着跑着字就花了)。
+    ;   字库临时缓冲那一页同理。
+    mov eax, [font_tmp_addr]
+    mov ecx, [ident_limit]
+    cmp eax, ecx
+    jbe .pool_top_ok
+    mov eax, ecx
+.pool_top_ok:
+    cmp eax, 0x400000
+    jae .pool_top_min
+    mov eax, 0x400000
+.pool_top_min:
+    mov [pmem_end], eax
     sub eax, 0x400000
     shr eax, 12
     mov [pmem_total], eax
@@ -115,8 +154,6 @@ COL_ERR    equ 0x0C                    ; 亮红
     add eax, 31
     shr eax, 5
     mov [pmem_words], eax
-    mov eax, [BOOTINFO + 104]
-    mov [e820_entries], eax
 
     ; ---- 字库:先从磁盘尝试读完整版(读不到就退回内建子集)----
     call font_load_from_disk
@@ -298,7 +335,7 @@ COL_ERR    equ 0x0C                    ; 亮红
     call term_print_hex
     mov esi, msg_layout_plus
     call term_print
-    mov eax, SPACE_HEAP_PAGES
+    mov eax, [space_heap_pages]
     call term_print_dec
     mov al, 'p'
     call term_putc
@@ -311,11 +348,11 @@ COL_ERR    equ 0x0C                    ; 亮红
     call term_print_hex
     mov esi, msg_layout_tramp
     call term_print
-    mov eax, SPACE_ARGS_VA
+    mov eax, [space_args_va]
     call term_print_hex
     mov esi, msg_layout_args
     call term_print
-    mov eax, SPACE_USER_STACK_TOP
+    mov eax, [space_user_stack_top]
     call term_print_hex
     mov al, 10
     call term_putc
@@ -908,6 +945,12 @@ pmem_end    dd 0                       ; 页池终点
 pmem_total  dd 0                       ; 页池总页数
 pmem_pages  dd 0                       ; (同 pmem_total,给 shell 用)
 pmem_words  dd 0                       ; 位图需要多少个 dword
+font_load_addr dd 0x200000             ; 字库加载地址(运行时 = ident-2 MiB)
+font_tmp_addr  dd 0x1F0000             ; 读字库描述块的临时缓冲(运行时 = 字库前 4 KiB)
+space_heap_pages dd 0x70               ; 程序堆窗口页数(含参数页+用户栈页)
+space_args_va   dd 0x1EE000            ; 参数页虚拟地址(窗口倒数第二页)
+space_stack_va  dd 0x1EF000            ; 用户栈页虚拟地址(窗口最后一页)
+space_user_stack_top dd 0x1EFFFC       ; 用户栈顶(栈页顶部往下 4 字节)
 msg_fbw     db ' w=', 0
 msg_fbh     db ' h=', 0
 msg_fbp     db ' pitch=', 0
@@ -932,21 +975,21 @@ msg_fpu_ok  db 'fpu: x87 initialized (CR0.NE=1, #MF handler ready)', 10, 0
 msg_fpu_none db 'fpu: no x87 detected (floating point unavailable)', 10, 0
 msg_paging  db 'paging: CR0.PG=1, identity-mapped 0-', 0
 msg_paging2 db ' MiB (+ VBE LFB high window)', 10, 0
-msg_pmem    db 'pmem: page pool 0x', 0
-msg_layout_dash db '-0x', 0
+msg_pmem    db 'pmem: page pool ', 0
+msg_layout_dash db '-', 0
 msg_layout_comma db ', ', 0
 msg_pmem2   db ' pages (4 KiB each) + dynamic page tables (try: debug pmem / debug ptest)', 10, 0
 msg_layout1 db 'layout: ram=', 0
 msg_layout1b db 'M e820=', 0
 msg_layout1c db ' ident=', 0
 msg_layout_mib db 'M', 10, 0
-msg_layout2 db 'layout: pool=0x', 0
+msg_layout2 db 'layout: pool=', 0
 msg_layout2b db ' pages=', 0
-msg_layout3 db 'layout: img=0x', 0
+msg_layout3 db 'layout: img=', 0
 msg_layout_plus db '+', 0
-msg_layout_p db 'p heap=0x', 0
-msg_layout4 db 'layout: tramp=0x', 0
-msg_layout_tramp db ' args=0x', 0
+msg_layout_p db 'p heap=', 0
+msg_layout4 db 'layout: tramp=', 0
+msg_layout_tramp db ' args=', 0
 msg_layout_args db ' stack=', 0
 msg_kbd     db 'keyboard: PIC remapped to 0x20, IRQ1 enabled', 10, 0
 msg_pit     db 'timer: PIT channel 0 at 100 Hz (IRQ0 0x20; try: uptime / sleep)', 10, 0

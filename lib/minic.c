@@ -186,7 +186,8 @@ int tolower(int c) { return isupper(c) ? ct_tolower[c - 'A'] : c; }
 
 /* ==========================================================================
  *  内存分配:一条带头结点的空闲链,首次适配 + 相邻合并
- *  堆就是 0x180000..0x1EDFFF 那 440 KB(见 joyos.h 的内存约定)
+ *  堆从 0x180000 起,末尾是运行时值(参数页地址)——用 j_heap_end() 查,
+ *  大小随机器内存/字库位置变(默认 128 MiB 约 2.1 MB,见 joyos.h 的内存约定)
  * ==========================================================================*/
 typedef struct blk {
     size_t size;                            /* 可用字节数(不含节点头) */
@@ -199,8 +200,11 @@ static void heap_merge_back(void);
 
 static void heap_init(void)
 {
+    u32 end = j_heap_end();                 /* 参数页地址 = 堆可用区末尾 */
+    if (end <= JOY_HEAP_START)              /* 查不到就退回旧默认值 */
+        end = JOY_HEAP_END;
     heap_head = (blk_t *)JOY_HEAP_START;
-    heap_head->size = (size_t)(JOY_HEAP_END - JOY_HEAP_START) - sizeof(blk_t);
+    heap_head->size = (size_t)(end - JOY_HEAP_START) - sizeof(blk_t);
     heap_head->next = NULL;
     heap_head->used = 0;
 }
@@ -1226,9 +1230,14 @@ int fputc(int c, FILE *f)
     if (!f)
         return EOF;
     if (f->mode & FMODE_WRITE) {
-        if (f->len >= MC_WRITE_MAX)
+        /* 必须和 fwrite 一样按 f->pos 落笔:
+         * TCC 输出 ELF 是 fwrite(数据) 和 fputc(补零) 混着写的,
+         * 之前这里按 f->len 写会跳过/覆盖已写内容,把 .o 写坏。 */
+        if (f->pos >= MC_WRITE_MAX)
             return EOF;
-        f->buf[f->len++] = (char)c;
+        if (f->pos >= f->len)
+            f->len = f->pos + 1;
+        f->buf[f->pos++] = (char)c;
         return (unsigned char)c;
     }
     return EOF;

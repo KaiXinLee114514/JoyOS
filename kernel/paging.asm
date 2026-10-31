@@ -319,15 +319,13 @@ paging_translate:
 ;   如果单独汇编本文件(没有 kmain)也能过。两边必须一致。
 SPACE_IMG_VA     equ 0x120000          ; 程序镜像窗口(shell.asm 的 PROG_ADDR)
 SPACE_IMG_PAGES  equ 0x60              ; 384 KiB(0x120000-0x17FFFF,见 include/joyos.h)
-SPACE_HEAP_VA    equ 0x180000          ; 堆窗口(JOY_HEAP_START)
-SPACE_HEAP_PAGES equ 0x70              ; 448 KiB(0x180000-0x1EFFFF)
+SPACE_HEAP_VA    equ 0x180000          ; 堆窗口起点(JOY_HEAP_START)
 SPACE_TRAMP_VA   equ SPACE_IMG_VA + (SPACE_IMG_PAGES - 1) * 4096
-SPACE_STACK_VA   equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 1) * 4096
-SPACE_USER_STACK_TOP equ SPACE_STACK_VA + 4092
-SPACE_ARGS_VA    equ SPACE_HEAP_VA + (SPACE_HEAP_PAGES - 2) * 4096
 %endif
+; 堆窗口页数 / 参数页 / 用户栈顶是运行时变量(kmain.asm 算好):
+;   space_heap_pages / space_args_va / space_stack_va / space_user_stack_top
 SPACE_ARGS_COPY  equ (4 + 2048 + 3) / 4                            ; 拷贝长度(dword 数)
-; ★ 栈顶那 4 字节(0x1EFFFC)就是 space_prepare_user 写进去的弹床地址:
+; ★ 栈顶那 4 字节(堆窗口最后一页顶部往下 4 字节)就是 space_prepare_user 写进去的弹床地址:
 ;   程序 `ret` 时 [esp] 正是这里。**别**把 ESP 设成 0x1F0000(窗口外、内核临时缓冲):
 ;   程序第一次 ret 就会撞上"内核的页",错误码 bit0=1 —— 这个坑踩过一次。
 ; 两个窗口在 0x120000-0x1EFFFF 里是**连着**的(96 + 112 = 208 页),
@@ -388,7 +386,8 @@ space_create:
     shr eax, 12
     and eax, 0x3FF                     ; 窗口第一页在页表里的下标(288)
     lea edi, [edi + eax * 4]
-    mov ecx, SPACE_IMG_PAGES + SPACE_HEAP_PAGES   ; 208 项(窗口是连着的)
+    mov ecx, [space_heap_pages]        ; 窗口是连着的:镜像 96 页 + 堆窗口 N 页
+    add ecx, SPACE_IMG_PAGES
     xor eax, eax
     rep stosd
 
@@ -468,7 +467,9 @@ page_fault_try_handle:
     jb .image
     mov ebx, eax
     sub ebx, SPACE_HEAP_VA
-    cmp ebx, SPACE_HEAP_PAGES * 4096
+    mov ecx, [space_heap_pages]
+    shl ecx, 12
+    cmp ebx, ecx
     jb .heap
     jmp .out
 .image:
@@ -603,7 +604,7 @@ space_destroy:
     mov ecx, SPACE_IMG_PAGES
     call space_free_window
     mov ebx, SPACE_HEAP_VA
-    mov ecx, SPACE_HEAP_PAGES
+    mov ecx, [space_heap_pages]
     call space_free_window
 .no_scan:
 
@@ -708,7 +709,7 @@ space_user_page:
 ; ---------------------------------------------------------------------------
 ;  space_prepare_user:准备 ring 3 的两块页
 ;    · 弹床页(镜像窗口最后一页 0x17F000)写三条指令:mov eax,15 / int 0x30 / jmp $
-;    · 用户栈页(堆窗口最后一页 0x1EF000)的栈顶放一个返回地址 = 弹床
+;    · 用户栈页(堆窗口最后一页,地址运行时定 space_stack_va)的栈顶放一个返回地址 = 弹床
 ;  返回 eax = 弹床虚拟地址;0 = 页池不够(调用方按 OOM 处理)
 ;  为什么要弹床:现有程序的结尾都是 `ret`(汇编写的,C 那套也是),而 ret 的目标
 ;  地址是我们压进用户栈的。压内核地址没用 —— ring 3 一跳过去就是 #PF。所以压
@@ -725,7 +726,7 @@ space_prepare_user:
     mov esi, tramp_code
     mov ecx, tramp_code_end - tramp_code
     rep movsb
-    mov eax, SPACE_STACK_VA
+    mov eax, [space_stack_va]
     call space_user_page
     test eax, eax
     jz .fail

@@ -892,6 +892,11 @@ LIBTCCAPI TCCState *tcc_new(void)
 #ifdef TCC_TARGET_I386
     s->seg_size = 32;
 #endif
+    /* JoyOS 移植:程序在 0x120000 加载,链接 ELF 时默认也用这个基址。
+       原先要用户写 -Wl,-Ttext=0x120000,但选项解析在 JoyOS 的 minic 环境里
+       不认 "Wl," 这个表项(未知原因),干脆把默认值钉死在这里,省掉那个选项。 */
+    s->text_addr = 0x120000;
+    s->has_text_addr = 1;
     /* enable this if you want symbols with leading underscore on windows: */
 #if defined TCC_TARGET_MACHO /* || defined TCC_TARGET_PE */
     s->leading_underscore = 1;

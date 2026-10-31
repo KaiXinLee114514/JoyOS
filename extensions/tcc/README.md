@@ -6,7 +6,18 @@ Tiny C Compiler 0.9.28rc (<https://github.com/TinyCC/tinycc>) 的 JoyOS 移植�
 
 - ✅ `run TCC.BIN -c t1.c -o t1.o` 能编译出**合法的 i386 ELF 目标文件**
   （已在镜像里验证：T1.O 864 字节，readelf 确认 ELF32 REL Intel i386）
-- ❌ 还不能链接/运行 TCC 产物：缺 libtcc1.a、crt 启动文件、磁盘上的 include 头文件、ELF 加载器
+- ✅ **能链接并运行**：内核已加 ELF loader（`kernel/elf.asm`），FAT16 里预置了
+  `CRT_TCC.O`（TCC 专用最小 crt）和 `MINIC.O`（JoyOS libc）。系统内可以：
+  ```
+  > run tcc.bin -c hello.c -o hello.o
+  > run tcc.bin -static -nostdlib hello.o crt_tcc.o minic.o -o hello.elf
+  > run hello.elf
+  hello from TCC ELF! ...
+  ```
+  注意 **必须加 `-static`**（默认动态链接会带 `PT_INTERP /lib/ld-tcc.so.1`，
+  JoyOS 没有动态链接器）；`-nostdlib` 是因为系统里没有 libc.a/libtcc1.a。
+- 限制：TCC 还不能 include 标准头（磁盘上没部署 include 头文件）；暂不支持
+  动态链接、`-run`、自定义链接脚本。
 
 ## 构建
 

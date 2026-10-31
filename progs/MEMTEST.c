@@ -5,9 +5,9 @@
 
 int main(void)
 {
-    void *ptrs[64];
+    void *ptrs[256];
     int n = 0, total = 0;
-    while (n < 64) {
+    while (n < 256) {
         void *p = malloc(16384);
         if (!p)
             break;
