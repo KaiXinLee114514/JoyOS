@@ -338,6 +338,24 @@ class Fat16:
     def names(self) -> list:
         return [n for n, _ in self.entries()]
 
+    def find_raw(self, want: str):
+        """按名字找目录项原始 32 字节;注意必须按原始槽位扫,"""
+        """不能拿 entries() 的序号当槽位(根目录里有 LFN 项时两者会错位)"""
+        want = want.upper()
+        for i in range(self.root_ents):
+            e = self.root_lba + i * 32
+            raw = self.img[e:e + 32]
+            if len(raw) < 32 or raw[0] == 0x00:
+                return None
+            if raw[0] == 0xE5 or (raw[11] & 0x0F) == 0x0F:
+                continue
+            name = raw[0:8].decode("ascii", "replace").rstrip()
+            ext = raw[8:11].decode("ascii", "replace").rstrip()
+            full = f"{name}.{ext}" if ext else name
+            if full.upper() == want:
+                return raw
+        return None
+
     # ---- 子目录:0 = 根目录那块固定区域,否则是簇链 ----
     def dir_entries(self, cluster: int = 0):
         """列一个目录:cluster=0 → 根目录固定区域;否则跟着簇链走"""
@@ -596,9 +614,10 @@ def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
 
     # ---- 4) 两个 FAT 副本应该都更新了(不然掉电就丢目录项) ----
     try:
-        idx = next(i for i, (n, _) in enumerate(fs.entries()) if n == "TEST.TXT")
-        ent = fs.root_lba + idx * 32
-        cl = fs.entry_cluster(raw[ent:ent + 32])
+        ent = fs.find_raw("TEST.TXT")
+        if ent is None:
+            raise KeyError("TEST.TXT")
+        cl = fs.entry_cluster(ent)
         copies = []
         for i in range(fs.nfats):
             if fs.fat32:

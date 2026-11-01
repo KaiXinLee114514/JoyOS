@@ -6,9 +6,11 @@
     FAT16 的簇号就是 16 位整数,算起来直白;FAT12 的簇号是 12 位、两个簇挤三个字节,
     读写都要拆半字节。内核里先支持 FAT16,驱动会按簇数自动判类型(规范:< 4085 簇 = FAT12)。
 
-为什么不用子目录 / 长文件名:
-    这两个都要额外处理(LFN 的校验和 + 目录簇链),对"能按名字跑程序"这个目标没必要。
-    现在只支持根目录 + 8.3 文件名(HELLO.BIN 这种),够用而且好读。
+长文件名(VFAT LFN):
+    名字装不进 11 字节 8.3 项时,在短项前面写一串 32 字节的 LFN 项
+    (属性 0x0F,带短名校验和,13 个 UTF-16LE 字符一段)。短名照旧有一个
+    合法 8.3 别名,老内核/老工具读不到长名也能按别名打开。这里只支持 ASCII
+    长名(UTF-16 高字节恒为 0)。
 
 用法:
     python3 tools/mkfat.py <镜像文件> <分区起始 LBA> <分区大小 MB> <名字=文件> ...
@@ -52,6 +54,123 @@ def name83(name: str):
         return b".." + b" " * 9
     base, _, ext = name.partition('.')
     return base[:8].ljust(8).encode() + ext[:3].ljust(3).encode()
+
+
+# ---- VFAT 长文件名(LFN)--------------------------------------------------
+# 名字装不进 8.3 时,短项前面要放一串 32 字节的 LFN 项(目录里按 N..1 排):
+#   [0]     序号 1..N(最后一段再 |0x40)
+#   [11]    0x0F(属性 = 长名)
+#   [13]    后面那个短项 11 字节的校验和
+#   [1..10],[14..25],[28..31]  13 个 UTF-16LE 字符
+#   [26..27] 首簇 = 0
+# 字符只支持 ASCII:一个 UTF-8 字节 → 一个 UTF-16LE 码元(高字节 0)。
+LFN_CHARS = 13
+# 8.3 名里允许的字符(大写字母、数字,加这些符号)
+ALLOWED_83 = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789$%'-_@~`!(){}^#&")
+
+
+def lfn_checksum(short: bytes) -> int:
+    """短名 11 字节 → LFN 项里的校验和(和内核 fat_lfn_checksum 同一套算法)"""
+    s = 0
+    for c in short:
+        s = (((s & 1) << 7) + (s >> 1) + c) & 0xFF
+    return s
+
+
+def needs_lfn(name: str) -> bool:
+    """这个名字是否必须用 LFN 才能原样保留?
+
+    ★ 纯小写/混合大小写的合法 8.3 名不算:老行为就是存成大写短名,内核写文件
+      也走同一条路(`write test.txt` 出来的仍是 TEST.TXT),现有测试不受影响。
+    """
+    if name in (".", ".."):
+        return False
+    up = name.upper()
+    base, dot, ext = up.partition(".")
+    if "." in ext:
+        return True                           # 多个点,8.3 只能有一个
+    if not (1 <= len(base) <= 8):
+        return True
+    if len(ext) > 3:
+        return True
+    if dot and not ext:
+        return True                           # "NAME." 结尾那个点存不进去
+    return any(c not in ALLOWED_83 for c in base + ext)
+
+
+def _split_base_ext(name: str):
+    """按最后一个点拆主名/扩展名(短别名用;点多的名字主名里会留点 → 换 '_')"""
+    up = name.upper()
+    if "." in up:
+        base, ext = up.rsplit(".", 1)
+    else:
+        base, ext = up, ""
+    return base, ext
+
+
+def _sanitize(s: str) -> str:
+    return "".join(c if c in ALLOWED_83 else "_" for c in s)
+
+
+def short_alias(name: str, used: set) -> bytes:
+    """给长名造一个 11 字节短别名,保证在 used(这个目录已用的短名)里没出现过。
+
+    规则:能直接收成合法 8.3 就用它;截断或撞名了就用 BASE 前 6 + "~n" + ".EXT",
+    n 从 1 递增查重(n≥10 时 BASE 只留 5 个字符,保证总长 ≤ 8)。
+    """
+    base, ext = _split_base_ext(name)
+    sb, se = _sanitize(base), _sanitize(ext)
+    plain = (sb[:8].ljust(8) + se[:3].ljust(3)).encode()
+    truncated = len(sb) > 8 or len(se) > 3
+    # 策略 A(用户拍板):能截断就直接截断,不搞 ~n 别名——
+    #   RC.CONF→RC.CON、INDEX.HTML→INDEX.HTM、LONGNAME_TEST.txt→LONGNAME.TXT。
+    # 好处:短别名保持可读、老 8.3 路径仍能命中;截断名撞了才退到 BASE6~n。
+    if plain not in used:
+        return plain
+    n = 1
+    while n <= 99:
+        digits = str(n)
+        keep = 8 - 1 - len(digits)
+        cand = (sb[:keep].ljust(keep, "_") + "~" + digits).ljust(8) + se[:3].ljust(3)
+        cand = cand.encode()
+        if cand not in used:
+            return cand
+        n += 1
+    raise RuntimeError(f"短名别名用完了: {name}")
+
+
+def lfn_entries(name: str, short: bytes) -> list:
+    """生成这个名字的 LFN 项列表,顺序和目录里一致(N..1)。"""
+    chk = lfn_checksum(short)
+    codes = [ord(c) for c in name] + [0]      # 结尾 0x0000
+    n = (len(codes) + LFN_CHARS - 1) // LFN_CHARS
+    while len(codes) < n * LFN_CHARS:
+        codes.append(0xFFFF)                  # 末段剩下的用 0xFFFF 填满
+    offs = (1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30)
+    out = []
+    for i in range(n, 0, -1):
+        b = bytearray(32)
+        b[0] = i | (0x40 if i == n else 0)
+        b[11] = 0x0F
+        b[13] = chk
+        for off, cp in zip(offs, codes[(i - 1) * LFN_CHARS:i * LFN_CHARS]):
+            struct.pack_into("<H", b, off, cp)
+        out.append(b)
+    return out
+
+
+def make_entry(name: str, attr: int, cluster: int, size: int, used: set, entry) -> list:
+    """造目录项:长名 → LFN 串 + 短项;8.3 → 只一个短项。entry 是 main 里的构造函数。"""
+    if name in (".", ".."):
+        return [entry(name83(name), attr, cluster, size)]
+    short = name83(name)
+    if needs_lfn(name) or short in used:
+        # 需要长名,或者这个 8.3 别名已经被同目录别的项占了 → 造 ~n 别名 + LFN
+        short = short_alias(name, used)
+        used.add(short)
+        return lfn_entries(name, short) + [entry(short, attr, cluster, size)]
+    used.add(short)
+    return [entry(short, attr, cluster, size)]
 
 
 def main() -> int:
@@ -210,6 +329,9 @@ def main() -> int:
 
     dir_entries = {d: [] for d in dir_paths}
     root_entries = []
+    # 每个目录已经用掉的短名(查 LFN 别名冲突用);"." 和 ".." 先占上
+    used_short = {d: set() for d in dir_paths}
+    used_short[""] = set()
 
     # 目录自己的项:". "(自己)和 ".."(父目录;根用 0,这是 FAT 的老规矩)
     for d in dir_paths:
@@ -217,6 +339,8 @@ def main() -> int:
         # ".." 指向父目录;父目录是根的话填 0(FAT16 的根没有簇号,0 就是"根")
         up = dir_cluster[dir_parent[d]] if dir_parent[d] else 0
         dir_entries[d].append(entry(name83(".."), 0x10, up, 0))
+        used_short[d].add(name83("."))
+        used_short[d].add(name83(".."))
 
     # 文件:按路径放进对应目录
     for name, data in file_items:
@@ -236,19 +360,16 @@ def main() -> int:
         next_cluster += n_clusters
 
         target = root_entries if d == "" else dir_entries[d]
-        target.append(entry(name83(fname), 0x20, first, len(data)))
+        target.extend(make_entry(fname, 0x20, first, len(data), used_short[d], entry))
         where = f"{d}/{fname}" if d else fname
         print(f"   {where:24s} {len(data):>8} 字节  首簇 {first}  共 {n_clusters} 簇")
 
-    # 目录:在父目录里写一个 attr=0x10 的项
+    # 目录:在父目录里写一个 attr=0x10 的项(长目录名同样带 LFN 串)
     for d in dir_paths:
         parent = dir_parent[d]
-        short = name83(d.rsplit("/", 1)[-1])
-        e = entry(short, 0x10, dir_cluster[d], 0)
-        if parent == "":
-            root_entries.append(e)
-        else:
-            dir_entries[parent].append(e)
+        target = root_entries if parent == "" else dir_entries[parent]
+        target.extend(make_entry(d.rsplit("/", 1)[-1], 0x10, dir_cluster[d], 0,
+                                 used_short[parent], entry))
         print(f"   {(parent + '/') if parent else ''}{d.rsplit('/', 1)[-1] + '/':12s} "
               f"{'目录':>8}      首簇 {dir_cluster[d]}")
 
