@@ -224,6 +224,7 @@ progs/CALC.asm         组件:计算器(定点小数,自己算 ±2147.483647)
 progs/EDIT.asm         组件:全屏文本编辑器(方向键 + 存盘 + 打开)
 progs/TOUCH.asm        示例程序(按需分页演示:一页页碰内存再验证)
 progs/NOTES.TXT        放进镜像的示例文本(编辑器默认打开它)
+progs/ENGLISH.asm      示例程序:莎士比亚 Sonnet 18(正文同步自 ensample.txt)
 progs/CHELLO.c         C 写的示例程序(printf / malloc / 参数 / 读文件)
 progs/PLAY.C           组件:文本谱播放器(读 FAT 上的谱子 → int 0x30 的 beep;--list 只解析;不含示例谱)
 include/joyos.h        C 程序用的头:15 个 int 0x30 包装 + 颜色/键值常量
