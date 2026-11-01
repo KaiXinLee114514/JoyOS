@@ -15,9 +15,9 @@
 
 ![vi 跑在 JoyOS 上](docs/screenshot-vi.png)
 
-还有图形模式(800×600 VBE)里敲 `info` 和 `run UTF8`(中文 / emoji 演示)的样子:
+还有图形模式(800×600 VBE)里敲 `info` 和 `cat ZH.TXT`(中文 / emoji 演示)的样子:
 
-![JoyOS shell](docs/screenshot.png) ![中文显示(run UTF8)](docs/screenshot-zh.png)
+![JoyOS shell](docs/screenshot.png) ![中文显示(cat ZH.TXT)](docs/screenshot-zh.png)
 
 一个**从头写的、4000 多行的 x86 操作系统**,能启动、能分页、能读硬盘、
 有自己的文件系统和 shell,还能**跑你写的小程序**。
@@ -225,7 +225,8 @@ progs/EDIT.asm         组件:全屏文本编辑器(方向键 + 存盘 + 打开)
 progs/TOUCH.asm        示例程序(按需分页演示:一页页碰内存再验证)
 progs/NOTES.TXT        放进镜像的示例文本(编辑器默认打开它)
 progs/JPKR.TXT         放进镜像的示例文本(日文/韩文显示演示,shell 里 cat JPKR.TXT)
-progs/ENGLISH.asm      示例程序:莎士比亚 Sonnet 18(正文同步自 ensample.txt)
+progs/ZH.TXT           放进镜像的示例文本(中文/UTF-8 演示,shell 里 cat ZH.TXT)
+progs/EN.TXT           放进镜像的示例文本(莎士比亚 Sonnet 18,cat EN.TXT)
 progs/CHELLO.c         C 写的示例程序(printf / malloc / 参数 / 读文件)
 progs/PLAY.C           组件:文本谱播放器(读 FAT 上的谱子 → int 0x30 的 beep;--list 只解析;不含示例谱)
 include/joyos.h        C 程序用的头:15 个 int 0x30 包装 + 颜色/键值常量
@@ -1226,7 +1227,7 @@ unmapped, gave back 0x00400000  (page returned to the pool; empty page table rec
 ```
 
 键盘直接给字节、**没有输入法**,所以命令行本身只能打 ASCII;
-想看中文就用 `cat`(文件里是 UTF-8),或者让程序自己打(`run UTF8` 是现成的演示)。
+想看中文就用 `cat`(文件里是 UTF-8):`cat ZH.TXT` 是现成的演示。
 
 ## 8. 怎么改
 
@@ -1369,8 +1370,8 @@ token 只从环境变量 `GH_TOKEN` 读,**不写进 config、不落盘**。想�
 
 ## 9. 中文与字库(详见 font/README.md)
 
-中文**能正常显示**:图形模式下把 16×16 点阵直接 blit 到帧缓冲,跑 `run UTF8` 就能看到
-(以前这是 shell 里的一条 `zh` 命令,现在搬到磁盘程序 `progs/UTF8.asm` 了)。
+中文**能正常显示**:图形模式下把 16×16 点阵直接 blit 到帧缓冲,`cat ZH.TXT` 就能看到
+(演示文本放在镜像里;中文/日文/韩文/英文各一个 .TXT,不做成命令)。
 
 数据来源与生成方式见 [font/README.md](font/README.md):`font/` 目录里是 GNU Unifont 抽出的字形
 (入库的是 416 字形的 23 KB `.hex` 子集 + 二进制;完整 40 208 字形的 1.7 MB 字库**放在磁盘镜像里**,
@@ -1440,7 +1441,7 @@ USB 控制器在哪、它的寄存器窗口(那个 I/O BAR)开在哪儿。
   | 盘 | 标签 | 放什么 | 现在有多大 |
   |----|------|--------|-----------|
   | 1 | `minimal system` | 引导扇区 + stub + 内核(含 416 字形内置子集),开机直接进 shell | 128 KiB |
-  | 2 | `disk read/write` | FAT12/16 读写 + 程序盘(HELLO/COUNT/CALC/TOUCH/UTF8/EDIT/VI/PLAY)+ `RC.CONF` | ~110 KiB |
+  | 2 | `disk read/write` | FAT12/16 读写 + 程序盘(HELLO/COUNT/CALC/TOUCH/EDIT/VI/PLAY)+ 演示文本(ZH/EN/JPKR)+ `RC.CONF` | ~110 KiB |
   | 3 | `more characters (1/2)` | 完整字库 `full-joyf.bin` 的前一半(1 张软盘塞不下 1.68 MB) | ~862 KiB |
   | 4 | `more characters (2/2)` | 完整字库的后一半 | ~862 KiB |
   | 5 | `add-ons` | 以后加的东西(播放器/游戏/演示程序),也可以继续往后编号 | 余量 |

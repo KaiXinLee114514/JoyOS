@@ -1229,16 +1229,20 @@ def main() -> int:
             results.append(("计算器退出", "program returned to the shell" in calc(""),
                             "回到 shell"))
 
-            # ---- 中文 / UTF-8 演示:以前是 shell 里的 `zh` 命令,现在是磁盘程序
-            #      UTF8.BIN —— 它打中文长句、4 字节 emoji,还有故意写坏的 UTF-8 ----
-            run("run UTF8", wait=2.5)
+            # ---- 中文 / 英文演示:都是磁盘上的 .TXT,cat 出来看(不做命令/程序)----
+            run("clear", wait=0.8)
+            run("cat zh.txt", wait=2.0)
             results.append(("中文显示", has("黄鹤楼"), "黄鹤楼"))
             results.append(("中文长句", has("昔人已乘黄鹤去"), "昔人已乘黄鹤去"))
             results.append(("UTF-8 三字节", has("晴川历历汉阳树"), "晴川历历汉阳树"))
             results.append(("UTF-8 四字节 emoji", has("😀"), "😀"))
             results.append(("坏字节画替换符",
                             has("broken UTF-8: [") and has("��") and has("still shows"),
-                            "[��](两个替换字符)且后面的字还在"))
+                            "[??](两个替换字符)且后面的字还在"))
+            run("clear", wait=0.8)
+            run("cat en.txt", wait=2.0)
+            results.append(("英文文本", has("Shall I compare thee") and has("So long lives this"),
+                            "EN.TXT:莎士比亚 Sonnet 18"))
 
             # ---- ring 3:程序跑在用户态,碰内核内存要被干净干掉(kernel/tss.asm)----
             run("clear", wait=0.8)

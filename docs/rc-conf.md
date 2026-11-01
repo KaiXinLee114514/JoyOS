@@ -79,7 +79,7 @@ rc list / rc get KEY / rc start N / rc log / rc reload
 > rc list
 services in RC.CONF:
 [1] HELLO.BIN disabled  args: hi-from-rc-conf
-[2] UTF8.BIN disabled
+[2] COUNT.BIN disabled
 rc start N 就能跑;enabled 只影响开机 autostart
 > rc start 1
 running HELLO.BIN

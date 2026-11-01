@@ -2988,7 +2988,7 @@ msg_help db \
     'cat <file>    print a text file (UTF-8)', 10, \
     'write <f> <t> create/overwrite a file', 10, \
     'run <file>    run a program from disk (.BIN; bare "run" = the ABI)', 10, \
-    '              demos: run UTF8 (Chinese poem), run ENGLISH (English sonnet)', 10, 0
+    '              demo texts: cat ZH.TXT / EN.TXT / JPKR.TXT', 10, 0
 
 msg_info_head    db '--- JoyOS info ---', 10, 0
 msg_info_disk    db 'boot disk   : ', 0
