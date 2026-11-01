@@ -212,12 +212,12 @@ pinyin:
 
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-joyf.bin \
           $(PINYIN_BIN) $(BUILD)/TCC.BIN \
-          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
+          $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF progs/JPKR.TXT \
           tools/mkimg.py tools/mkfat.py \
           $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
-	    NOTES.TXT=progs/NOTES.TXT LONGNAME_TEST.txt=progs/README.TXT \
+	    NOTES.TXT=progs/NOTES.TXT JPKR.TXT=progs/JPKR.TXT LONGNAME_TEST.txt=progs/README.TXT \
 	    DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT DOCS/Long_Note.txt=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
 	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \
@@ -235,14 +235,14 @@ hd: $(HDIMG)
 # ---------------------------------------------------------------------------
 HD32IMG := $(BUILD)/joyos-hd32.img
 
-$(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-joyf.bin \
+$(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-joyf.bin progs/JPKR.TXT \
             $(PINYIN_BIN) $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
             tools/mkimg.py tools/mkfat.py \
             $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \
 	    font/full-joyf.bin --disk-mb 96
 	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
-	    NOTES.TXT=progs/NOTES.TXT LONGNAME_TEST.txt=progs/README.TXT \
+	    NOTES.TXT=progs/NOTES.TXT JPKR.TXT=progs/JPKR.TXT LONGNAME_TEST.txt=progs/README.TXT \
 	    DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT DOCS/Long_Note.txt=progs/NOTES.TXT \
 	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
 	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \

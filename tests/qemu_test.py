@@ -965,6 +965,13 @@ def main() -> int:
             results.append(("cat 读中文行", has("看看存进去的样子"),
                             "NOTES.TXT 最后一行也在屏幕上"))
 
+            # 日文/韩文:磁盘上的 JPKR.TXT(假名/谚文都在完整字库里)。
+            # 用户要求这类演示只放文本文件,不做命令/程序 —— 测试也只是 cat 出来看。
+            run("cat jpkr.txt", wait=1.0)
+            results.append(("cat 日文/韩文行",
+                            has("こんにちは") and has("안녕하세요"),
+                            "JPKR.TXT:假名和谚文都画出来了"))
+
             run("cat readme.txt", wait=0.6, idle=True)
             results.append(("cat 读得到正文", has("int 0x30"),
                             "README.TXT 里的 int 0x30(接口表)"))
