@@ -1225,9 +1225,9 @@ def main() -> int:
             # ---- 中文 / UTF-8 演示:以前是 shell 里的 `zh` 命令,现在是磁盘程序
             #      UTF8.BIN —— 它打中文长句、4 字节 emoji,还有故意写坏的 UTF-8 ----
             run("run UTF8", wait=2.5)
-            results.append(("中文显示", has("JOYOS 上线"), "JOYOS 上线"))
-            results.append(("中文长句", has("字模来自 GNU Unifont"), "字模来自 GNU Unifont"))
-            results.append(("UTF-8 三字节", has("同一套编码"), "同一套编码"))
+            results.append(("中文显示", has("黄鹤楼"), "黄鹤楼"))
+            results.append(("中文长句", has("昔人已乘黄鹤去"), "昔人已乘黄鹤去"))
+            results.append(("UTF-8 三字节", has("晴川历历汉阳树"), "晴川历历汉阳树"))
             results.append(("UTF-8 四字节 emoji", has("😀"), "😀"))
             results.append(("坏字节画替换符",
                             has("broken UTF-8: [") and has("��") and has("still shows"),

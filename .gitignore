@@ -6,3 +6,5 @@ __pycache__/
 font/.cache/
 # vim 源码是从外面拉进来玩的,别扫进仓库(300+ MB)
 externded/
+# vim 交换文件(编辑时产生,不入库)
+*.swp

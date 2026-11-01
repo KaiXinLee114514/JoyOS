@@ -46,8 +46,6 @@ start:
     call print_line
     mov esi, zstr_7
     call print_line
-    mov esi, zstr_8
-    call print_line
 
     ; ---- 四字节 UTF-8:直接打字节串,内核会拆成码位去查字库 ----
     mov esi, msg_emoji
@@ -79,14 +77,13 @@ print_line:
 ; ---------------------------------------------------------------------------
 msg_note    db 'UTF8.BIN: glyphs from GNU Unifont, blitted straight into the VBE framebuffer', 0
 
-zstr_1      db 'JOYOS 上线，欢迎回来。', 0
-zstr_2      db '这一屏的字，都是 16x16 点阵拼出来的。', 0
-zstr_3      db '汉字两格，英文一格，就这么排的。', 0
-zstr_4      db '字模来自 GNU Unifont，开机现读磁盘。', 0
-zstr_5      db '图形模式：只有像素，没有字符码。', 0
-zstr_6      db '800x600、32 位色，一屏 100x37 个字符。', 0
-zstr_7      db 'UTF-8：和外面的世界同一套编码。', 0
-zstr_8      db '四字节 UTF-8 也照样画：😀', 0
+zstr_1      db '黄鹤楼', 0
+zstr_2      db '[唐]崔颢', 0
+zstr_3      db '昔人已乘黄鹤去，此地空余黄鹤楼。', 0
+zstr_4      db '黄鹤一去不复返，白云千载空悠悠。', 0
+zstr_5      db '晴川历历汉阳树，芳草萋萋鹦鹉洲。', 0
+zstr_6      db '日暮乡关何处是？烟波江上使人愁。', 0
+zstr_7      db '中文显示正常 😀', 0
 
 msg_emoji   db 'emoji (4-byte UTF-8): 😀', 0
 msg_broken1 db 'broken UTF-8: [', 0xE4, 0xBD, 0x20, 0x80, '] (should be two', 0
