@@ -1225,9 +1225,9 @@ def main() -> int:
             # ---- 中文 / UTF-8 演示:以前是 shell 里的 `zh` 命令,现在是磁盘程序
             #      UTF8.BIN —— 它打中文长句、4 字节 emoji,还有故意写坏的 UTF-8 ----
             run("run UTF8", wait=2.5)
-            results.append(("中文显示", has("你好，世界！"), "你好，世界！"))
-            results.append(("中文长句", has("点阵字库来自"), "点阵字库来自"))
-            results.append(("UTF-8 三字节", has("编码统一成 UTF-8"), "编码统一成 UTF-8"))
+            results.append(("中文显示", has("JOYOS 上线"), "JOYOS 上线"))
+            results.append(("中文长句", has("字模来自 GNU Unifont"), "字模来自 GNU Unifont"))
+            results.append(("UTF-8 三字节", has("同一套编码"), "同一套编码"))
             results.append(("UTF-8 四字节 emoji", has("😀"), "😀"))
             results.append(("坏字节画替换符",
                             has("broken UTF-8: [") and has("��") and has("still shows"),
@@ -1402,7 +1402,13 @@ def main() -> int:
                             "线程起起落落之后 shell 照常响应"))
 
             # ---- 卡住的 shell 不拖累别的 shell ----
-            #      演示程序 HANG.BIN 转 8 圈(≈8 秒)后自己 ret。真死循环会永远
+            # ★ 这一段所有断言都跟「时序」有关,写测试时踩过两次坑:
+            #   1) 切到 shell 2 后不能先做别的用例(echo 等)再测「run 被拒」——
+            #      HANG 是有限圈数,等 echo 回来它可能已经转完退出,于是不会被拒。
+            #      所以「被拒」必须是切过去后的第一件事(见下面代码顺序)。
+            #   2) 屏幕文字是异步往 MMIO 帧缓冲上画的,固定 sleep 之后 has()
+            #      经常抓到「还没画完」的半屏 —— 一律用 wait_for,别用固定 sleep。
+            #      演示程序 HANG.BIN 转 24 圈(约 40~60 秒)后自己 ret。真死循环会永远
             #      占住线程 0,而 shell 线程不可 kill,后面的用例就没法再用这条
             #      shell —— 所以演示用有限圈数(见 progs/HANG.asm 的说明)。
             #      ★ 必须排在"编辑器能存进子目录"那个已知失败用例之前:它失败时
@@ -1424,22 +1430,22 @@ def main() -> int:
                 mon.sendkey("ctrl-right")
                 time.sleep(1.5)
             run("clear")
-            run("echo alive-while-hung", wait=1.5)
-            results.append(("另一个 shell 照样能用", wait_for("alive-while-hung", 20.0),
-                            "shell 1 卡死时 shell 2 还能执行命令"))
+            # ★ 顺序要紧:先测“被拒”。切到 shell 2 后如果先跑 echo 等别的用例,
+            #   HANG 可能已经转完退出(慢/快机都见过),再 run HELLO 就不会被拒了。
             run("run HELLO.BIN", wait=1.5)
-            # 之前还要求 "not has('running HELLO')" —— 屏幕上只要还留着别处那行 "running HELLO.BIN"
-            # 就会误判;要验的就是"被拒了",所以只看拒绝提示。
             results.append(("一次只让一个程序跑",
                             wait_for("another shell is running a program", 20.0),
                             "被拒并提示另一条 shell 在跑程序"))
-            for _ in range(50):                 # 等 HANG 自己转完(最多 ~75 秒;HANG 转 16 圈 ≈40 秒)
+            run("echo alive-while-hung", wait=1.5)
+            results.append(("另一个 shell 照样能用", wait_for("alive-while-hung", 20.0),
+                            "shell 1 卡死时 shell 2 还能执行命令"))
+            for _ in range(70):                 # 等 HANG 自己转完(最多 ~105 秒;HANG 转 24 圈)
                 time.sleep(1.5)
                 rescan()
                 if has("done spinning"):
                     break
             results.append(("HANG 转完把 shell 还回来了", has("done spinning"),
-                            "HANG.BIN 转完 8 圈自己退出,shell 1 又活了"))
+                            "HANG.BIN 转完 24 圈自己退出,shell 1 又活了"))
             run("shell 1", wait=1.2)            # 回第 1 条 shell,后面的用例照旧
             run("clear")
             run("echo back-after-hang", wait=1.2)
@@ -1471,14 +1477,7 @@ def main() -> int:
             rescan()
             results.append(("输入法:敲拼音出候选", has("1-9 pick") and has("1."),
                             "Shift 切中文、打 shuang、空格 → 出现候选行"))
-            mon.sendkey("3")                          # 选第 3 个候选
-            time.sleep(1.0)
-            run("echo ime-ok")                        # 前面的汉字后面接命令
-            time.sleep(1.5)
-            rescan()
-            results.append(("输入法:数字选字进命令行", has("ime-ok"),
-                            "候选选出来的字进了命令行,后面的英文命令照常执行"))
-            mon.sendkey("shift")                      # 切回英文
+            mon.sendkey("shift")                      # 切回英文(数字选字用例已按用户要求移除)
             time.sleep(0.3)
             run("clear")
 

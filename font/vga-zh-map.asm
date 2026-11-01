@@ -3,7 +3,7 @@
 ;  生成: python3 tools/unifont2bin.py --hex ... --vga-font ... --vga-map 本文件
 ;  每个汉字占两个相连的字符码(左半边 = 表里的号,右半边 = 号+1)
 ; ============================================================
-vga_zh_count equ 37
+vga_zh_count equ 40
 
 vga_zh_map:
     dd 0x000080E1        ; 胡
@@ -72,11 +72,17 @@ vga_zh_map:
     db 0xBE
     dd 0x00008FDB        ; 进
     db 0xC0
-    dd 0x0000FF0C        ; ，
+    dd 0x00005C4F        ; 屏
     db 0xC2
-    dd 0x00003002        ; 。
+    dd 0x000090FD        ; 都
     db 0xC4
-    dd 0x0000FF1A        ; ：
+    dd 0x000051FA        ; 出
     db 0xC6
-    dd 0x0000FF01        ; ！
+    dd 0x0000FF0C        ; ，
     db 0xC8
+    dd 0x00003002        ; 。
+    db 0xCA
+    dd 0x0000FF1A        ; ：
+    db 0xCC
+    dd 0x0000FF01        ; ！
+    db 0xCE

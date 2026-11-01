@@ -194,7 +194,7 @@ COL_ERR    equ 0x0C                    ; 亮红
     ; 中文自检:这一行是从 Unifont 点阵拼出来的
     mov esi, msg_utf8_tag
     call term_print
-    mov esi, zh_str_2                   ; "这是 JoyOS 的中文显示。"
+    mov esi, zh_str_2                   ; "这一屏的字，都是 16x16 点阵拼出来的。"
     call term_print_zh
 %endif
 
