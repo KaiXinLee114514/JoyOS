@@ -95,7 +95,7 @@ shell_main:
 ;
 ;  样式放在 [sh_style] 里(0 = 朴素,1 = 萌,2 = DOS,3 = C64):
 ;     0:  >            2:  C:\>
-;     1:  じょいおす>   3:  READY.   (C64 BASIC 那味儿)
+;     1:  かいかーねる>  3:  READY.   (C64 BASIC 那味儿)
 ;  用 `style` 命令现场切换,或者在 RC.CONF 里写 style = moe 让它开机就生效
 ;  (见 shell_apply_rc_style)。多 shell 的编号在朴素/萌样式里照旧带出来。
 ; ---------------------------------------------------------------------------
@@ -2903,7 +2903,7 @@ msg_no_file_moe  db '(ﾟーﾟ) あれ? file がないよ... disk-tan が食べ
 ; ---- 提示符样式(style 命令 / RC.CONF 的 style 键)----
 sh_style        dd 0                     ; 0=朴素 1=萌 2=DOS 3=C64
 style_names     dd n_style_plain, n_style_moe, n_style_dos, n_style_c64
-msg_prompt_moe      db 'じょいおす', 0
+msg_prompt_moe      db 'かいかーねる', 0
 msg_prompt_dos      db 'C:\', 0
 msg_prompt_dos_end  db '> ', 0
 msg_prompt_c64      db 'READY.', 10, 0
