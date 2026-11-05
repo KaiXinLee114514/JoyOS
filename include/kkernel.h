@@ -1,22 +1,22 @@
 /* ============================================================================
- *  JoyOS — 给 C 程序用的头文件
+ *  KKernel — 给 C 程序用的头文件
  *
  *  程序怎么跟内核说话?还是那扇门:int 0x30(见 kernel/api.asm)。
  *  汇编里要自己搬寄存器,C 里就包成一组 static inline 函数,用起来像普通函数调用:
  *
- *      #include "joyos.h"
+ *      #include "kkernel.h"
  *      int main(void) { j_print("hello from C\n"); return 0; }
  *
  *  ── 编译(不用找交叉编译器,普通 gcc 就行)───────────────────────────────
  *      gcc -m32 -std=gnu89 -ffreestanding -fno-pic -fno-stack-protector \
  *          -fno-asynchronous-unwind-tables -fno-builtin -nostdlib \
  *          -Iinclude -c prog.c -o prog.o
- *      ld -m elf_i386 -T lib/joyos.ld lib/crt0.o prog.o lib/minic.o -o PROG.BIN
+ *      ld -m elf_i386 -T lib/kkernel.ld lib/crt0.o prog.o lib/minic.o -o PROG.BIN
  *
  *  (Makefile 里已经写好了,`make` 会自己编 progs 目录下的 .c)
  *
  *  ── 内存约定 ────────────────────────────────────────────────────────────
- *      0x120000            程序被读到这里(所以链接地址就是它,-T lib/joyos.ld)
+ *      0x120000            程序被读到这里(所以链接地址就是它,-T lib/kkernel.ld)
  *      0x120000..0x17EFFF  程序镜像(代码 + 只读数据 + 已初始化数据,约 380 KB)
  *      0x17F000            弹床页(内核放的):程序 `ret` 回到这儿,里面就一条
  *                          "退出"系统调用 —— 所以汇编程序结尾照旧写 ret 就行
@@ -42,8 +42,8 @@
  *  ── 寄存器约定(内核保证)──────────────────────────────────────────────
  *      调用后:eax / ebx / esi 是返回值,ecx / edx / edi / ebp 保证不变
  * ==========================================================================*/
-#ifndef JOYOS_H
-#define JOYOS_H
+#ifndef KKERNEL_H
+#define KKERNEL_H
 
 /* ---- 基本类型:裸机环境没有 libc 的头,自己定 ---- */
 typedef unsigned char  u8;
@@ -55,45 +55,45 @@ typedef signed int     i32;
 typedef unsigned int size_t;
 
 /* ---- 屏幕/内存布局常量(和 docs/programs.md 一致)---- */
-#define JOY_HEAP_START 0x180000u
+#define KK_HEAP_START 0x180000u
 /* 堆末尾(参数页地址)是运行时值:用 j_heap_end() 查;这个宏只当兜底(旧默认值) */
-#define JOY_HEAP_END   0x1EE000u
+#define KK_HEAP_END   0x1EE000u
 
 /* ---- 颜色:和文本模式一个规矩(低 4 位 = 前景)---- */
-#define JOY_BLACK   0x00
-#define JOY_BLUE    0x01
-#define JOY_GREEN   0x02
-#define JOY_CYAN    0x03
-#define JOY_RED     0x04
-#define JOY_MAGENTA 0x05
-#define JOY_BROWN   0x06
-#define JOY_GREY    0x07
-#define JOY_DGREY   0x08
-#define JOY_LBLUE   0x09
-#define JOY_LGREEN  0x0A
-#define JOY_LCYAN   0x0B
-#define JOY_LRED    0x0C
-#define JOY_LMAGENTA 0x0D
-#define JOY_YELLOW  0x0E
-#define JOY_WHITE   0x0F
+#define KK_BLACK   0x00
+#define KK_BLUE    0x01
+#define KK_GREEN   0x02
+#define KK_CYAN    0x03
+#define KK_RED     0x04
+#define KK_MAGENTA 0x05
+#define KK_BROWN   0x06
+#define KK_GREY    0x07
+#define KK_DGREY   0x08
+#define KK_LBLUE   0x09
+#define KK_LGREEN  0x0A
+#define KK_LCYAN   0x0B
+#define KK_LRED    0x0C
+#define KK_LMAGENTA 0x0D
+#define KK_YELLOW  0x0E
+#define KK_WHITE   0x0F
 
 /* ---- 扩展键(eax=10 的返回值里 0x100 以上的部分)---- */
-#define JOY_KEY_UP    0x101
-#define JOY_KEY_DOWN  0x102
-#define JOY_KEY_LEFT  0x103
-#define JOY_KEY_RIGHT 0x104
-#define JOY_KEY_HOME  0x105
-#define JOY_KEY_END   0x106
-#define JOY_KEY_DEL   0x107
-#define JOY_KEY_PGUP  0x108
-#define JOY_KEY_PGDN  0x109
+#define KK_KEY_UP    0x101
+#define KK_KEY_DOWN  0x102
+#define KK_KEY_LEFT  0x103
+#define KK_KEY_RIGHT 0x104
+#define KK_KEY_HOME  0x105
+#define KK_KEY_END   0x106
+#define KK_KEY_DEL   0x107
+#define KK_KEY_PGUP  0x108
+#define KK_KEY_PGDN  0x109
 
 /* ==========================================================================
  *  int 0x30 的包装
  *  ★ 约束里的 "b"/"S"/"D" 分别是 ebx/esi/edi。用 ebx 当寄存器得配合 -fno-pic
  *    (位置无关代码要拿 ebx 当 GOT 指针),这也是上面编译参数里 -fno-pic 的原因。
  * ==========================================================================*/
-#define JOY_SYSCALL0(fn, ret) \
+#define KK_SYSCALL0(fn, ret) \
     __asm__ volatile("int $0x30" : "=a"(ret) : "a"(fn) : "memory")
 
 /* 0:打印 UTF-8 字符串(0 结尾) */
@@ -130,7 +130,7 @@ static inline void j_color(int attr)
 static inline int j_getchar(void)
 {
     int r;
-    JOY_SYSCALL0(5, r);
+    KK_SYSCALL0(5, r);
     return r;
 }
 
@@ -170,7 +170,7 @@ static inline void j_setcursor(int row, int col)
 static inline int j_getkey(void)
 {
     int r;
-    JOY_SYSCALL0(10, r);
+    KK_SYSCALL0(10, r);
     return r;
 }
 
@@ -184,7 +184,7 @@ static inline int j_screensize(int *rows)
     return cols;
 }
 
-/* 16:取堆末尾 —— 返回参数页地址(= 堆可用区末尾 + 1);堆起点固定 JOY_HEAP_START,
+/* 16:取堆末尾 —— 返回参数页地址(= 堆可用区末尾 + 1);堆起点固定 KK_HEAP_START,
  *     大小随机器内存与字库位置变(见上面内存约定)。 */
 static inline u32 j_heap_end(void)
 {
@@ -244,9 +244,9 @@ static inline void j_newline(void)
 static inline void j_exit(const char *msg)
 {
     j_clrscr();
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
     if (msg)
         j_print(msg);
 }
 
-#endif /* JOYOS_H */
+#endif /* KKERNEL_H */

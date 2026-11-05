@@ -1,5 +1,5 @@
 ; ============================================================================
-;  EDIT.BIN — JoyOS 文本编辑器(用 int 0x30 写的"组件"之二)
+;  EDIT.BIN — KKernel 文本编辑器(用 int 0x30 写的"组件"之二)
 ;
 ;  用法:   run EDIT              编辑 NOTES.TXT
 ;          run EDIT MY.TXT       编辑指定文件(不存在就是新文件)
@@ -1036,7 +1036,7 @@ api_put_at:
 ;  数据
 ; ---------------------------------------------------------------------------
 def_name     db 'NOTES.TXT', 0
-msg_title    db 'JoyOS editor  ---  ', 0
+msg_title    db 'KKernel editor  ---  ', 0
 msg_mod      db '   [modified]', 0
 msg_help     db 'Ctrl-S save  Ctrl-Q quit  Ctrl-F find  arrows/Home/End/Del  PgUp/PgDn', 0
 msg_new      db 'new file (Ctrl-S saves it)', 0

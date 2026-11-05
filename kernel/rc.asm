@@ -19,8 +19,8 @@
 ;  就能改,改完 `rc reload` 立刻生效(不用重做镜像)。
 ;
 ;  RC.CONF 长这样(空行和 # 开头的行忽略,值可以带双引号):
-;      # JoyOS 的配置
-;      hostname="joyos"
+;      # KKernel 的配置
+;      hostname="kkernel"
 ;      boot_msg="hello from rc.conf"
 ;      autostart="NO"                ; YES = 开机把启用的服务跑一遍
 ;      on_crash="log"                ; log(默认)/ reboot
@@ -515,7 +515,7 @@ rc_print_boot:
 
 ; ---------------------------------------------------------------------------
 ;  rc_print_osname:开机打一行系统显示名
-;  RC.CONF 里写了 osname 就用它,没写就用默认串(屏幕上看得到 JoyOS)
+;  RC.CONF 里写了 osname 就用它,没写就用默认串(屏幕上看得到 KKernel)
 ; ---------------------------------------------------------------------------
 rc_print_osname:
     pushad
@@ -1138,8 +1138,8 @@ rc_k_oncrash  db 'on_crash', 0
 rc_suf_none   db 0
 rc_suf_args   db '_args', 0
 rc_suf_enable db '_enable', 0
-rc_def_host   db 'joyos', 0
-rc_def_osname db 'JoyOS', 0
+rc_def_host   db 'kkernel', 0
+rc_def_osname db 'KKernel', 0
 
 rc_ok         dd 0                  ; 1 = 真的读到了 RC.CONF
 rc_buf        times RC_MAX db 0     ; RC.CONF 的内容(就地解析:key=value 就地改 0)

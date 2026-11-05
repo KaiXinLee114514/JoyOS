@@ -127,7 +127,7 @@ fat_set_entry:   ; FAT32 要保留高 4 位(它们不是簇号)
 * `ls` / `cat` / `write` 全走一遍;
 * 离线解析镜像时**不只用我们自己的 Python 解析器** —— 用 `mtools`/`mtools` 里的 `mcopy`
   或者 `fsck.fat -v` 交叉验证一遍(它们认 FAT32),这才是"别人也认"的硬证据;
-* 镜像挂载测试:`sudo mount -o loop,offset=... joyos-hd.img /mnt` 也行(需要 root,
+* 镜像挂载测试:`sudo mount -o loop,offset=... kkernel-hd.img /mnt` 也行(需要 root,
   测试里做成"有就做,没有就跳过")。
 
 ## 3. 分步计划(每步都能单独跑、单独提交)

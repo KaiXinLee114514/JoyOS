@@ -1,4 +1,4 @@
-# JoyOS 协作状态（给子智能体看）
+# KKernel 协作状态（给子智能体看）
 
 更新时间: 2026-10-31
 
@@ -24,7 +24,7 @@
 - TCC 链接必须加 `-static`（动态 ELF 会带 PT_INTERP，系统里没有动态链接器）。
 
 ## 任务：FAT16 长文件名（>8.3，VFAT LFN）支持 —— 已完成（2026-10-31）
-目标：JoyOS 的 FAT16/FAT32 支持 VFAT 长文件名（读取 + 创建），用于 TCC 头文件部署与程序输出。
+目标：KKernel 的 FAT16/FAT32 支持 VFAT 长文件名（读取 + 创建），用于 TCC 头文件部署与程序输出。
 需求：
 1. tools/mkfat.py：对非 8.3 名字生成 LFN 目录项（标准 VFAT：32B、attr=0x0F、order|0x40、UTF-16LE 13 字符/项、checksum、目录顺序 N..1 后接 8.3 项）；生成短别名（8.3 大写，冲突时 BASE6~n.EXT）。
 2. kernel/fat.asm：读取路径（fat_find / fat_chdir / fat_path / fat_stat / fat_read_file / fat_list）支持按长名查找与显示；写入路径（fat_write_file，必要时含 fat_mkdir）在创建长名文件时生成短别名 + LFN 项（需要连续空位，子目录满时扩簇）。
@@ -88,8 +88,8 @@ FAT16 根目录现在很乱（~28 个文件：程序 BIN、TCC 对象、配置�
 验证结果：
 - `make -s all` 通过；kernel.bin 131072 字节（256 扇区，实占约 93.6KB，余约 35KB）。
 - `make -s test-hda` 全绿（19 项）。
-- LFN 冒烟（/tmp/lfnsmoke.py，25 项）：FAT16 build/joyos-hd.img 与 FAT32
-  build/joyos-hd32.img 各 25/25。覆盖：ls 显示长名、cat 长名、write 长名后 ls/cat、
+- LFN 冒烟（/tmp/lfnsmoke.py，25 项）：FAT16 build/kkernel-hd.img 与 FAT32
+  build/kkernel-hd32.img 各 25/25。覆盖：ls 显示长名、cat 长名、write 长名后 ls/cat、
   覆盖写长名保持长名、长目录名 mkdir/cd/rm/rmdir、子目录长名新建/读取、塞满 DOCS
   一簇逼扩簇后再读。截图 build/lfn-fat16d-*.png、build/lfn-fat32d-*.png。
 - 离线结构校验（/tmp/lfnverify.py）：order/0x40/checksum/簇号 0/UTF-16 全过；
@@ -114,5 +114,5 @@ FAT16 根目录现在很乱（~28 个文件：程序 BIN、TCC 对象、配置�
 - 内核新建文件的别名是 BASE6~n.EXT（任务书规则）；主机预置镜像用策略 A 自然截断。
 - FAT16 固定根目录写长名需要连续空位，满了直接失败（按需求）。
 
-最终构建复跑（2026-11-01）：重新 `make -s -B build/joyos-hd.img` 后在最终镜像上再跑
+最终构建复跑（2026-11-01）：重新 `make -s -B build/kkernel-hd.img` 后在最终镜像上再跑
 同一套 25 项冒烟 → **25/25**（截图 build/lfn-fat16final-*.png，日志 /tmp/smoke16final.log）。

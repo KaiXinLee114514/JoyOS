@@ -1,9 +1,9 @@
 /* ============================================================================
- *  joyos.c — STEVIE 在 JoyOS 上的"机器相关层"
+ *  kkernel.c — STEVIE 在 KKernel 上的"机器相关层"
  *
  *  STEVIE(公有领域的 vi 克隆,vim 的前身)把"和机器打交道"的那部分全放在一个
  *  文件里(NT 版是 nt.c,Atari 版是 tos.c,UNIX 版是 unix.c)。这个文件就是
- *  JoyOS 版:屏幕用 int 0x30 的 9/13 号(定位 + 在指定位置画字),键盘用 10 号
+ *  KKernel 版:屏幕用 int 0x30 的 9/13 号(定位 + 在指定位置画字),键盘用 10 号
  *  (带方向键的键事件),文件用 7/8 号。编辑器核心一行没改。
  *
  *  平台层要提供的东西(stevie.h 里声明的):
@@ -19,7 +19,7 @@
  *  写一个像素在 QEMU 里就是一次 MMIO,能少画就少画。
  * ==========================================================================*/
 #include "stevie.h"
-#include <joyos.h>
+#include <kkernel.h>
 
 /* ---- 当前绘制位置(字符格)和攒着的这一小段 ---- */
 static int  p_row, p_col;               /* 下一次 outchar 画在哪 */
@@ -69,9 +69,9 @@ void windexit(void)
     /* 退出去之后 shell 的提示符还没重画(改了帧缓冲,shell 不知情),
        这里补一个青色 > 让屏幕看起来是干净的 shell —— 只是视觉效果,
        真正的 shell 提示符在它自己下一次重画时会盖过来。 */
-    j_color(JOY_LCYAN);
+    j_color(KK_LCYAN);
     j_print("> ");
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
 }
 
 void wchangescreen(void)
@@ -140,7 +140,7 @@ void flushbuf(void)
  *  键盘
  *
  *  STEVIE 要求 inchar() 直接返回"编辑器认识的键值":普通字符就是 ASCII,
- *  特殊键用 keymap.h 里的 K_xxx(0x80 起)。JoyOS 的键事件接口正好给的是
+ *  特殊键用 keymap.h 里的 K_xxx(0x80 起)。KKernel 的键事件接口正好给的是
  *  ASCII 或 0x100+编号,所以这里就是一张小映射表。
  * -------------------------------------------------------------------------*/
 int inchar(void)
@@ -148,15 +148,15 @@ int inchar(void)
     int k = j_getkey();
 
     switch (k) {
-    case JOY_KEY_HOME:  return K_HOME;
-    case JOY_KEY_END:   return K_END;
-    case JOY_KEY_DEL:   return K_DELETE;
-    case JOY_KEY_UP:    return K_UARROW;
-    case JOY_KEY_DOWN:  return K_DARROW;
-    case JOY_KEY_LEFT:  return K_LARROW;
-    case JOY_KEY_RIGHT: return K_RARROW;
-    case JOY_KEY_PGUP:  return K_PAGEUP;
-    case JOY_KEY_PGDN:  return K_PAGEDOWN;
+    case KK_KEY_HOME:  return K_HOME;
+    case KK_KEY_END:   return K_END;
+    case KK_KEY_DEL:   return K_DELETE;
+    case KK_KEY_UP:    return K_UARROW;
+    case KK_KEY_DOWN:  return K_DARROW;
+    case KK_KEY_LEFT:  return K_LARROW;
+    case KK_KEY_RIGHT: return K_RARROW;
+    case KK_KEY_PGUP:  return K_PAGEUP;
+    case KK_KEY_PGDN:  return K_PAGEDOWN;
     default:            return k & 0xFF;
     }
 }
@@ -210,7 +210,7 @@ char *StrLength(char *s)
 }
 
 /* ---------------------------------------------------------------------------
- *  NT 版专有的几个小函数(核心代码调用了它们,所以 JoyOS 版也得有)
+ *  NT 版专有的几个小函数(核心代码调用了它们,所以 KKernel 版也得有)
  * -------------------------------------------------------------------------*/
 void EraseLine(void)
 {
@@ -236,7 +236,7 @@ void ClearDisplay(void)
 
 void VisibleCursor(void)
 {
-    /* 光标要显示出来 —— JoyOS 的定位接口只定位,不画块状光标;
+    /* 光标要显示出来 —— KKernel 的定位接口只定位,不画块状光标;
        文字模式下有硬件光标,图形模式下暂时没有(先这样,能编辑就行) */
 }
 
@@ -413,8 +413,8 @@ char *mysystem(char *cmd, int async)
 {
     (void)async;
     windexit();
-    j_color(JOY_LCYAN);
-    j_print("JoyOS has no shell escape (no processes yet): ");
+    j_color(KK_LCYAN);
+    j_print("KKernel has no shell escape (no processes yet): ");
     j_print(cmd ? cmd : "");
     j_print("\npress any key to go back to vi...");
     j_getchar();

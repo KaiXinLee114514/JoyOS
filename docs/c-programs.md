@@ -1,15 +1,15 @@
-# 用 C 写 JoyOS 程序
+# 用 C 写 KKernel 程序
 
 **不用交叉编译器,普通 `gcc` 就行。** 程序编成平铺二进制,放进 FAT16 分区,
 shell 里 `run XXX` 跑起来 —— 和 `progs/*.asm` 那套完全一样,只是语言换了。
 
 ```c
 #include <stdio.h>
-#include <joyos.h>
+#include <kkernel.h>
 
 int main(void)
 {
-    j_color(JOY_LCYAN);
+    j_color(KK_LCYAN);
     printf("hello from C, screen is %d cols\n", j_screensize(NULL));
     return 0;
 }
@@ -30,12 +30,12 @@ make hd              # 起来之后: run CHELLO
 
 | 文件 | 干什么 |
 |---|---|
-| `include/joyos.h` | 14 个 `int 0x30` 功能的 C 包装(static inline 内联汇编)+ 颜色/键值常量 |
+| `include/kkernel.h` | 14 个 `int 0x30` 功能的 C 包装(static inline 内联汇编)+ 颜色/键值常量 |
 | `lib/crt0.asm` | 入口:`_start` → 清 BSS → `main()` → `ret` 回 shell;还有 `exit()` 用的跳板 |
 | `lib/minic.c` | 迷你 libc:string / ctype / malloc / printf / 一点点 stdio(约 600 行) |
 | `lib/minic.h` | 上面那些的声明(也是我们自己的 `<stdio.h>` 等的真正内容) |
 | `include/*.h` | 薄壳:让 `#include <stdio.h>` 这种老写法命中我们的实现 |
-| `lib/joyos.ld` | 链接脚本:摆到 0x120000,输出平铺二进制,顺手给出 BSS 边界符号 |
+| `lib/kkernel.ld` | 链接脚本:摆到 0x120000,输出平铺二进制,顺手给出 BSS 边界符号 |
 | `progs/*.c` | 你的 C 程序 |
 
 编译命令(Makefile 里已经写好了,这里只是让人看懂):
@@ -44,12 +44,12 @@ make hd              # 起来之后: run CHELLO
 gcc -m32 -std=gnu89 -ffreestanding -fno-pic -fno-stack-protector \
     -fno-asynchronous-unwind-tables -fno-builtin -nostdlib -O2 \
     -Iinclude -Ilib -c progs/Foo.c -o build/Foo.o
-ld -m elf_i386 -T lib/joyos.ld build/crt0.o build/Foo.o build/minic.o -o build/Foo.BIN
+ld -m elf_i386 -T lib/kkernel.ld build/crt0.o build/Foo.o build/minic.o -o build/Foo.BIN
 ```
 
 每个参数都有理由:
 
-* `-m32`:JoyOS 是 32 位 x86,程序必须是 32 位代码;
+* `-m32`:KKernel 是 32 位 x86,程序必须是 32 位代码;
 * `-ffreestanding -nostdlib`:裸机上没有 libc,别去链接 glibc(链了也起不来);
 * `-fno-pic`:`int 0x30` 要用 `ebx` 传参数,而位置无关代码拿 `ebx` 当 GOT 指针;
 * `-fno-stack-protector -fno-asynchronous-unwind-tables`:`__stack_chk_*` 和 `.eh_frame`
@@ -128,7 +128,7 @@ make hd
 ```
 
 它的"机器相关层"本来叫 `nt.c`(Windows NT 版),现在换成我们自己写的
-`third_party/stevie/joyos.c`:屏幕走 `int 0x30` 的 9/13 号(定位 + 在指定位置画字),
+`third_party/stevie/kkernel.c`:屏幕走 `int 0x30` 的 9/13 号(定位 + 在指定位置画字),
 键盘走 10 号(方向键直接映到 STEVIE 的 `K_UARROW` 那套键值),文件走 7/8 号。
 编辑器核心(约 10 900 行)一行没改 —— 这正说明"平台层收得干净"的代码有多好移植。
 

@@ -6,7 +6,7 @@
   · 软盘(-fda,1.44 MB):只有引导扇区 / stub / 内核,没有字库
   · 硬盘(-hda,默认 16 MB):上面那些 + **磁盘字库**
         LBA 2047        字库描述块(magic 'JFD1' + 字库 LBA + 扇区数)
-        LBA 2048 起     字库本体(JOYF,内核用 ATA PIO 读进内存)
+        LBA 2048 起     字库本体(KKF0,内核用 ATA PIO 读进内存)
     内核因此能显示完整 Unifont(4 万字形),不受 128 KiB 内核区的限制。
 
 布局:
@@ -52,8 +52,8 @@ def main() -> int:
     out = pathlib.Path(argv[4])
     font = pathlib.Path(argv[5]).read_bytes() if len(argv) > 5 else None
 
-    if font and font[:4] != b"JOYF":
-        print("❌ 字库文件不是 JOYF 格式")
+    if font and font[:4] != b"KKF0":
+        print("❌ 字库文件不是 KKF0 格式")
         return 1
 
     if len(boot) != SECTOR:

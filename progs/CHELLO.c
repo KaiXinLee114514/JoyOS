@@ -1,12 +1,12 @@
 /* ============================================================================
- *  CHELLO.C — 用 C 写的 JoyOS 程序(最小的一份)
+ *  CHELLO.C — 用 C 写的 KKernel 程序(最小的一份)
  *
  *  它证明三件事:gcc 编出来的平铺二进制能跑、迷你 libc 能用、
  *  程序参数和文件接口从 C 里调起来是普通函数调用。
  *
  *  编译(不用管,`make` 会做):
  *      gcc -m32 -std=gnu89 -ffreestanding -fno-pic -nostdlib -Iinclude -c ...
- *      ld  -m elf_i386 -T lib/joyos.ld build/crt0.o ... -o build/CHELLO.BIN
+ *      ld  -m elf_i386 -T lib/kkernel.ld build/crt0.o ... -o build/CHELLO.BIN
  *
  *  运行: run CHELLO            (跑给你看)
  *        run CHELLO 你好        (参数会被打出来)
@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <joyos.h>
+#include <kkernel.h>
 
 static void show_colors(void)
 {
@@ -28,7 +28,7 @@ static void show_colors(void)
         j_color(i);
         printf(" %-8s ", names[i]);
     }
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
     printf("\n");
 }
 
@@ -39,10 +39,10 @@ int main(void)
 
     cols = j_screensize(&rows);
 
-    j_color(JOY_LCYAN);
+    j_color(KK_LCYAN);
     printf("HELLO from C!  (compiled by gcc, no libc - just lib/minic.c)\n");
 
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
     printf("screen: %d cols x %d rows\n", cols, rows);
     printf("printf 试一圈: dec=%d  neg=%d  hex=%x  HEX=%X  char=%c  str=%s  ptr=%p\n",
            42, -7, 0xBEEF, 0xBEEF, 'J', "string", (void *)0x1234);
@@ -84,7 +84,7 @@ int main(void)
         printf("试试: run CHELLO README.TXT   (参数当文件名读)\n");
     }
 
-    j_color(JOY_LGREEN);
+    j_color(KK_LGREEN);
     printf("C 程序跑完了,ret 回 shell。\n");
     return 0;
 }

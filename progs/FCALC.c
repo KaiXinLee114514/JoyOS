@@ -1,5 +1,5 @@
 /* ============================================================================
- *  FCALC.C — JoyOS 浮点计算器(x87)
+ *  FCALC.C — KKernel 浮点计算器(x87)
  *
  *  和定点版 CALC.asm 同界面、同操作,但内部用 double + x87 真浮点:
  *      加 减 乘 除、小数点、平方(s)、清零(c)、退格、q 退出
@@ -10,7 +10,7 @@
  * ==========================================================================*/
 #include <stdio.h>
 #include <string.h>
-#include <joyos.h>
+#include <kkernel.h>
 
 #define ROW_TITLE 0
 #define ROW_EXPR  2
@@ -73,7 +73,7 @@ static void fmt_num(char *buf, double v)
 /* ---- 重画界面 -------------------------------------------------------- */
 static void redraw(const char *expr, const char *value, const char *note)
 {
-    j_puts_at("JoyOS float calculator  (x87 double, 6 decimals)", ROW_TITLE, 0, 80);
+    j_puts_at("KKernel float calculator  (x87 double, 6 decimals)", ROW_TITLE, 0, 80);
     j_puts_at("expr:", ROW_EXPR, 0, 80);
     j_puts_at(expr, ROW_EXPR, 6, 80);
     j_puts_at("   =  ", ROW_VALUE, 0, 80);

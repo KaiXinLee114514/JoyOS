@@ -1,4 +1,4 @@
-# 给 JoyOS 写程序(`int 0x30` 接口)
+# 给 KKernel 写程序(`int 0x30` 接口)
 
 想改这个系统?**最快见效的办法是别碰内核,写个程序丢到磁盘上跑。**
 程序是平铺二进制,用 `nasm -f bin` 编出来,放进 FAT16 分区,shell 里 `run` 一下就起来了。
@@ -45,7 +45,7 @@ msg db 'hello from a program', 10, 0
 
 ```bash
 nasm -f bin progs/HELLO.asm -o build/HELLO.BIN        # 1. 汇编(平铺二进制)
-python3 tools/mkfat.py build/joyos-hd.img 6144 8 \    # 2. 塞进 FAT16 分区
+python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \    # 2. 塞进 FAT16 分区
     HELLO.BIN=build/HELLO.BIN
 make hd                                               # 3. 启动(或 ./tools/run.sh --hd)
 
@@ -242,7 +242,7 @@ msg db '你好,世界!', 10, 0
 (`data_off` 之后),所以一个字形在内存里的地址是
 
 ```
-字库基址(0x200000) + data_off(full-joyf.bin 里是 0x75CD0) + 该字形的 off
+字库基址(0x200000) + data_off(full-kkf.bin 里是 0x75CD0) + 该字形的 off
 ```
 
 而不是"基址 + off"。第一次算的时候漏了 `data_off`,算出来差 0x75CD0 ≈ 482 KB,

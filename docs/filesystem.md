@@ -1,4 +1,4 @@
-# JoyOS 的磁盘:ATA PIO、磁盘字库、FAT16 / FAT32
+# KKernel 的磁盘:ATA PIO、磁盘字库、FAT16 / FAT32
 
 这一页讲清楚**磁盘上有什么、内核怎么读它、怎么往里写**。涉及三个文件:
 
@@ -14,14 +14,14 @@
 
 ## 1. 整张镜像长什么样
 
-`build/joyos-hd.img` 是 16 MB,按 LBA(逻辑扇区号,1 扇区 = 512 字节)排:
+`build/kkernel-hd.img` 是 16 MB,按 LBA(逻辑扇区号,1 扇区 = 512 字节)排:
 
 ```
 LBA 0            引导扇区(512 字节,BIOS 读到 0x7C00)
 LBA 1 - 4        实模式 stub(搬到 0x500;问 VBE、进保护模式)
 LBA 5 起         32 位内核(256 扇区 = 128 KiB,搬到 0x10000)
 LBA 2047         字库描述块:magic 'JFD1' + 字库 LBA + 扇区数 + 字节数
-LBA 2048 起      字库本体(JOYF 格式,1 765 648 字节 = 3449 扇区)
+LBA 2048 起      字库本体(KKF0 格式,1 765 648 字节 = 3449 扇区)
 LBA 6144 起      FAT16 分区(8 MB;这里是唯一能被"文件"操作的地方)
 ```
 
@@ -34,7 +34,7 @@ LBA 6144 起      FAT16 分区(8 MB;这里是唯一能被"文件"操作的地方
 > 没有 MBR 分区表 —— `fat_mount` 不是"解析分区表",而是**直接去固定 LBA** 读那个 FAT 引导扇区。
 > 一个玩具系统这么干最省事,代价是分区不能搬家。
 
-软盘镜像(`build/joyos.img`,1.44 MB)只有前三项,没有字库也没有文件系统 ——
+软盘镜像(`build/kkernel.img`,1.44 MB)只有前三项,没有字库也没有文件系统 ——
 BIOS 的软盘读盘路径是另一条测试路线(`make test-fda`)。
 
 ## 2. 为什么不用 BIOS 读盘了
@@ -106,8 +106,8 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 内核区只有 128 KiB(`KERNEL_SECTS = 256`),而完整字库是 **1.7 MB / 40 208 个字形**,
 不可能 `incbin` 进去。所以:
 
-* `font/font-joyf.bin`(416 字形,约 12 KB)**编进内核**,是保底方案;
-* `font/full-joyf.bin`(40 208 字形)**放在磁盘上**,启动时读进内存。
+* `font/font-kkf.bin`(416 字形,约 12 KB)**编进内核**,是保底方案;
+* `font/full-kkf.bin`(40 208 字形)**放在磁盘上**,启动时读进内存。
 
 启动流程(`font_load_from_disk`):
 
@@ -115,7 +115,7 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 读 BOOTINFO+72 的启动盘号 → 不是 0x80 起(硬盘)就干脆不试,直接用内建子集
 读 LBA 2047 的描述块 → 头 4 字节不是 'JFD1' 就放弃
 按描述块里的 LBA/扇区数,把字库读进 0x200000
-校验 0x200000 处是不是 'JOYF' → 是就切过去(读字形数填 font_glyphs)
+校验 0x200000 处是不是 'KKF0' → 是就切过去(读字形数填 font_glyphs)
 ```
 
 三点说明:
@@ -223,7 +223,7 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 ## 6. 往镜像里放文件:`tools/mkfat.py`
 
 ```bash
-python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
+python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \
     README.TXT=progs/README.TXT \
     HELLO.BIN=build/HELLO.BIN
 ```
@@ -235,7 +235,7 @@ python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
 * 名字以 `/` 结尾 = 建目录;名字里带 `/` 的文件会自动把父目录建出来:
 
 ```bash
-python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
+python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \
     README.TXT=progs/README.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
 ```
 
@@ -246,9 +246,9 @@ python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
 FAT32 规定**簇数至少 65525**,8 MB 的分区怎么调都凑不够,所以镜像得开大:
 
 ```bash
-python3 tools/mkimg.py build/boot.bin build/stub.bin build/kernel.bin build/joyos-hd32.img \
-    font/full-joyf.bin --disk-mb 96
-python3 tools/mkfat.py build/joyos-hd32.img 6144 88 --fat32 README.TXT=progs/README.TXT \
+python3 tools/mkimg.py build/boot.bin build/stub.bin build/kernel.bin build/kkernel-hd32.img \
+    font/full-kkf.bin --disk-mb 96
+python3 tools/mkfat.py build/kkernel-hd32.img 6144 88 --fat32 README.TXT=progs/README.TXT \
     DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
 ```
 
@@ -269,7 +269,7 @@ make hd          # 构建 + 直接启动完整硬盘镜像
 它用**两条互不相干的信道**:
 
 **信道一:屏幕像素。** QEMU 无头跑,`monitor` 抓 `screendump`,把期望的文字用
-`font/full-joyf.bin` 在 Python 里渲染成"有墨/无墨"网格,再去截图里找这个图案。
+`font/full-kkf.bin` 在 Python 里渲染成"有墨/无墨"网格,再去截图里找这个图案。
 这条证明"内核认为自己显示出来了"。
 
 **信道二:离线解析镜像。** 测试跑完先把 QEMU 关掉(让它落盘),然后**不看内核**,
@@ -283,7 +283,7 @@ make hd          # 构建 + 直接启动完整硬盘镜像
   是在二级目录里写的、`rmdir` 删掉的空目录真的从根目录消失了;
 * 两份 FAT 里那个簇项都是"链尾",也就是**两份 FAT 都被更新了**;
 * 镜像里原来的 `README.TXT` / `HELLO.BIN` / `COUNT.BIN` 字节和仓库里的源文件**一模一样**;
-* LBA 2047 的字库描述块 + LBA 2048 起的字库和 `font/full-joyf.bin` 字节一致。
+* LBA 2047 的字库描述块 + LBA 2048 起的字库和 `font/full-kkf.bin` 字节一致。
 
 这条证明"字节真的落在磁盘上了" —— 内核自己打印的 `wrote test.txt` 不算证据。
 

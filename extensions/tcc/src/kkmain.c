@@ -1,5 +1,5 @@
-/* JoyOS 下的 TCC 入口:从内核参数页构造 argc/argv,再交给 TCC 真正的 main */
-#include <joyos.h>
+/* KKernel 下的 TCC 入口:从内核参数页构造 argc/argv,再交给 TCC 真正的 main */
+#include <kkernel.h>
 #include <stdlib.h>
 #include <string.h>
 

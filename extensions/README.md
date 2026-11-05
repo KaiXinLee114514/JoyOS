@@ -10,7 +10,7 @@
 
 | 目录 | 是什么 | 怎么玩 |
 |---|---|---|
-| `vi/` | STEVIE 3.68(公版 vi 克隆,vim 的前身)+ 我们写的 `joyos.c` 后端 | `make ext` → `make run-ext` |
+| `vi/` | STEVIE 3.68(公版 vi 克隆,vim 的前身)+ 我们写的 `kkernel.c` 后端 | `make ext` → `make run-ext` |
 
 ## 命令
 
@@ -28,6 +28,6 @@ make run-ext    # 构建并在 QEMU 里启动那张镜像
 
 ## 约定
 
-* 扩展**只许用公开 API**(`int 0x30` / 以后的 `joyos.h`),不碰内核地址;
+* 扩展**只许用公开 API**(`int 0x30` / 以后的 `kkernel.h`),不碰内核地址;
 * 扩展不参与 `make test` 的默认断言 —— 想测就单独写一个 target;
 * 扩展挂了,主线不该跟着挂。

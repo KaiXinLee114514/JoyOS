@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-把 GNU Unifont 的 .hex 点阵字库转成 JoyOS 能直接用的二进制。
+把 GNU Unifont 的 .hex 点阵字库转成 KKernel 能直接用的二进制。
 
 ── .hex 格式(实测确认,不是猜的) ─────────────────────────────────────
     4E2D:01000100010001003FF8210821082108210821083FF821080100010001000100
@@ -11,7 +11,7 @@
   · 从上到下逐行,每 2 个十六进制字符 = 8 像素,最高位在最左边
   · bit=1 是"有墨",0 是空
 
-── 转出来的二进制格式(JoyOS 内核直接用) ──────────────────────────────
+── 转出来的二进制格式(KKernel 内核直接用) ──────────────────────────────
     +0   'J' 'O' 'Y' 'F'   magic
     +4   u32 version = 1
     +8   u32 字形数 count
@@ -26,17 +26,17 @@
 
 用法:
     # 把 ASCII + 一串汉字导出来
-    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "JoyOS你好世界" --out build/font.bin
+    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "KKernel你好世界" --out build/font.bin
 
     # 顺便生成一张预览图(用和汇编写法一样的位运算,先看清楚再动汇编)
-    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "JoyOS" \
-            --preview build/font-preview.png --preview-text "JoyOS 你好,世界"
+    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "KKernel" \
+            --preview build/font-preview.png --preview-text "KKernel 你好,世界"
 
     # 把一个字打成点阵看(核对用)
     python3 tools/unifont2bin.py --hex unifont_all.hex --show 中
 
     # 自己检查:二进制里的点阵和解码出来的是否逐位一致
-    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "JoyOS" --selftest
+    python3 tools/unifont2bin.py --hex unifont_all.hex --ascii --chars "KKernel" --selftest
 
     # 生成 VGA 文本模式字模表(4 KB,256 个 8×16 字模)+ 汉字映射表
     python3 tools/unifont2bin.py --hex unifont_all.hex --vga-font font/vga-font.bin \
@@ -70,7 +70,7 @@ import os
 import struct
 import sys
 
-MAGIC = b'JOYF'
+MAGIC = b'KKF0'
 VERSION = 1
 
 
@@ -303,9 +303,9 @@ def write_zh_strings(path, strings):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Unifont .hex → JoyOS 点阵二进制')
+    ap = argparse.ArgumentParser(description='Unifont .hex → KKernel 点阵二进制')
     ap.add_argument('--hex', required=True, help='unifont .hex(也可以是 .hex.gz)')
-    ap.add_argument('--chars', default='', help='要导出的字符(直接写,比如 "JoyOS")')
+    ap.add_argument('--chars', default='', help='要导出的字符(直接写,比如 "KKernel")')
     ap.add_argument('--ascii', action='store_true', help='顺便把 0x20~0x7E 的可打印 ASCII 都导进去')
     ap.add_argument('--out', help='输出二进制路径')
     ap.add_argument('--preview', help='生成预览 PNG')
@@ -400,7 +400,7 @@ def main():
         print(f'  NASM 里直接:  font_blob: incbin "{os.path.relpath(args.out)}"')
 
     if args.preview:
-        text = args.preview_text or args.chars or 'JoyOS 你好'
+        text = args.preview_text or args.chars or 'KKernel 你好'
         if preview(text, glyphs, args.preview):
             print(f'  预览图 {args.preview}(内容: {text!r})')
 

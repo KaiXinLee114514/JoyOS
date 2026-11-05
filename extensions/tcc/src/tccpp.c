@@ -135,8 +135,8 @@ ST_FUNC void expect(const char *msg)
 #define TAL_DEBUG_PARAMS , const char *sfile, int sline
 #endif
 
-#define TOKSYM_TAL_SIZE (16 * 1024) /* JoyOS 移植: 内存受限,池从 16KB 起步,满了链式扩展 */
-#define TOKSTR_TAL_SIZE (16 * 1024) /* JoyOS 移植: 同上 */
+#define TOKSYM_TAL_SIZE (16 * 1024) /* KKernel 移植: 内存受限,池从 16KB 起步,满了链式扩展 */
+#define TOKSTR_TAL_SIZE (16 * 1024) /* KKernel 移植: 同上 */
 
 typedef struct TinyAlloc {
     uint8_t *p;

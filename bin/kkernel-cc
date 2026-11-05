@@ -1,10 +1,10 @@
 #!/bin/sh
 # ============================================================================
-#  joyos-cc —— 一条命令把纯 C 编成 JoyOS 能跑的 .BIN
+#  kkernel-cc —— 一条命令把纯 C 编成 KKernel 能跑的 .BIN
 #
 #  用法:
-#      bin/joyos-cc hello.c -o HELLO.BIN
-#      bin/joyos-cc hello.c                 # 不给 -o 就叫 HELLO.BIN(大写)
+#      bin/kkernel-cc hello.c -o HELLO.BIN
+#      bin/kkernel-cc hello.c                 # 不给 -o 就叫 HELLO.BIN(大写)
 #
 #  参数全都藏在里面了(-m32 -ffreestanding -nostdlib、crt0、迷你 libc、
 #  链接脚本 ORG 0x120000)—— 写程序的人**一行汇编都不用碰**。
@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do
         *)  SRC="$1"; shift ;;
     esac
 done
-[ -n "$SRC" ] || { echo "用法: joyos-cc <源文件.c> [-o 输出.BIN]"; exit 2; }
+[ -n "$SRC" ] || { echo "用法: kkernel-cc <源文件.c> [-o 输出.BIN]"; exit 2; }
 if [ -z "$OUT" ]; then
     base=$(basename "$SRC" .c | tr 'a-z' 'A-Z')
     OUT="$base.BIN"
@@ -47,6 +47,6 @@ else
     MINIC="$TMP/minic.o"
 fi
 $CC $CFLAGS -c "$SRC" -o "$TMP/prog.o"
-$LD -m elf_i386 -T "$SDK/lib/joyos.ld" "$CRT0" "$TMP/prog.o" "$MINIC" -o "$OUT"
+$LD -m elf_i386 -T "$SDK/lib/kkernel.ld" "$CRT0" "$TMP/prog.o" "$MINIC" -o "$OUT"
 echo "✅ $SRC → $OUT ($(stat -c %s "$OUT") 字节)"
-echo "   直接开机跑:  bin/joyos-run $(basename "$OUT")"
+echo "   直接开机跑:  bin/kkernel-run $(basename "$OUT")"

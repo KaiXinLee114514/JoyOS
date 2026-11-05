@@ -10,7 +10,7 @@
  * where machine dependent code goes is term.h for escape sequences.
  */
 
-#define JOYOS
+#define KKERNEL
 /* #define      ATARI                   /* For the Atari ST */
 /* #define      UNIX                    /* System V or BSD */
 /* #define      OS2                     /* Microsoft OS/2 1.1 */
@@ -75,12 +75,12 @@
  */
 #define TILDEOP         /* enable tilde to be an operator */
 #define HELP            /* enable help command */
-#ifndef JOYOS
+#ifndef KKERNEL
 #define TERMCAP         /* enable termcap support */
 #endif
 
 /*
- * JoyOS 补的一点点:STEVIE 的 NT 版用了 MSVC 的 DEFAULT_UNREACHABLE
+ * KKernel 补的一点点:STEVIE 的 NT 版用了 MSVC 的 DEFAULT_UNREACHABLE
  * (在 ntdef.h 里),这里给个等价物 —— 它只是个"这里到不了"的标记。
  */
 #define DEFAULT_UNREACHABLE     ((void)0)

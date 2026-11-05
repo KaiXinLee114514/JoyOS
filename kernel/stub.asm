@@ -1,5 +1,5 @@
 ; ============================================================================
-;  JoyOS — 实模式 stub(内核镜像的开头,还在实模式里跑)
+;  KKernel — 实模式 stub(内核镜像的开头,还在实模式里跑)
 ;
 ;  引导扇区只把镜像搬到 0x10000 就跳过来了,这里接着干:
 ;    1. **问 VBE 要一个带线性帧缓冲的图形模式**(必须在实模式里调 BIOS)
@@ -319,7 +319,7 @@ CODE_SEG equ 8
 DATA_SEG equ 16
 
 ; ---------------------------------------------------------------- 数据
-msg_hello   db 'JoyOS: real-mode stub', 13, 10, 0
+msg_hello   db 'KKernel: real-mode stub', 13, 10, 0
 msg_vbe_ok  db '  VBE found, picking a mode...', 13, 10, 0
 msg_mode_ok db '  graphics mode set (see kernel output)', 13, 10, 0
 msg_no_vbe  db '  no usable VBE mode - falling back to text mode', 13, 10, 0

@@ -43,11 +43,11 @@
 3. **PC 蜂鸣器是方波,而且没有音量控制。** 硬件只有"响 / 不响"(`0x61` 那两位),
    全音量下很刺耳,所以镜像里**默认不内置曲谱**(播放器还在,谱自己写)。想小声点只能在
    宿主侧动手:调低系统音量,或者在宿主混音器(`wpctl` / `pavucontrol`)里把 QEMU 那条流
-   单独调小(`-audiodev pa,id=snd0,out.stream-name=JoyOS` 起个认得出的名字)。
+   单独调小(`-audiodev pa,id=snd0,out.stream-name=KKernel` 起个认得出的名字)。
    ★ **QEMU 侧没有音量参数**:`-audiodev pa,id=snd0,out.volume=0.2` 这种写法是错的,
    QEMU 直接拒绝启动(`Parameter 'out.volume' is unexpected`,本机 10.0.11 实测;上游
    QAPI 的 `AudiodevPerDirectionOptions` 只有 frequency / channels / voices / format /
-   buffer-length / mixing-engine)。完全不想出声就换后端:`-audiodev wav,id=snd0,path=/tmp/joy.wav`
+   buffer-length / mixing-engine)。完全不想出声就换后端:`-audiodev wav,id=snd0,path=/tmp/kk.wav`
    (只录不响)或 `-audiodev none,id=snd0`。
 
 **要真做准(下一步)**
@@ -209,7 +209,7 @@ CR2 不在镜像窗口/堆窗口里(比如程序把指针玩飞了、栈溢出�
 顺带修掉的**测试台**问题(同一个坑的另一面):
 - 抓屏默认路径原来是固定的 `build/_shot.ppm`,两轮测试(或我和套件)同时开着时会**读到别人家的屏幕**
   —— 硬盘那轮的「读盘方式」断言就偶发读到软盘屏幕上的 `boot disk: CHS fallback`。
-  现在默认路径带进程号(`/tmp/joyos-shot-<pid>.ppm`)。
+  现在默认路径带进程号(`/tmp/kkernel-shot-<pid>.ppm`)。
 - 开机那几十行是内核一行行往 VBE 帧缓冲上画的(MMIO 慢),抓屏只等 2 秒的话,机器一忙就
   可能拍到**画到一半**的屏幕 ⇒ 偶发假失败。现在先等最后一行(`type "help" for commands.`)
   出现再逐条断言;真失败会把屏幕 OCR 出来并存 `build/screen-fail.png`。

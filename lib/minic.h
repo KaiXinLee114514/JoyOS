@@ -1,5 +1,5 @@
 /* ============================================================================
- *  JoyOS — 迷你 libc 的声明(minic.c 的头)
+ *  KKernel — 迷你 libc 的声明(minic.c 的头)
  *
  *  用法:程序里照常 `#include <stdio.h>`,而 include/ 下那几个头文件都是
  *  薄薄一层 —— 内容就是 `#include "minic.h"`。编译时 -Iinclude 排在系统目录前面,
@@ -8,7 +8,7 @@
 #ifndef MINIC_H
 #define MINIC_H
 
-#include "joyos.h"                          /* 类型 + int 0x30 包装 */
+#include "kkernel.h"                          /* 类型 + int 0x30 包装 */
 #include <stdarg.h>                         /* 编译器自带的,不用我们写 */
 
 /* ---- 错误码(errno 只用来给调用方一个"为什么失败")---- */
@@ -147,7 +147,7 @@ int    abs(int v);
 long   labs(long v);
 void   exit(int code);
 char  *getenv(const char *name);
-extern char **environ;   /* TCC 等程序要读:JoyOS 没有环境变量,空表 */
+extern char **environ;   /* TCC 等程序要读:KKernel 没有环境变量,空表 */
 int    system(const char *cmd);
 
 /* 随机数:xorshift32,种子来自 TSC 抖动;不播种时首次调用自动播 */
@@ -174,7 +174,7 @@ struct tm {
     int tm_year;    /* 从 1900 起 */
     int tm_wday;    /* 0-6 (周日=0) */
     int tm_yday;    /* 0-365 */
-    int tm_isdst;   /* 恒 0(JoyOS 没时区) */
+    int tm_isdst;   /* 恒 0(KKernel 没时区) */
 };
 struct tm *localtime(const time_t *t);
 struct timeval {

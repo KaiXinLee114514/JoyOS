@@ -1,4 +1,4 @@
-/* JoyOS TCC 移植配置(手写) */
+/* KKernel TCC 移植配置(手写) */
 #define TCC_VERSION "0.9.28rc"
 
 #define CC_NAME CC_gcc

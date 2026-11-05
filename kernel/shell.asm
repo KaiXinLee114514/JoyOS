@@ -1,5 +1,5 @@
 ; ============================================================================
-;  JoyOS — 那个很土的 shell
+;  KKernel — 那个很土的 shell
 ;
 ;  能干的:
 ;      help            列出命令
@@ -2990,7 +2990,7 @@ msg_help db \
     'run <file>    run a program from disk (.BIN; bare "run" = the ABI)', 10, \
     '              demo texts: cat ZH.TXT / EN.TXT / JPKR.TXT', 10, 0
 
-msg_info_head    db '--- JoyOS info ---', 10, 0
+msg_info_head    db '--- KKernel info ---', 10, 0
 msg_info_disk    db 'boot disk   : ', 0
 msg_info_kernel  db 'kernel      : ', 0
 msg_info_kernel_plus db ' .. +', 0

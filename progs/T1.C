@@ -1,4 +1,4 @@
-/* TCC 在 JoyOS 里的第一个测试输入 */
+/* TCC 在 KKernel 里的第一个测试输入 */
 int add(int a, int b)
 {
     return a + b;

@@ -3,7 +3,7 @@
  *  用法:run ECHO   按 q 退出
  * ==========================================================================*/
 #include <stdio.h>
-#include <joyos.h>
+#include <kkernel.h>
 
 int main(void)
 {

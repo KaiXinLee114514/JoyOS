@@ -1,5 +1,5 @@
 # ============================================================================
-#  JoyOS — 构建 / 运行 / 测试
+#  KKernel — 构建 / 运行 / 测试
 #
 #    make            只构建镜像
 #    make run        在 QEMU 里跑(开窗口,自己看)
@@ -31,13 +31,14 @@ UNIFONT_HEX ?= font/unifont-subset.hex
 UNIFONT_FULL ?= font/.cache/unifont_all.hex
 QEMU    := qemu-system-i386
 BUILD   := build
+.DEFAULT_GOAL := all
 # 注释必须单独成行!写在同一行时,`#` 前面的空格会算进变量值,
 # 值末尾的空格会把 `-drive file=$(HDIMG),format=raw` 劈成两个参数(make hd 就报
 # "drive with bus=0, unit=0 (index=0) exists")。见 makefile-check 目标。
 # 软盘镜像(1.44 MB,无字库)
-IMG     := $(BUILD)/joyos.img
+IMG     := $(BUILD)/kkernel.img
 # 硬盘镜像(16 MB,带完整字库)
-HDIMG   := $(BUILD)/joyos-hd.img
+HDIMG   := $(BUILD)/kkernel-hd.img
 # QMP socket:`make hd` / `make hd32` 把它开在这儿,
 # tools/text2alt.py --send 就靠它把中文/日文/韩文打进去(见该脚本的说明)
 QMP_SOCK := $(BUILD)/qmp.sock
@@ -53,7 +54,7 @@ RTC_ARG := -rtc base=localtime
 #      PS/2 键盘(我们的驱动)一个字都收不到,shell 像是死了。
 #   等 USB 驱动能用了,再自己加 `-device usb-kbd` 上去看设备枚举。
 USB_ARG := -usb
-DIV_IMG    := $(BUILD)/joyos-div.img
+DIV_IMG    := $(BUILD)/kkernel-div.img
 
 BOOT_SRC    := boot/boot.asm
 KERNEL_SRCS := $(wildcard kernel/*.asm)
@@ -72,7 +73,7 @@ CC_OK       := $(shell $(CC) -m32 -ffreestanding -c -x c /dev/null -o /dev/null 
 C_CFLAGS    := -m32 -std=gnu89 -ffreestanding -fno-pic -fno-stack-protector \
                -fno-asynchronous-unwind-tables -fno-builtin -nostdlib -O2 -Wall \
                -Iinclude -Ilib -Wno-unused-parameter -Wno-comment
-C_LD        := ld -m elf_i386 -T lib/joyos.ld
+C_LD        := ld -m elf_i386 -T lib/kkernel.ld
 CRT0_OBJ    := $(BUILD)/crt0.o
 MINIC_OBJ   := $(BUILD)/minic.o
 CRT_TCC_OBJ := $(BUILD)/crt_tcc.o      # TCC 链接 ELF 用的最小 crt(见 lib/crt_tcc.asm)
@@ -83,23 +84,23 @@ C_PROGS     :=
 endif
 
 # 扩展:TCC(系统内 C 编译器,移植版住在 extensions/tcc)。
-# 它靠宿主机 gcc -m32 交叉编译成 JoyOS 平铺 BIN;joyinc/ 给 TCC 源码提供
+# 它靠宿主机 gcc -m32 交叉编译成 KKernel 平铺 BIN;kkinc/ 给 TCC 源码提供
 # 一份"能糊弄过去"的 libc 头文件,真正链接的是 build/minic.o。
 # 依赖:  gcc-multilib (32 位 gcc)。读 extensions/tcc/README.md。
 TCCPORT    := extensions/tcc
 TCCSRC     := $(TCCPORT)/src
 GCC_INC    := $(shell $(CC) -print-file-name=include)
 TCC_CFLAGS := -m32 -std=gnu99 -O1 -fno-strict-aliasing -fno-pic -nostdinc \
-              -isystem $(GCC_INC) -I$(TCCSRC) -I$(TCCPORT)/joyinc -Iinclude -Ilib
+              -isystem $(GCC_INC) -I$(TCCSRC) -I$(TCCPORT)/kkinc -Iinclude -Ilib
 
-$(BUILD)/joymain.o: $(TCCPORT)/joymain.c | $(BUILD)
+$(BUILD)/kkmain.o: $(TCCPORT)/kkmain.c | $(BUILD)
 	$(CC) $(TCC_CFLAGS) -c $< -o $@
 
 $(BUILD)/tcc.o: $(wildcard $(TCCSRC)/*.c) $(wildcard $(TCCSRC)/*.h) | $(BUILD)
 	$(CC) $(TCC_CFLAGS) -c $(TCCSRC)/tcc.c -o $@
 
-$(BUILD)/TCC.BIN: $(BUILD)/joymain.o $(BUILD)/tcc.o $(CRT0_OBJ) $(MINIC_OBJ)
-	$(C_LD) $(CRT0_OBJ) $(BUILD)/joymain.o $(BUILD)/tcc.o $(MINIC_OBJ) -o $@
+$(BUILD)/TCC.BIN: $(BUILD)/kkmain.o $(BUILD)/tcc.o $(CRT0_OBJ) $(MINIC_OBJ)
+	$(C_LD) $(CRT0_OBJ) $(BUILD)/kkmain.o $(BUILD)/tcc.o $(MINIC_OBJ) -o $@
 
 # TCC 在系统内链接程序时用的最小 crt(elf32 目标文件,不是平铺 BIN)
 $(CRT_TCC_OBJ): lib/crt_tcc.asm | $(BUILD)
@@ -156,29 +157,29 @@ $(BUILD)/%.BIN: progs/%.asm | $(BUILD)
 $(CRT0_OBJ): lib/crt0.asm | $(BUILD)
 	$(NASM) -f elf32 $< -o $@
 
-$(MINIC_OBJ): lib/minic.c lib/minic.h include/joyos.h | $(BUILD)
+$(MINIC_OBJ): lib/minic.c lib/minic.h include/kkernel.h | $(BUILD)
 	$(CC) $(C_CFLAGS) -c $< -o $@
 
 # STEVIE 的每个源文件(注意这条要写在通用 progs/%.c 规则前面)
-$(BUILD)/vi/%.o: extensions/vi/%.c lib/minic.h include/joyos.h | $(BUILD)
+$(BUILD)/vi/%.o: extensions/vi/%.c lib/minic.h include/kkernel.h | $(BUILD)
 	@mkdir -p $(BUILD)/vi
 	$(CC) $(C_CFLAGS) -Iextensions/vi -c $< -o $@
 
-$(BUILD)/%.o: progs/%.c include/joyos.h lib/minic.h | $(BUILD)
+$(BUILD)/%.o: progs/%.c include/kkernel.h lib/minic.h | $(BUILD)
 	$(CC) $(C_CFLAGS) -c $< -o $@
 
 # ★ PLAY.C 是**大写**后缀(和 progs/ 里那几个 .asm 一个命名习惯),而 gcc 看见 .C
 #   会当成 C++ 编 —— 那样 -std=gnu89、隐式 void* 转换这些立刻全是错。所以这条规则
 #   显式写 -x c:语言由规则定,不由后缀名说了算。
-$(BUILD)/PLAY.o: progs/PLAY.C include/joyos.h lib/minic.h | $(BUILD)
+$(BUILD)/PLAY.o: progs/PLAY.C include/kkernel.h lib/minic.h | $(BUILD)
 	$(CC) $(C_CFLAGS) -x c -c $< -o $@
 
-$(BUILD)/%.BIN: $(BUILD)/%.o $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
+$(BUILD)/%.BIN: $(BUILD)/%.o $(CRT0_OBJ) $(MINIC_OBJ) lib/kkernel.ld
 	$(C_LD) $(CRT0_OBJ) $< $(MINIC_OBJ) -o $@ 2>/dev/null
 	@printf '   C 程序: %s %s 字节(链接地址 0x120000)\n' "$@" "$$(stat -c %s $@)"
 
 # vi 扩展:STEVIE 核心 + 迷你 libc + crt0(只有 `make ext` 才会构建)
-$(BUILD)/VI.BIN: $(VI_OBJS) $(CRT0_OBJ) $(MINIC_OBJ) lib/joyos.ld
+$(BUILD)/VI.BIN: $(VI_OBJS) $(CRT0_OBJ) $(MINIC_OBJ) lib/kkernel.ld
 	$(C_LD) $(CRT0_OBJ) $(MINIC_OBJ) $(VI_OBJS) -o $@
 	@printf '   C 程序: %s %s 字节(STEVIE 移植,链接地址 0x120000)\n' "$@" "$$(stat -c %s $@)"
 
@@ -210,12 +211,12 @@ $(PINYIN_BIN): progs/PINYIN.BIN tools/mkpinyin.py | $(BUILD)
 pinyin:
 	python3 tools/mkpinyin.py 6000 progs/PINYIN.BIN
 
-$(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-joyf.bin \
+$(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-kkf.bin \
           $(PINYIN_BIN) $(BUILD)/TCC.BIN \
           $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF progs/JPKR.TXT progs/ZH.TXT progs/EN.TXT \
           tools/mkimg.py tools/mkfat.py \
           $(BUILD)/bigdir/.stamp
-	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-joyf.bin
+	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-kkf.bin
 	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT JPKR.TXT=progs/JPKR.TXT ZH.TXT=progs/ZH.TXT EN.TXT=progs/EN.TXT LONGNAME_TEST.txt=progs/README.TXT \
 	    DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT DOCS/Long_Note.txt=progs/NOTES.TXT \
@@ -233,14 +234,14 @@ hd: $(HDIMG)
 #  FAT32 版镜像:同一个内核(BPB 自动认 FAT16/FAT32),只是分区格式不一样。
 #  FAT32 要求 ≥ 65525 个簇,8 MB 的分区凑不出来,所以镜像开到 96 MB、分区 88 MB。
 # ---------------------------------------------------------------------------
-HD32IMG := $(BUILD)/joyos-hd32.img
+HD32IMG := $(BUILD)/kkernel-hd32.img
 
-$(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-joyf.bin progs/JPKR.TXT progs/ZH.TXT progs/EN.TXT \
+$(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-kkf.bin progs/JPKR.TXT progs/ZH.TXT progs/EN.TXT \
             $(PINYIN_BIN) $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF \
             tools/mkimg.py tools/mkfat.py \
             $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \
-	    font/full-joyf.bin --disk-mb 96
+	    font/full-kkf.bin --disk-mb 96
 	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
 	    NOTES.TXT=progs/NOTES.TXT JPKR.TXT=progs/JPKR.TXT ZH.TXT=progs/ZH.TXT EN.TXT=progs/EN.TXT LONGNAME_TEST.txt=progs/README.TXT \
 	    DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT DOCS/Long_Note.txt=progs/NOTES.TXT \
@@ -261,7 +262,7 @@ hd32: $(HD32IMG)
 #  加新扩展:把源码放 extensions/<名字>/,在 EXT_BINS 里加一行就行。
 # ---------------------------------------------------------------------------
 EXT_BINS    := $(BUILD)/VI.BIN
-EXT_IMG     := $(BUILD)/joyos-hd-ext.img
+EXT_IMG     := $(BUILD)/kkernel-hd-ext.img
 
 ext: $(EXT_BINS)
 
@@ -274,17 +275,17 @@ ext-img: $(EXT_IMG)
 run-ext: $(EXT_IMG)
 	$(QEMU) -drive file=$(EXT_IMG),format=raw,if=ide,index=0 -boot c $(RTC_ARG)
 
-test-hd32: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
+test-hd32: $(PROG_BINS) font/full-kkf.bin progs/README.TXT progs/NOTES.TXT
 	@echo "── FAT32 镜像:同一套内核,BPB 自动认 32 位 FAT ──"
 	$(MAKE) -s -B $(HD32IMG)
-	python3 -u tests/qemu_test.py $(HD32IMG) --hda --fontdisk --fat32 --font font/full-joyf.bin
+	python3 -u tests/qemu_test.py $(HD32IMG) --hda --fontdisk --fat32 --font font/full-kkf.bin
 
 # 先强制重建镜像:上一轮测试往盘里写的 TEST.TXT / NEWFILE.TXT 会留在这儿,
 # 第二次跑就变成"编辑器把内容追加了一遍",测试自己就不干净了
-test-hd-font: $(PROG_BINS) font/full-joyf.bin progs/README.TXT progs/NOTES.TXT
+test-hd-font: $(PROG_BINS) font/full-kkf.bin progs/README.TXT progs/NOTES.TXT
 	@echo "── 硬盘镜像:磁盘字库 + FAT16 读写 + 计算器 + 编辑器 ──"
 	$(MAKE) -s -B $(HDIMG)
-	python3 -u tests/qemu_test.py $(HDIMG) --hda --fontdisk --font font/full-joyf.bin
+	python3 -u tests/qemu_test.py $(HDIMG) --hda --fontdisk --font font/full-kkf.bin
 
 # 两个"开机就炸"的镜像:自测代码用 -D 开关才编进去,正常镜像里没有
 $(BUILD)/kernel-div.bin: $(KERNEL_SRCS) $(FONT_DEPS) | $(BUILD)

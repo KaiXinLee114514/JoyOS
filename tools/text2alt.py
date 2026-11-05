@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-把一段文字转成 JoyOS 的 "Alt 码位" 输入序列。
+把一段文字转成 KKernel 的 "Alt 码位" 输入序列。
 
-JoyOS 的键盘只有 US ASCII 那一套扫描码,所以中文/日文/韩文/emoji 是这么打的:
+KKernel 的键盘只有 US ASCII 那一套扫描码,所以中文/日文/韩文/emoji 是这么打的:
 **按住左 Alt,敲十进制 Unicode 码位,松开 Alt** —— 内核把那个码位编成 UTF-8
 塞进按键缓冲(见 kernel/keyboard.asm 里的 Alt 输入部分)。
 
@@ -10,7 +10,7 @@ JoyOS 的键盘只有 US ASCII 那一套扫描码,所以中文/日文/韩文/emo
 
   1. 把一句话拆成"每个字 = Alt+多少",顺便查本地字库有没有那个字形;
   2. 给出一行可以直接照着敲的数字;
-  3. 可选:连上 QEMU 的 QMP socket,把这段话直接打进正在跑的 JoyOS 里
+  3. 可选:连上 QEMU 的 QMP socket,把这段话直接打进正在跑的 KKernel 里
      (`make hd` 已经把 QMP 开在 build/qmp.sock)。
 
 用法:
@@ -31,11 +31,11 @@ import sys
 import time
 import unicodedata
 
-DEFAULT_FONT = "font/full-joyf.bin"
+DEFAULT_FONT = "font/full-kkf.bin"
 
 
 # ---------------------------------------------------------------------------
-#  字库:JOYF 格式(见 tools/unifont2bin.py 的格式说明)
+#  字库:KKF0 格式(见 tools/unifont2bin.py 的格式说明)
 #  只读码位表,用来回答"这个字现在显示得出来吗"
 # ---------------------------------------------------------------------------
 def load_font(path):
@@ -44,7 +44,7 @@ def load_font(path):
             d = f.read()
     except OSError:
         return None
-    if d[:4] != b"JOYF" or len(d) < 16:
+    if d[:4] != b"KKF0" or len(d) < 16:
         return None
     _ver, count, _data_off = struct.unpack("<III", d[4:16])
     return [struct.unpack("<I", d[16 + i * 12: 16 + i * 12 + 4])[0] for i in range(count)]
@@ -158,7 +158,7 @@ def send_text(qmp, text, gap=0.02, verbose=False):
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(
-        description="把文字转成 JoyOS 的 Alt 码位输入序列(顺便查字库)",
+        description="把文字转成 KKernel 的 Alt 码位输入序列(顺便查字库)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("用法:")[1].split("注意:")[0].strip())
     ap.add_argument("text", nargs="*", help="要转换的文字(也可以不给,用 --file)")

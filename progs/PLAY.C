@@ -1,7 +1,7 @@
 /* ============================================================================
  *  PLAY.C — 文本谱播放器:读 FAT 上的 .txt 谱子,让 PC 蜂鸣器唱出来
  *
- *  它证明"能听见 JoyOS 自己唱歌"这件事是**用户可改的**:谱子是纯文本,
+ *  它证明"能听见 KKernel 自己唱歌"这件事是**用户可改的**:谱子是纯文本,
  *  改一个音名就换一个音,不用重新编译内核、也不用重新编译这个程序。
  *
  *  用法(shell 里,run 会把整行剩下的部分当参数塞给程序):
@@ -30,7 +30,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <joyos.h>
+#include <kkernel.h>
 
 #define SCORE_MAX  16384                /* 谱子原文缓冲:纯文本的歌,16 KB 管够 */
 #define MAX_NOTES  512                  /* 最多几个音(超了报错,而不是悄悄截断) */
@@ -245,10 +245,10 @@ static void print_score(const char *fname)
 {
     int i, total = 0;
 
-    j_color(JOY_LCYAN);
+    j_color(KK_LCYAN);
     printf("%s:tempo %d BPM(四分音符 = %d ms),%d 个音符\n",
            fname, score_tempo, 60000 / score_tempo, note_count);
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
     for (i = 0; i < note_count; i++) {
         total += score[i].ms;
         if (i % 4 == 0) {
@@ -276,9 +276,9 @@ static void play_score(const char *fname)
 {
     int i;
 
-    j_color(JOY_LCYAN);
+    j_color(KK_LCYAN);
     printf("播放 %s:%d 个音符,tempo %d BPM\n", fname, note_count, score_tempo);
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
     for (i = 0; i < note_count; i++) {
         if (score[i].hz > 0) {
             printf("  %-3s %-2d %4d Hz\n", score[i].name, score[i].dur, score[i].hz);
@@ -288,23 +288,23 @@ static void play_score(const char *fname)
             j_beep(0, score[i].ms);
         }
     }
-    j_color(JOY_LGREEN);
+    j_color(KK_LGREEN);
     printf("演奏完了,再来一遍:run PLAY %s\n", fname);
 }
 
 static void usage(void)
 {
-    j_color(JOY_YELLOW);
+    j_color(KK_YELLOW);
     printf("用法:  run PLAY <谱子文件>            按谱播放\n");
     printf("       run PLAY --list <谱子文件>     只解析、打到屏幕上(不出声)\n");
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
     printf("谱子是纯文本(拿编辑器就能改):\n");
     printf("    # 词首的 # 是注释(tempo 120 后面也能跟 # 注释)\n");
     printf("    tempo 120       每分钟 120 拍,四分音符 = 500 ms\n");
     printf("    A4  4           音名 + 时值(1 全 2 半 4 四分 8 八分 16 十六分)\n");
     printf("    C#5 8           升号写 #;八度 1~9 都行\n");
     printf("    R   4           R = 休止\n");
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
     printf("镜像里不带示例谱:自己写一个,比如 run EDIT MYSONG.TXT\n");
 }
 
@@ -324,12 +324,12 @@ int main(void)
             usage();
             return 0;
         } else if (w[0] == '-') {
-            j_color(JOY_LRED);
+            j_color(KK_LRED);
             printf("不认识的选项:%s\n", w);
             usage();
             return 1;
         } else if (file_name[0]) {
-            j_color(JOY_LRED);
+            j_color(KK_LRED);
             printf("一次只能给一个谱子文件(多出来的是 '%s')\n", w);
             usage();
             return 1;
@@ -345,9 +345,9 @@ int main(void)
 
     n = j_readfile(file_name, score_text, SCORE_MAX - 1);
     if (n < 0) {
-        j_color(JOY_LRED);
+        j_color(KK_LRED);
         printf("打不开谱子 %s\n", file_name);
-        j_color(JOY_GREY);
+        j_color(KK_GREY);
         printf("  · 名字对不对?盘上都是 8.3 短名(shell 里 ls 看一眼)\n");
         printf("  · 也可能是文件太大,一次读不进来(上限 %d 字节)\n", SCORE_MAX - 1);
         return 1;

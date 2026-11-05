@@ -1,6 +1,6 @@
-# 把 vi 搬进 JoyOS:STEVIE 移植记
+# 把 vi 搬进 KKernel:STEVIE 移植记
 
-`run VI NOTES.TXT` —— 这个 JoyOS 里跑的 vi,不是我们从头写的,是把一份
+`run VI NOTES.TXT` —— 这个 KKernel 里跑的 vi,不是我们从头写的,是把一份
 **公有领域**的 vi 克隆搬过来的。这一页讲清楚:搬的是哪一份、为什么挑它、
 我们改了什么(以及**没**改什么)、踩了哪些坑。
 
@@ -33,7 +33,7 @@ The good news about stevie is that it is extremely portable.
 | 授权 | public domain | GPL 兼容,但依赖太重 |
 
 **为什么 vim 搬不动**:vim 站在"POSIX 用户态"那一层 —— 它要 libc、要进程、
-要终端控制、要目录树。JoyOS 现在有 4 000 多行内核、没有 libc、没有进程,
+要终端控制、要目录树。KKernel 现在有 4 000 多行内核、没有 libc、没有进程,
 差的是**整整一层**,不是几个函数。STEVIE 不一样:它是 1991 年的东西,
 把"和机器打交道"的部分全塞在一个文件里,换掉那个文件就能跑。
 
@@ -45,7 +45,7 @@ third_party/stevie/
     keymap.h linefunc.c mark.c misccmds.c normal.c ops.c ops.h param.c
     param.h ptrfunc.c regexp.c regexp.h regmagic.h regsub.c screen.c
     search.c stevie.h undo.c version.c vi.c        ← 核心(公有领域)
-    joyos.c                                        ← 我们自己写的后端
+    kkernel.c                                        ← 我们自己写的后端
 ```
 
 **没有**搬: `nt.c`(微软写的 Win32 平台层)、`sources`、`vi.rc`、`makefile`
@@ -72,11 +72,11 @@ STEVIE 把机器相关的代码集中在一个文件里(`nt.c` / `tos.c` / `unix
 
 核心那边只动了三处:
 
-1. `env.h`:`#define NT` → `#define JOYOS`(它还顺手替我们关掉了 termcap:
+1. `env.h`:`#define NT` → `#define KKERNEL`(它还顺手替我们关掉了 termcap:
    没有 termcap 就走硬编码序列,而那些序列也全在 `nt.c` 里,本来就要重写)
 2. `stevie.h`:去掉 `<excpt.h>` / `<ntdef.h>`(MSVC 的东西)
 3. `vi.c`:`main(argc, argv)` → `vimain(argc, argv)`,入口换成我们自己的 `main`
-   —— 因为 JoyOS 的程序没有 argv,参数要用 `int 0x30` 的 12 号功能取
+   —— 因为 KKernel 的程序没有 argv,参数要用 `int 0x30` 的 12 号功能取
 
 **编辑器的核心(编辑、命令、搜索、正则、撤销、屏幕差分)一行没改。**
 这就是"平台层收得干净"的好处:换个文件,编辑器自己认不出它换了机器。

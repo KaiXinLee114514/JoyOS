@@ -1,5 +1,5 @@
 /* ============================================================================
- *  RNGTEST.C — JoyOS 迷你 libc 扩展自检
+ *  RNGTEST.C — KKernel 迷你 libc 扩展自检
  *
  *  验证新加的:rand/srand、time/clock、open/read/write/lseek、strtol。
  *  用法(shell 里):run RNGTEST

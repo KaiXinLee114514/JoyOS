@@ -1,5 +1,5 @@
 ; ============================================================================
-;  CALC.BIN — JoyOS 计算器(用 int 0x30 写的"组件"之一)
+;  CALC.BIN — KKernel 计算器(用 int 0x30 写的"组件"之一)
 ;
 ;  能算:加 减 乘 除、小数点、平方(s)、清零(c)、退格改错、q 退出。
 ;
@@ -822,7 +822,7 @@ api_put_at:                             ; esi=串 ebx=行 ecx=列 edx=最多几�
 ; ---------------------------------------------------------------------------
 ;  数据
 ; ---------------------------------------------------------------------------
-msg_title     db 'JoyOS calculator  (fixed point, 6 decimals, range +-2147.483647)', 0
+msg_title     db 'KKernel calculator  (fixed point, 6 decimals, range +-2147.483647)', 0
 msg_help      db '0-9 . + - * / =    s square    c clear    backspace    q quit', 0
 msg_bye       db 'calculator closed.', 10, 0
 msg_overflow  db 'overflow! range is +-2147.483647', 0

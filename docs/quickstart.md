@@ -1,4 +1,4 @@
-# 5 分钟上手:用纯 C 给 JoyOS 写个程序
+# 5 分钟上手:用纯 C 给 KKernel 写个程序
 
 **你不会碰到一行汇编。** `main()` 里想写什么写什么,`printf`、`argv`、文件读写都有。
 
@@ -6,7 +6,7 @@
 
 ```bash
 sudo apt install gcc-multilib nasm qemu-system-x86 python3   # Debian/Ubuntu
-git clone https://github.com/KaiXinLee114514/JoyOS.git && cd JoyOS
+git clone https://github.com/KaiXinLee114514/KKernel.git && cd KKernel
 make            # 编出内核和镜像(第一次要一会儿)
 ```
 
@@ -16,13 +16,13 @@ make            # 编出内核和镜像(第一次要一会儿)
 
 ```c
 #include <stdio.h>
-#include <joyos.h>
+#include <kkernel.h>
 
 int main(void)
 {
-    j_color(JOY_LCYAN);
+    j_color(KK_LCYAN);
     printf("hello from C!\n");
-    j_color(JOY_GREY);
+    j_color(KK_GREY);
     printf("你给我的参数是:%s\n", j_arg());
     return 0;
 }
@@ -31,18 +31,18 @@ int main(void)
 ## 2. 编 + 跑(两条命令)
 
 ```bash
-bin/joyos-cc myprog.c -o MYPROG.BIN     # 纯 C → JoyOS 的平铺二进制
-bin/joyos-run MYPROG.BIN                # 造镜像 + 开 QEMU
+bin/kkernel-cc myprog.c -o MYPROG.BIN     # 纯 C → KKernel 的平铺二进制
+bin/kkernel-run MYPROG.BIN                # 造镜像 + 开 QEMU
 ```
 
 窗口里敲 `run MYPROG` —— 你的程序就在自己写的系统里跑了。
-`bin/joyos-run myprog.c` 一步到位(它自己会先调 `joyos-cc`)。
+`bin/kkernel-run myprog.c` 一步到位(它自己会先调 `kkernel-cc`)。
 
 ## 3. 能用的东西
 
 | 头文件 | 里面有什么 |
 |---|---|
-| `<joyos.h>` | 屏幕/键盘/文件/参数的包装:`j_print` `j_color` `j_clear` `j_goto` `j_key` `j_event` `j_read_file` `j_write_file` `j_screensize` `j_arg` `j_puts_at` `j_beep`,调色板 `JOY_RED` 这类,方向键码 `JOY_KEY_UP` 这类 |
+| `<kkernel.h>` | 屏幕/键盘/文件/参数的包装:`j_print` `j_color` `j_clear` `j_goto` `j_key` `j_event` `j_read_file` `j_write_file` `j_screensize` `j_arg` `j_puts_at` `j_beep`,调色板 `KK_RED` 这类,方向键码 `KK_KEY_UP` 这类 |
 | `<stdio.h>` | `printf` `puts` `putchar` `getchar`(迷你实现,支持 `%d %x %s %c %u`,**没有** `%f`) |
 | `<string.h>` `<stdlib.h>` `<ctype.h>` | `memcpy` `strlen` `strcmp` `malloc` `free` `atoi` … |
 | `<malloc.h>` | `malloc/free`(堆从 0x180000 起,末尾用 `j_heap_end()` 查) |
@@ -116,7 +116,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 * 前提是字库在盘上(`make hd` 的镜像有,4 万个字形)—— 不然只能显示内置的 ASCII
   子集,中文会变成方块。
 
-## 8. 让 JoyOS 唱歌:蜂鸣器 + 文本谱
+## 8. 让 KKernel 唱歌:蜂鸣器 + 文本谱
 
 内核多了 **14 号功能 `beep`**(C 里就是 `j_beep(freq_hz, ms)`),`progs/PLAY.C` 拿它当播放器:
 谱子是 FAT 上的**纯文本**,不用重新编译任何东西,`run EDIT MYSONG.TXT` 改两行就能换一首。
@@ -128,12 +128,12 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 ### 8.1 先让它响
 
 ```bash
-make hd          # 或者只做镜像:make -s build/joyos-hd.img
+make hd          # 或者只做镜像:make -s build/kkernel-hd.img
 # ★ QEMU 7 以后,PC 蜂鸣器必须显式接一个音频后端,不然一点声音都没有:
 # ★ 方波没有音量控制、全音量很刺耳 —— 用 out.stream-name 给这条流起个名,
 #   好在宿主混音器里认出它、单独调小(见下面第一条),先调小再听:
-qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0,out.stream-name=JoyOS \
-    -drive file=build/joyos-hd.img,format=raw,if=ide,index=0 -boot c
+qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0,out.stream-name=KKernel \
+    -drive file=build/kkernel-hd.img,format=raw,if=ide,index=0 -boot c
 ```
 
 窗口里敲(谱子得自己写,格式见 8.2):
@@ -145,13 +145,13 @@ qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0,out.stream-na
 
 * **怎么让蜂鸣器别吵**:PC 喇叭是方波,**硬件没有音量控制**(`0x61` 那两位只有
   "响 / 不响"),所以音量只能在宿主侧调 —— 直接调低系统音量,或者在宿主混音器
-  (`wpctl` / `pavucontrol`)里把 QEMU 那条流单独调小(上面用 `out.stream-name=JoyOS`
+  (`wpctl` / `pavucontrol`)里把 QEMU 那条流单独调小(上面用 `out.stream-name=KKernel`
   给它起了个认得出的名字,不然一堆 `qemu-system-i386` 分不清谁是谁);
 * ★ **`-audiodev` 里没有 `out.volume=` 这个参数**:网上能搜到这种写法,但 QEMU 会直接
   拒绝启动(`Parameter 'out.volume' is unexpected`,本机 QEMU 10.0.11 实测;上游 QAPI
   的 `AudiodevPerDirectionOptions` 里只有 frequency / channels / voices / format /
   buffer-length / mixing-engine)。别拿它当音量旋钮 —— 宿主混音器才是;
-* **一点声都不想出**:把后端换成 `-audiodev wav,id=snd0,path=/tmp/joy.wav`(只录不响,
+* **一点声都不想出**:把后端换成 `-audiodev wav,id=snd0,path=/tmp/kk.wav`(只录不响,
   还能拿录音核对音准),或者 `-audiodev none,id=snd0`(什么都不接);
 * `-audiodev pa,id=snd0` 是 PipeWire/PulseAudio 宿主上的写法(老 QEMU 的 `pa` 后端同名);
   没声音先看 QEMU 有没有报 audio 的错,或者先试 `-audiodev none,id=snd0`(至少不报错);
@@ -188,7 +188,7 @@ R   4              # R = 休止(不出声,只等这么久)
 ### 8.4 写自己的歌
 
 1. `run EDIT MYSONG.TXT` → 按上面的格式敲几行 → `Ctrl-S` 存盘、`Ctrl-Q` 退出(`Ctrl-F` 找词)
-   (或者在自己电脑上写好,用 `python3 tools/mkfat.py build/joyos-hd.img 6144 8 MYSONG.TXT=my.txt` 塞进镜像);
+   (或者在自己电脑上写好,用 `python3 tools/mkfat.py build/kkernel-hd.img 6144 8 MYSONG.TXT=my.txt` 塞进镜像);
 2. `run PLAY --list MYSONG.TXT` 对着屏幕检查音名/频率(打错了这里就会报行号);
 3. `run PLAY MYSONG.TXT` 听。想换 tempo 就改 `tempo` 那一行,不用动别的。
 

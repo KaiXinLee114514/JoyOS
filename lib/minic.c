@@ -1,5 +1,5 @@
 /* ============================================================================
- *  JoyOS — 迷你 libc(够写编辑器用的那一小份)
+ *  KKernel — 迷你 libc(够写编辑器用的那一小份)
  *
  *  裸机程序没有 libc(没操作系统给你)。但只要凑齐"字符串 + 内存分配 + 格式化输出 +
  *  一点点文件读写",1990 年代那种正经 C 程序就能直接编过来跑 ——
@@ -14,8 +14,8 @@
  * ==========================================================================*/
 #include "minic.h"
 
-/* ---- 内核那边的小工具(joyos.h 里的 static inline)---- */
-#include "joyos.h"
+/* ---- 内核那边的小工具(kkernel.h 里的 static inline)---- */
+#include "kkernel.h"
 
 /* ==========================================================================
  *  errno
@@ -187,7 +187,7 @@ int tolower(int c) { return isupper(c) ? ct_tolower[c - 'A'] : c; }
 /* ==========================================================================
  *  内存分配:一条带头结点的空闲链,首次适配 + 相邻合并
  *  堆从 0x180000 起,末尾是运行时值(参数页地址)——用 j_heap_end() 查,
- *  大小随机器内存/字库位置变(默认 128 MiB 约 2.1 MB,见 joyos.h 的内存约定)
+ *  大小随机器内存/字库位置变(默认 128 MiB 约 2.1 MB,见 kkernel.h 的内存约定)
  * ==========================================================================*/
 typedef struct blk {
     size_t size;                            /* 可用字节数(不含节点头) */
@@ -201,10 +201,10 @@ static void heap_merge_back(void);
 static void heap_init(void)
 {
     u32 end = j_heap_end();                 /* 参数页地址 = 堆可用区末尾 */
-    if (end <= JOY_HEAP_START)              /* 查不到就退回旧默认值 */
-        end = JOY_HEAP_END;
-    heap_head = (blk_t *)JOY_HEAP_START;
-    heap_head->size = (size_t)(end - JOY_HEAP_START) - sizeof(blk_t);
+    if (end <= KK_HEAP_START)              /* 查不到就退回旧默认值 */
+        end = KK_HEAP_END;
+    heap_head = (blk_t *)KK_HEAP_START;
+    heap_head->size = (size_t)(end - KK_HEAP_START) - sizeof(blk_t);
     heap_head->next = NULL;
     heap_head->used = 0;
 }
@@ -656,7 +656,7 @@ int mprotect(void *addr, unsigned int len, int prot)
     (void)addr;
     (void)len;
     (void)prot;
-    return 0;   /* JoyOS 用户态没有页权限概念:假装成功 */
+    return 0;   /* KKernel 用户态没有页权限概念:假装成功 */
 }
 
 /* libgcc 的 64 位无符号除法/取模(i386 没有硬件 64 位除法指令,TCC 等程序要用) */
@@ -775,7 +775,7 @@ char *realpath(const char *path, char *resolved)
     return r;
 }
 
-/* JoyOS 没有进程模型:exec 一律失败(TCC 的自举切换用,不走这里) */
+/* KKernel 没有进程模型:exec 一律失败(TCC 的自举切换用,不走这里) */
 int execvp(const char *file, char *const argv[])
 {
     (void)file;
@@ -798,14 +798,14 @@ char *getenv(const char *name)
     return NULL;
 }
 
-/* JoyOS 没有环境变量:空环境表(TCC 的 tccrun 要用) */
+/* KKernel 没有环境变量:空环境表(TCC 的 tccrun 要用) */
 static char *mc_envp_empty[] = { NULL };
 char **environ = mc_envp_empty;
 
 /* 执行外部命令:没有进程这回事,告诉用户一声 */
 int system(const char *cmd)
 {
-    j_print("\n[JoyOS: no shell escape] ");
+    j_print("\n[KKernel: no shell escape] ");
     if (cmd)
         j_print(cmd);
     j_print("\n");
@@ -895,7 +895,7 @@ static void out_num(out_t *o, unsigned long v, int base, int upper,
 /* ---------------------------------------------------------------------------
  *  浮点输出:%f —— 默认 6 位小数,支持精度/宽度/左对齐/零填充
  *  说明:用 double 做整数部分 + 小数部分拆解,精度到 1e-9 够 printf 用了。
- *        (JoyOS 的 x87 由 kernel/fpu.asm 初始化)
+ *        (KKernel 的 x87 由 kernel/fpu.asm 初始化)
  * -------------------------------------------------------------------------*/
 static void out_double(out_t *o, double v, int prec, int width, int left,
                        int zero, int plus, int space)
@@ -1134,7 +1134,7 @@ FILE *freopen(const char *name, const char *mode, FILE *f)
 {
     (void)name;
     (void)mode;
-    return f;   /* JoyOS 文件是整文件缓冲模型,原样返回 */
+    return f;   /* KKernel 文件是整文件缓冲模型,原样返回 */
 }
 
 int mc_console_write(const char *s, int n)
@@ -1326,7 +1326,7 @@ void perror(const char *s)
         fputs(s, stderr);
         fputs(": ", stderr);
     }
-    fputs("JoyOS error\n", stderr);
+    fputs("KKernel error\n", stderr);
 }
 
 /* ---- 文件管理:内核接口只有"整读整写",所以删除做不到、改名是拷贝 ---- */

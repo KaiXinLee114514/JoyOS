@@ -16,12 +16,12 @@
     python3 tools/mkfat.py <镜像文件> <分区起始 LBA> <分区大小 MB> <名字=文件> ...
 
 名字以 / 结尾 = 建一个目录;名字里带 / = 放进子目录(父目录会自动建):
-    python3 tools/mkfat.py build/joyos-hd.img 6144 8 DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
+    python3 tools/mkfat.py build/kkernel-hd.img 6144 8 DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
 
 FAT32(分区要 ≥ 32 MB,不然凑不够 65525 个簇):
-    python3 tools/mkfat.py build/joyos-hd32.img 6144 56 --fat32 README.TXT=progs/README.TXT
+    python3 tools/mkfat.py build/kkernel-hd32.img 6144 56 --fat32 README.TXT=progs/README.TXT
 例:
-    python3 tools/mkfat.py build/joyos-hd.img 6144 8 README.TXT=progs/README.TXT HELLO.BIN=build/HELLO.BIN
+    python3 tools/mkfat.py build/kkernel-hd.img 6144 8 README.TXT=progs/README.TXT HELLO.BIN=build/HELLO.BIN
 
     分区起始 LBA 要用 6144:镜像前面的 0-5496 被引导扇区/stub/内核/磁盘字库占了,
     从 6144 开始才不打架(和 kernel/fat.asm 里的 FAT_PART_LBA 一致 —— 内核启动时
@@ -230,7 +230,7 @@ def main() -> int:
     # ---- 引导扇区(BPB)----
     bpb = bytearray(SECTOR)
     bpb[0:3] = b"\xEB\x3C\x90"                       # jmp + nop(FAT 卷标志)
-    bpb[3:11] = b"JOYOS   "
+    bpb[3:11] = b"KKERNEL "
     struct.pack_into("<H", bpb, 11, SECTOR)          # 每扇区字节数
     bpb[13] = SECTORS_PER_CLUSTER
     struct.pack_into("<H", bpb, 14, reserved)
@@ -252,14 +252,14 @@ def main() -> int:
         struct.pack_into("<H", bpb, 50, 6)                 # 备份引导扇区
         bpb[64] = 0x80                                     # 驱动器号
         bpb[66] = 0x29                                     # 扩展引导签名
-        struct.pack_into("<I", bpb, 67, 0x4A4F594F)        # 卷序列号
-        bpb[71:82] = b"JOYOS FAT32"                        # 卷标
+        struct.pack_into("<I", bpb, 67, 0x4C524B4B)        # 卷序列号 KKRL
+        bpb[71:82] = b"KKERNEL32  "                        # 卷标
         bpb[82:90] = b"FAT32   "
     else:
         bpb[36] = 0x80                                   # 驱动器号
         bpb[38] = 0x29                                   # 扩展引导签名
-        struct.pack_into("<I", bpb, 39, 0x4A4F594F)      # 卷序列号 'OYOJ'
-        bpb[43:54] = b"JOYOS FONT "                      # 卷标 11 字节
+        struct.pack_into("<I", bpb, 39, 0x4C524B4B)      # 卷序列号 KKRL
+        bpb[43:54] = b"KKERNEL FON"                      # 卷标 11 字节
         bpb[54:62] = b"FAT16   "
     bpb[510:512] = b"\x55\xAA"
     volume[0:SECTOR] = bpb

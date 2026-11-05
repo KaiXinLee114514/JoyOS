@@ -1,10 +1,10 @@
 ; ============================================================================
-;  JoyOS — TCC 编译程序的入口(crt_tcc)
+;  KKernel — TCC 编译程序的入口(crt_tcc)
 ;
 ;  和 lib/crt0.asm 的区别:
-;    · crt0 是给宿主机 gcc + joyos.ld 链接的平铺 BIN 用的:它清 BSS
+;    · crt0 是给宿主机 gcc + kkernel.ld 链接的平铺 BIN 用的:它清 BSS
 ;      (__bss_start/__bss_end 由链接脚本提供)。
-;    · crt_tcc 是给 **JoyOS 里 TCC 链接出来的 ELF** 用的:TCC 没有链接脚本,
+;    · crt_tcc 是给 **KKernel 里 TCC 链接出来的 ELF** 用的:TCC 没有链接脚本,
 ;      给不了 __bss_start/__bss_end —— BSS 由内核 ELF loader 按
 ;      p_memsz-p_filesz 清零(见 kernel/elf.asm)。
 ;    · 其余照抄 crt0:exit() 的 setjmp 跳板 + main 返回后回 shell。

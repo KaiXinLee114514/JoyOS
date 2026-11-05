@@ -1,5 +1,5 @@
 ; ============================================================================
-;  JoyOS — 分页(页目录 + 页表)
+;  KKernel — 分页(页目录 + 页表)
 ;
 ;  ── 分页在干嘛 ──────────────────────────────────────────────────────────
 ;  开分页之前,线性地址就是物理地址。开了 CR0.PG 之后,CPU 把线性地址
@@ -318,8 +318,8 @@ paging_translate:
 ; ★ 这些常量在 kernel/kmain.asm 里定义一份(布局打印要用),这里只是兜底:
 ;   如果单独汇编本文件(没有 kmain)也能过。两边必须一致。
 SPACE_IMG_VA     equ 0x120000          ; 程序镜像窗口(shell.asm 的 PROG_ADDR)
-SPACE_IMG_PAGES  equ 0x60              ; 384 KiB(0x120000-0x17FFFF,见 include/joyos.h)
-SPACE_HEAP_VA    equ 0x180000          ; 堆窗口起点(JOY_HEAP_START)
+SPACE_IMG_PAGES  equ 0x60              ; 384 KiB(0x120000-0x17FFFF,见 include/kkernel.h)
+SPACE_HEAP_VA    equ 0x180000          ; 堆窗口起点(KK_HEAP_START)
 SPACE_TRAMP_VA   equ SPACE_IMG_VA + (SPACE_IMG_PAGES - 1) * 4096
 %endif
 ; 堆窗口页数 / 参数页 / 用户栈顶是运行时变量(kmain.asm 算好):

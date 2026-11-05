@@ -1,6 +1,6 @@
-# JoyOS(演示版)
+# KKernel(演示版)
 
-![JoyOS 硬盘模式:字库从磁盘读、FAT16 列目录、跑磁盘上的程序](docs/screenshot-fat.png)
+![KKernel 硬盘模式:字库从磁盘读、FAT16 列目录、跑磁盘上的程序](docs/screenshot-fat.png)
 
 上图是完整硬盘镜像的实拍:字库从磁盘读进来(40 208 个字形)、FAT16 挂上了,
 `ls` 列目录、`run HELLO` 跑磁盘上的程序、`write` / `cat` 读写文件。
@@ -13,11 +13,11 @@
 
 **vi 也搬进来了** —— 不是从头写的,是公有领域的 STEVIE(vim 的前身):
 
-![vi 跑在 JoyOS 上](docs/screenshot-vi.png)
+![vi 跑在 KKernel 上](docs/screenshot-vi.png)
 
 还有图形模式(800×600 VBE)里敲 `info` 和 `cat ZH.TXT`(中文 / emoji 演示)的样子:
 
-![JoyOS shell](docs/screenshot.png) ![中文显示(cat ZH.TXT)](docs/screenshot-zh.png)
+![KKernel shell](docs/screenshot.png) ![中文显示(cat ZH.TXT)](docs/screenshot-zh.png)
 
 一个**从头写的、4000 多行的 x86 操作系统**,能启动、能分页、能读硬盘、
 有自己的文件系统和 shell,还能**跑你写的小程序**。
@@ -55,8 +55,8 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 
 ## 用纯 C 写程序(SDK)
 
-不想碰汇编?`bin/joyos-cc` 一条命令把你的 `.c` 编成 JoyOS 能跑的 `.BIN`,
-`bin/joyos-run` 直接造镜像开机看结果 —— 见 [docs/quickstart.md](docs/quickstart.md)。
+不想碰汇编?`bin/kkernel-cc` 一条命令把你的 `.c` 编成 KKernel 能跑的 `.BIN`,
+`bin/kkernel-run` 直接造镜像开机看结果 —— 见 [docs/quickstart.md](docs/quickstart.md)。
 
 **vi 已经不是主线了**:STEVIE 移植搬去了 `extensions/vi/`,默认镜像里没有它,
 `make ext-img` / `make run-ext` 才构建和启动(规矩见 [extensions/README.md](extensions/README.md))。
@@ -90,7 +90,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **组件:蜂鸣器 + 文本谱播放器(不含示例谱,自备谱文件)** | `run PLAY MYSONG.TXT`:PC 喇叭按 FAT 上的**纯文本谱**唱歌(注释、音名 `C4`~`B5` 带 `#`、时值、tempo 都能改);`run PLAY --list` 只解析不出声、把谱子打到屏幕上(可测);内核那头就是 14 号 `beep`,忙等标定见 [kernel/speaker.asm](kernel/speaker.asm)(见 [docs/quickstart.md](docs/quickstart.md)) |
 | **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q / Ctrl-F) |
 | **vi(STEVIE 移植)** | `run VI NOTES.TXT`:公有领域的 vi 克隆(STEVIE 3.68,vim 的前身),约 10 900 行 C 一行没改,只把平台层换成 `int 0x30` —— 插入模式、方向键、`:w` 存盘、`:q` 退出(移植记在 [docs/vi.md](docs/vi.md)) |
-| **C 语言支持** | 普通 `gcc -m32` 就能编(`make cc-check`);自带 crt0 + 迷你 libc(malloc/printf/stdio)+ `joyos.h`,程序照样是平铺二进制丢进 FAT16 跑(见 [docs/c-programs.md](docs/c-programs.md)) |
+| **C 语言支持** | 普通 `gcc -m32` 就能编(`make cc-check`);自带 crt0 + 迷你 libc(malloc/printf/stdio)+ `kkernel.h`,程序照样是平铺二进制丢进 FAT16 跑(见 [docs/c-programs.md](docs/c-programs.md)) |
 | **图形模式** | 实模式 stub 里用 VBE 问出 **800×600×32 线性帧缓冲**模式,页表把帧缓冲映射进来,终端直接往显存画像素 |
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
 | 中文显示 | ✅ 一个汉字 16×16 直接画在帧缓冲上;文本是标准 **UTF-8**(四字节 emoji、坏字节替换符都处理了) |
@@ -105,7 +105,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 # Debian/Ubuntu
 sudo apt install nasm qemu-system-x86 python3
 
-make                    # 构建两个镜像:build/joyos.img(软盘)+ build/joyos-hd.img(硬盘)
+make                    # 构建两个镜像:build/kkernel.img(软盘)+ build/kkernel-hd.img(硬盘)
 make run                # 软盘镜像,开窗口在 QEMU 里跑(自己敲键盘玩)
 make hd                 # 完整硬盘镜像:字库 + FAT16 + 示例程序(推荐用这个)
 
@@ -157,12 +157,12 @@ QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` �
 
 **想听 `run PLAY` 出声**,`make hd` 那条 QEMU 命令不够:QEMU 7 以后 PC 蜂鸣器要显式接一个音频后端才响,
 用这一条(要 PC 扬声器仿真 + 一个 audiodev,PA/pipewire 宿主用 `pa`;方波**没有音量控制**,想小声就在宿主
-混音器里把这条流单独调小 —— 下面命令里的 `out.stream-name=JoyOS` 就是给它起个认得出的名字。
+混音器里把这条流单独调小 —— 下面命令里的 `out.stream-name=KKernel` 就是给它起个认得出的名字。
 注意 `-audiodev` 里**没有** `out.volume=` 这种参数,QEMU 会拒绝启动):
 
 ```bash
-qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0,out.stream-name=JoyOS \
-    -drive file=build/joyos-hd.img,format=raw,if=ide,index=0 -boot c
+qemu-system-i386 -machine pcspk-audiodev=snd0 -audiodev pa,id=snd0,out.stream-name=KKernel \
+    -drive file=build/kkernel-hd.img,format=raw,if=ide,index=0 -boot c
 ```
 
 没声音先试 `-audiodev none,id=snd0`(不出声但至少不报错)或者 `pulseaudio`/`pipewire` 的 `pa` 后端;
@@ -187,7 +187,7 @@ VirtualBox 不仿真 PC 扬声器,那里是听不见的(记在 [docs/known-issue
 ```bash
 make test-hd-font  # 单独跑某一组
 make div           # 构建"开机就除零"的镜像,自己开着 QEMU 看 panic 屏
-python3 tests/qemu_test.py build/joyos-hd.img --hda --dump   # 只把屏幕打出来,不做断言
+python3 tests/qemu_test.py build/kkernel-hd.img --hda --dump   # 只把屏幕打出来,不做断言
 ```
 
 ## 3. 源码地图
@@ -229,15 +229,15 @@ progs/ZH.TXT           放进镜像的示例文本(中文/UTF-8 演示,shell 里
 progs/EN.TXT           放进镜像的示例文本(莎士比亚 Sonnet 18,cat EN.TXT)
 progs/CHELLO.c         C 写的示例程序(printf / malloc / 参数 / 读文件)
 progs/PLAY.C           组件:文本谱播放器(读 FAT 上的谱子 → int 0x30 的 beep;--list 只解析;不含示例谱)
-include/joyos.h        C 程序用的头:15 个 int 0x30 包装 + 颜色/键值常量
+include/kkernel.h        C 程序用的头:15 个 int 0x30 包装 + 颜色/键值常量
 lib/minic.c            迷你 libc(约 600 行:字符串/内存/printf/一点点 stdio)
 lib/crt0.asm           C 程序入口:清 BSS → main() → ret 回 shell
-lib/joyos.ld           链接脚本:0x120000 + 平铺二进制 + BSS 边界符号
-third_party/stevie/    公版 STEVIE(vi 克隆)的源码 + 我们写的 joyos.c 后端(替换 nt.c)
+lib/kkernel.ld           链接脚本:0x120000 + 平铺二进制 + BSS 边界符号
+third_party/stevie/    公版 STEVIE(vi 克隆)的源码 + 我们写的 kkernel.c 后端(替换 nt.c)
 progs/README.TXT       也放进镜像,shell 里 cat README.TXT 能看(UTF-8 中文)
 tools/mkimg.py         拼镜像:boot(第 0 扇区)+ stub + kernel + 磁盘字库
 tools/mkfat.py         在镜像里造 FAT16 或 FAT32 分区(--fat32),并把文件/目录放进去
-tools/unifont2bin.py   Unifont .hex → JOYF 二进制字库 / VGA 字模 / 中文文案
+tools/unifont2bin.py   Unifont .hex → KKF0 二进制字库 / VGA 字模 / 中文文案
 tools/mkfontsubset.py  从完整 .hex 里抽出要用的字形(生成入库的小子集)
 tools/text2alt.py      文字 → Alt 码位序列(查字库 / 直接打进 QEMU),见上面的"日文/韩文"
 tools/run.sh           QEMU 启动脚本(软盘/硬盘/完整硬盘/panic 演示/gdb/monitor/dry-run)
@@ -572,7 +572,7 @@ unknown command: 霜 hai
 开机时内核读它、把 `boot_msg` 打出来、按 `autostart` 决定要不要把启用的服务跑起来;
 `rc` 一条命令就能看配置、看服务、起服务、重读刚写下的文件,还有一本带 PIT tick 的
 事件账本。细节和全部 key 见 [docs/rc-conf.md](docs/rc-conf.md)。
-显示名默认 `JoyOS`,可在 `RC.CONF` 里用 `osname = 你的名字` 自定义(开机打一行 `os: <名字>`)。
+显示名默认 `KKernel`,可在 `RC.CONF` 里用 `osname = 你的名字` 自定义(开机打一行 `os: <名字>`)。
 
 ![rc.conf 服务列表与事件账本](docs/screenshot-rc.png)
 
@@ -802,7 +802,7 @@ slept 10 s (1000 ticks)
   **只断言 ASCII 部分**(时间戳、`RTC: BCD...`、格式参数),星期几得人眼看截图。
 - **QEMU 的 `-qmp` 参数必须写成 `unix:/path/to.sock`**:少写 `unix:` 前缀 QEMU 直接退出
   (`'...' is not a valid char driver`)。`-monitor` 不用带前缀,`-qmp` 必须带 ——
-  排查时还顺手发现一个上次没杀干净的 QEMU 一直占着 `build/joyos-hd.img`。
+  排查时还顺手发现一个上次没杀干净的 QEMU 一直占着 `build/kkernel-hd.img`。
 
 ### 6.13 换栈只能在中断入口做(设计时就得想清楚"换完从哪继续")
 
@@ -1009,7 +1009,7 @@ UHCI BAR4 就是个 I/O 基址(`0xC040`),地址够用,不用知道大小。
 
 - 抓屏原来固定写 `build/_shot.ppm`。两轮测试(或者我和测试台)同时开着时,会**读到别人家的
   屏幕** —— 硬盘那轮的「读盘方式」断言就偶发读到软盘屏幕上的 `boot disk: CHS fallback`。
-  现在默认路径带进程号(`/tmp/joyos-shot-<pid>.ppm`)。
+  现在默认路径带进程号(`/tmp/kkernel-shot-<pid>.ppm`)。
 - 开机那几十行是内核**一行一行往 VBE 帧缓冲上画**的(MMIO,一屏好几秒),而抓屏只等了 2 秒。
   机器一忙就可能拍到画到一半的屏幕。现在先等最后一行出现(最多 10 秒)再逐条断言;
   真失败时把屏幕 OCR 出来、存 `build/screen-fail.png`,不用再靠猜。
@@ -1097,7 +1097,7 @@ kill 杀错对象、甚至切栈切到别人家)。所以现在全仓统一用�
 ```sh
 python3 - <<'EOF'
 import struct
-d = open("font/full-joyf.bin","rb").read()
+d = open("font/full-kkf.bin","rb").read()
 n = struct.unpack_from("<I", d, 4)[0]
 want = "じょいおす ﾟ ー ; ) ・ あれ"
 for ch in dict.fromkeys(want):
@@ -1238,7 +1238,7 @@ unmapped, gave back 0x00400000  (page returned to the pool; empty page table rec
 ```bash
 cp progs/HELLO.asm progs/MYPROG.asm     # 改吧
 make                                    # Makefile 会自动编 progs/*.asm
-python3 tools/mkfat.py build/joyos-hd.img 6144 8 MYPROG.BIN=build/MYPROG.BIN
+python3 tools/mkfat.py build/kkernel-hd.img 6144 8 MYPROG.BIN=build/MYPROG.BIN
 make hd                                 # 或者在 Makefile 的 PROGS 里加一行,让 make hd 自动带上
 > run MYPROG
 ```
@@ -1257,7 +1257,7 @@ make hd                                 # 或者在 Makefile 的 PROGS 里加一
 `kernel/kmain.asm` 最下面的数据区,`msg_title` 就是第一行:
 
 ```asm
-msg_title   db 'JoyOS - stage 5', 10, 0     ; 10 = 换行,0 = 字符串结束
+msg_title   db 'KKernel - stage 5', 10, 0     ; 10 = 换行,0 = 字符串结束
 ```
 
 中文也直接写(字符串是 UTF-8,图形模式下能显示;文本模式会成乱码,见 6.8)。
@@ -1287,7 +1287,7 @@ cmd_table:
 ### 8.5 往镜像里放个文件
 
 ```bash
-python3 tools/mkfat.py build/joyos-hd.img 6144 8 \
+python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \
     NOTES.TXT=my-notes.txt HELLO.BIN=build/HELLO.BIN
 make hd
 > cat NOTES.TXT
@@ -1442,7 +1442,7 @@ USB 控制器在哪、它的寄存器窗口(那个 I/O BAR)开在哪儿。
   |----|------|--------|-----------|
   | 1 | `minimal system` | 引导扇区 + stub + 内核(含 416 字形内置子集),开机直接进 shell | 128 KiB |
   | 2 | `disk read/write` | FAT12/16 读写 + 程序盘(HELLO/COUNT/CALC/TOUCH/EDIT/VI/PLAY)+ 演示文本(ZH/EN/JPKR)+ `RC.CONF` | ~110 KiB |
-  | 3 | `more characters (1/2)` | 完整字库 `full-joyf.bin` 的前一半(1 张软盘塞不下 1.68 MB) | ~862 KiB |
+  | 3 | `more characters (1/2)` | 完整字库 `full-kkf.bin` 的前一半(1 张软盘塞不下 1.68 MB) | ~862 KiB |
   | 4 | `more characters (2/2)` | 完整字库的后一半 | ~862 KiB |
   | 5 | `add-ons` | 以后加的东西(播放器/游戏/演示程序),也可以继续往后编号 | 余量 |
 

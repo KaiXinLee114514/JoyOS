@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  JoyOS — QEMU 启动脚本
+#  KKernel — QEMU 启动脚本
 #
-#  为什么还要个脚本:make run 只有一种跑法,而 JoyOS 有两条读盘路径、
+#  为什么还要个脚本:make run 只有一种跑法,而 KKernel 有两条读盘路径、
 #  一个 panic 演示、还有能接 gdb 的调试模式,直接用脚本选更省事。
 #
 #    ./tools/run.sh              软盘启动(BIOS 无 LBA → 走 CHS 退回那条路)
@@ -49,16 +49,16 @@ while [ $# -gt 0 ]; do
 done
 
 case "$MODE" in
-    floppy) IMG="build/joyos.img"
+    floppy) IMG="build/kkernel.img"
             DRIVE=(-drive "file=$IMG,format=raw,if=floppy" -boot a)
             DESC="软盘启动(应看到 CHS fallback)" ;;
-    hdd)    IMG="build/joyos.img"
+    hdd)    IMG="build/kkernel.img"
             DRIVE=(-drive "file=$IMG,format=raw,if=ide,index=0" -boot c)
             DESC="硬盘启动(应看到 LBA (EDD))" ;;
-    hd)     IMG="build/joyos-hd.img"
+    hd)     IMG="build/kkernel-hd.img"
             DRIVE=(-drive "file=$IMG,format=raw,if=ide,index=0" -boot c)
             DESC="完整硬盘:字库在磁盘上、FAT16 能读写(试试 ls / cat README.TXT / run HELLO)" ;;
-    div)    IMG="build/joyos-div.img"
+    div)    IMG="build/kkernel-div.img"
             DRIVE=(-drive "file=$IMG,format=raw,if=floppy" -boot a)
             DESC="故意除零(应看到 EXCEPTION 00: divide error)" ;;
     *)      echo "内部错误: 未知模式 $MODE" >&2; exit 1 ;;
@@ -86,6 +86,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
-echo "JoyOS: $DESC"
+echo "KKernel: $DESC"
 [ -n "${QEMU_DISPLAY:-}" ] || echo "(QEMU 窗口里 Ctrl+Alt+g 放开鼠标,Ctrl+Alt+2 看 monitor)"
 exec "${CMD[@]}"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-JoyOS 无头自动化测试。
+KKernel 无头自动化测试。
 
 做法(和 Project/System/test.py 一个路子,但更清爽):
     1. QEMU 无窗口启动,-display none,monitor 挂在 unix socket 上
@@ -41,7 +41,7 @@ class Monitor:
         # 抓屏落盘的默认路径:带上进程号,免得和别的 QEMU/别的测试轮次互相踩
         import os
         self.shot_path = os.path.join(
-            os.environ.get("TMPDIR", "/tmp"), f"joyos-shot-{os.getpid()}.ppm")
+            os.environ.get("TMPDIR", "/tmp"), f"kkernel-shot-{os.getpid()}.ppm")
         time.sleep(0.2)
         self._drain()
 
@@ -187,18 +187,18 @@ class Monitor:
 
 # ---------------------------------------------------------------------------
 #  图形模式下的断言:屏幕上没有"字符码"可读了,只能比像素。
-#  好在字形是我们自己的字库(font/font-joyf.bin),可以在 Python 里用同样的位运算
+#  好在字形是我们自己的字库(font/font-kkf.bin),可以在 Python 里用同样的位运算
 #  把期望的文字渲染成"有墨/无墨"网格,再去截图里找这个图案 —— 找到了就说明
 #  屏幕上确实显示着这段文字(不看颜色,只看形状)。
 # ---------------------------------------------------------------------------
-FONT_PATH = "font/font-joyf.bin"
+FONT_PATH = "font/font-kkf.bin"
 
 
 def load_font(path: str = FONT_PATH) -> dict:
     import struct
     data = open(path, "rb").read()
-    if data[:4] != b"JOYF":
-        raise ValueError(f"{path} 不是 JOYF 字库")
+    if data[:4] != b"KKF0":
+        raise ValueError(f"{path} 不是 KKF0 字库")
     _ver, count, data_off = struct.unpack_from("<III", data, 4)
     glyphs = {}
     for i in range(count):
@@ -241,7 +241,7 @@ def image_ink_rows(img):
 def find_text(img, text: str, glyphs: dict, ink_rows=None) -> bool:
     target = render_text(text, glyphs)
     if target is None:
-        # 别静悄悄地判失败:多半是模板字库选错了(比如硬盘模式该用 font/full-joyf.bin)
+        # 别静悄悄地判失败:多半是模板字库选错了(比如硬盘模式该用 font/full-kkf.bin)
         miss = "".join(sorted({c for c in text if ord(c) not in glyphs and c != " "}))
         print(f"  ⚠️  模板字库里没有 {miss!r},没法比对:{text!r}")
         return False
@@ -507,7 +507,7 @@ SHIFTED = {
 }
 
 
-def layout_checks(font_path: str = "font/full-joyf.bin") -> list:
+def layout_checks(font_path: str = "font/full-kkf.bin") -> list:
     """
     静态检查(连 QEMU 都不用开):程序加载区和磁盘字库不能重叠。
 
@@ -555,7 +555,7 @@ def layout_checks(font_path: str = "font/full-joyf.bin") -> list:
     return out
 
 
-def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
+def offline_checks(img: str, font_path: str = "font/full-kkf.bin",
                    part_lba: int = 6144) -> list:
     """
     QEMU 关掉之后,不信内核自己说的"写成功了",直接把镜像文件当块设备读一遍。
@@ -573,7 +573,7 @@ def offline_checks(img: str, font_path: str = "font/full-joyf.bin",
         blob = raw[2048 * 512:]
         src = open(font_path, "rb").read()
         ok = (desc[:4] == b"JFD1"
-              and blob[:4] == b"JOYF"
+              and blob[:4] == b"KKF0"
               and int.from_bytes(desc[12:16], "little") == len(src)
               and blob[:len(src)] == src)
         out.append(("离线:字库在盘上原样", ok,
@@ -671,7 +671,7 @@ def main() -> int:
     if "--font" in argv:
         i = argv.index("--font")
         del argv[i:i + 2]
-    img = argv[0] if argv else "build/joyos.img"
+    img = argv[0] if argv else "build/kkernel.img"
     if not os.path.exists(img):
         print(f"❌ 找不到镜像 {img}(先 make)")
         return 2
@@ -679,12 +679,12 @@ def main() -> int:
     # ★ 用镜像的**副本**跑:这套测试会往盘里写文件(写断言读回来),而且跑的时候
     #   谁要是在旁边敲一句 `make`(重造镜像)就会把正在跑的虚拟机脚下的盘换掉 ——
     #   症状是莫名其妙的中途失败/虚拟机自己退出。副本 + 跑完自动删,两边都省心。
-    img_copy = os.path.join(tempfile.gettempdir(), f"joyos-test-{os.getpid()}.img")
+    img_copy = os.path.join(tempfile.gettempdir(), f"kkernel-test-{os.getpid()}.img")
     shutil.copyfile(img, img_copy)
     print(f"(跑的是镜像副本 {img_copy},原镜像 {img} 不动)")
     img = img_copy
 
-    sock = os.path.join(tempfile.gettempdir(), f"joyos-mon-{os.getpid()}.sock")
+    sock = os.path.join(tempfile.gettempdir(), f"kkernel-mon-{os.getpid()}.sock")
     if os.path.exists(sock):
         os.unlink(sock)
 
@@ -995,7 +995,7 @@ def main() -> int:
 
             run("run", wait=0.8)
             results.append(("裸 run 打印程序接口",
-                            wait_for("JoyOS program API") and has("[ORG 0x120000]"),
+                            wait_for("KKernel program API") and has("[ORG 0x120000]"),
                             "int 0x30 的说明(裸敲 run 时打出来)"))
 
             run("run hello", wait=1.1)
@@ -1209,8 +1209,8 @@ def main() -> int:
 
             run("run calc", wait=1.2)
             screen_now = screen_lines()
-            results.append(("计算器起来了", "JoyOS calculator" in screen_now,
-                            "标题行 JoyOS calculator"))
+            results.append(("计算器起来了", "KKernel calculator" in screen_now,
+                            "标题行 KKernel calculator"))
 
             for keys, want, name in [
                 ("12.5*4=",      "=  50",        "12.5 × 4 = 50"),
@@ -1280,8 +1280,8 @@ def main() -> int:
             run("rc", wait=1.0)
             results.append(("rc:概要读到 RC.CONF",
                             wait_for("rc.conf  : ") and has("RC.CONF") and has("hostname")
-                            and has("joyos"),
-                            "rc.conf: RC.CONF / keys / hostname joyos"))
+                            and has("kkernel"),
+                            "rc.conf: RC.CONF / keys / hostname kkernel"))
             run("rc list", wait=1.0)            # ★ 以前漏了这条命令,断言永远不成立
             results.append(("rc:服务列表 + 启用状态",
                             wait_for("services in RC.CONF", 20.0)
@@ -1289,7 +1289,7 @@ def main() -> int:
                             and has("args: hi-from-rc-conf"),
                             "[1] HELLO.BIN disabled args: hi-from-rc-conf"))
             run("rc get hostname", wait=1.0)
-            results.append(("rc get hostname → joyos", has("joyos"), "key=value 直接取值"))
+            results.append(("rc get hostname → kkernel", has("kkernel"), "key=value 直接取值"))
             run("rc start 1", wait=4.0)
             results.append(("rc start 1:把服务当程序跑起来",
                             wait_for("running HELLO.BIN", 15.0)
@@ -1495,9 +1495,9 @@ def main() -> int:
             # ---- 文本编辑器(EDIT.BIN)----
             run("run edit newfile.txt", wait=1.5)
             screen_now = screen_lines()
-            results.append(("编辑器打开新文件", "JoyOS editor" in screen_now
+            results.append(("编辑器打开新文件", "KKernel editor" in screen_now
                             and "newfile.txt" in screen_now,
-                            "标题栏显示 JoyOS editor --- newfile.txt"))
+                            "标题栏显示 KKernel editor --- newfile.txt"))
             results.append(("编辑器读到了参数",
                             "newfile.txt" in screen_now and "NOTES.TXT" not in screen_now,
                             "`run EDIT NEWFILE.TXT` 里的文件名传进去了"))
@@ -1802,7 +1802,7 @@ def main() -> int:
                 ("RTC 时钟",        "rtc: CMOS clock"),
                 # 软盘镜像上也有 PCI(那行照打),所以这条两边都能过
                 ("PCI 枚举",        "devices on bus 0"),
-                ("显示名",          "os: JoyOS"),
+                ("显示名",          "os: KKernel"),
                 ("阶段完成提示",    "OK - stage 5"),
                 ("多 shell 线程",   "4 shells (Ctrl+Left / Ctrl+Right)"),
                 ("shell 就绪",      'type "help" for commands.'),

@@ -1,11 +1,11 @@
 #!/bin/sh
 # ============================================================================
-#  joyos-run —— 写一行 C,然后立刻在 JoyOS 里跑起来
+#  kkernel-run —— 写一行 C,然后立刻在 KKernel 里跑起来
 #
 #  用法:
-#      bin/joyos-run hello.c          # 编译 → 塞进镜像副本 → 开 QEMU
-#      bin/joyos-run HELLO.BIN        # 已经编好了就只做后两步
-#      bin/joyos-run hello.c --no-qemu   # 只做镜像,不启动
+#      bin/kkernel-run hello.c          # 编译 → 塞进镜像副本 → 开 QEMU
+#      bin/kkernel-run HELLO.BIN        # 已经编好了就只做后两步
+#      bin/kkernel-run hello.c --no-qemu   # 只做镜像,不启动
 #
 #  它做的事:mkimg 造一张干净镜像 → mkfat 把 README.TXT 和你的程序放进去 →
 #  QEMU 开机。窗口里敲 `run HELLO` 就能看见自己写的东西。
@@ -15,10 +15,10 @@ SDK=$(cd "$(dirname "$0")/.." && pwd)
 ARG="$1"
 NOQ=0
 [ "$2" = "--no-qemu" ] && NOQ=1
-[ -n "$ARG" ] || { echo "用法: joyos-run <源文件.c|程序.BIN> [--no-qemu]"; exit 2; }
+[ -n "$ARG" ] || { echo "用法: kkernel-run <源文件.c|程序.BIN> [--no-qemu]"; exit 2; }
 
 case "$ARG" in
-    *.c)  BIN="${ARG%.c}.BIN"; "$SDK/bin/joyos-cc" "$ARG" -o "$BIN" ;;
+    *.c)  BIN="${ARG%.c}.BIN"; "$SDK/bin/kkernel-cc" "$ARG" -o "$BIN" ;;
     *)    BIN="$ARG" ;;
 esac
 NAME=$(basename "$BIN" | tr 'a-z' 'A-Z')
@@ -27,11 +27,11 @@ NAME=$(basename "$BIN" | tr 'a-z' 'A-Z')
 for f in boot.bin stub.bin kernel.bin; do
     [ -f "$SDK/build/$f" ] || { echo "缺少 build/$f —— 先在仓库里 make 一次"; exit 3; }
 done
-[ -f "$SDK/font/full-joyf.bin" ] || { echo "缺少 font/full-joyf.bin"; exit 3; }
+[ -f "$SDK/font/full-kkf.bin" ] || { echo "缺少 font/full-kkf.bin"; exit 3; }
 
-IMG="${TMPDIR:-/tmp}/joyos-$NAME.img"
+IMG="${TMPDIR:-/tmp}/kkernel-$NAME.img"
 python3 "$SDK/tools/mkimg.py" "$SDK/build/boot.bin" "$SDK/build/stub.bin" \
-        "$SDK/build/kernel.bin" "$IMG" "$SDK/font/full-joyf.bin" >/dev/null
+        "$SDK/build/kernel.bin" "$IMG" "$SDK/font/full-kkf.bin" >/dev/null
 python3 "$SDK/tools/mkfat.py" "$IMG" 6144 8 \
         README.TXT="$SDK/progs/README.TXT" NOTES.TXT="$SDK/progs/NOTES.TXT" \
         "$NAME=$BIN" >/dev/null

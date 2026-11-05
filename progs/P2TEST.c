@@ -1,5 +1,5 @@
 /* ============================================================================
- *  P2TEST.C — JoyOS 迷你 libc 第二批自检
+ *  P2TEST.C — KKernel 迷你 libc 第二批自检
  *
  *  验证:fread/fwrite/fseek/ftell/feof/ungetc、qsort、strerror、
  *        strnlen/strpbrk/strcasecmp/strncasecmp/strtok_r、isatty/fileno。

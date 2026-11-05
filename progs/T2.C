@@ -7,7 +7,7 @@ int main(void)
 {
     int x = add(2, 3);
     printf("hello from TCC ELF! 2+3=%d\n", x);
-    printf("this program was compiled and linked *inside* JoyOS\n");
+    printf("this program was compiled and linked *inside* KKernel\n");
     return 0;
 }
 

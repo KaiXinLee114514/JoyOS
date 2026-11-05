@@ -1,5 +1,5 @@
 ; ============================================================================
-;  JoyOS — 程序接口(int 0x30)
+;  KKernel — 程序接口(int 0x30)
 ;
 ;  磁盘上的程序怎么跟内核说话?如果直接 `call` 内核里的函数,那函数的**绝对地址**
 ;  会随内核代码变化而变 —— 程序编好就作废了。所以用软中断当门:
@@ -270,7 +270,7 @@ api_exit:
 
 ; 给程序用的说明文件(裸敲 run 就能看到;progs/README.TXT 里也抄了一份)
 api_usage:
-    db 'JoyOS program API (int 0x30)  -- eax = function', 10
+    db 'KKernel program API (int 0x30)  -- eax = function', 10
     db '  0 print string   esi=utf-8    1 print decimal  ebx', 10
     db '  2 print hex      ebx          3 print codepoint ebx', 10
     db '  4 set color      bl           5 wait key       -> al', 10
@@ -285,7 +285,7 @@ api_usage:
     db ' 14 beep           ebx freq hz, ecx ms (freq<=0: silent wait)', 10
     db ' 15 exit           (programs in ring 3: just `ret` does this for you)', 10
     db 10, 'Build:  nasm -f bin prog.asm -o PROG.BIN   ([BITS 32] [ORG 0x120000])', 10
-    db 'Install: tools/mkfat.py build/joyos-hd.img 6144 8 PROG.BIN=PROG.BIN', 10
+    db 'Install: tools/mkfat.py build/kkernel-hd.img 6144 8 PROG.BIN=PROG.BIN', 10
     db 'Run:    run PROG          (more in progs/, docs/programs.md)', 10, 0
 
 ; ---- 程序接口用的数据 ----

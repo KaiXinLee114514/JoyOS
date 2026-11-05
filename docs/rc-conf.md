@@ -1,6 +1,6 @@
 # rc.conf:开机能读的服务 / 事件配置
 
-JoyOS 的"服务管理器"就一个文件:**根目录的 `RC.CONF`**,语法是 BSD / OpenRC 那种
+KKernel 的"服务管理器"就一个文件:**根目录的 `RC.CONF`**,语法是 BSD / OpenRC 那种
 `key = value`(按用户要求,**不是** systemd 的 unit 段)。开机时内核读它一次,
 告诉你配置生效了没有;想改就 `write RC.CONF ...` 再 `rc reload`,不用重做镜像。
 
@@ -21,7 +21,7 @@ shell 的 `run` 那条路跑 —— 所以服务程序**也跑在 ring 3、也�
 
 ```
 # 一行一个 key=value;空行和 # 开头的行忽略
-hostname="joyos"            # 值可以带双引号,# 后面是注释
+hostname="kkernel"            # 值可以带双引号,# 后面是注释
 BOOT_MSG=hi from rc.conf    # key 不分大小写;不带引号也行
 ```
 
@@ -43,7 +43,7 @@ BOOT_MSG=hi from rc.conf    # key 不分大小写;不带引号也行
 | key | 意思 |
 | --- | --- |
 | `hostname` | 主机名(`rc` 概要里显示;不影响命令提示符) |
-| `osname` | 系统显示名(默认 `JoyOS`;开机打一行 `os: <名字>`) |
+| `osname` | 系统显示名(默认 `KKernel`;开机打一行 `os: <名字>`) |
 | `style` | 提示符样式:`plain` / `moe` / `dos` / `c64`(见 [../README.md](../README.md) §5「提示符样式」;不写就是 `plain`) |
 | `boot_msg` | 开机打一行(`boot_msg: ...`)—— 配置生效的肉眼证明 |
 | `autostart` | `YES` = 开机把"启用的服务"按编号顺序跑一遍;默认 `NO`(不然开机会卡在服务里) |
@@ -72,7 +72,7 @@ rc reload     重新从磁盘读 RC.CONF 并重新解析(改完文件立刻生�
 > rc
 rc.conf  : RC.CONF
   keys     : 9  services : 2 (0)
-  hostname  : joyos
+  hostname  : kkernel
   autostart: NO
   on_crash : log
 rc list / rc get KEY / rc start N / rc log / rc reload
@@ -101,7 +101,7 @@ event log (tick = 100 Hz PIT 心跳):
 开机那两行长这样(第一行是 `RC.CONF` 读到了什么,第二行是 `boot_msg`):
 
 ```
-rc.conf: RC.CONF, 9 keys, hostname joyos, services 2 (0)
+rc.conf: RC.CONF, 9 keys, hostname kkernel, services 2 (0)
 boot_msg: hello from rc.conf (this line came off the disk)
 ```
 

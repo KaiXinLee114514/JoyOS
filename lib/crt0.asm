@@ -1,11 +1,11 @@
 ; ============================================================================
-;  JoyOS — C 程序的入口(crt0)
+;  KKernel — C 程序的入口(crt0)
 ;
 ;  内核 `call build/XXX.BIN` 的那个地址,进来就是这里。要做的事只有两件:
 ;      1. 把 BSS 清零(平铺二进制里没存"全是 0 的段",内存里是垃圾)
 ;      2. 调 main(),它返回后我们再 ret 回 shell
 ;
-;  没有 argc/argv:参数是用 int 0x30 的第 12 号功能取的(见 joyos.h 的 j_arg)。
+;  没有 argc/argv:参数是用 int 0x30 的第 12 号功能取的(见 kkernel.h 的 j_arg)。
 ;  也没有 _exit/atexit/main 的返回值处理 —— main 返回就是我们返回。
 ;
 ;  汇编: nasm -f elf32 lib/crt0.asm -o build/crt0.o   (注意是 elf32,要给 ld 用)
@@ -41,7 +41,7 @@ _start:
 
 .out:
     ; main 返回(或 exit() 跳回来)了 → 直接回 shell
-    ; (程序用 ret 返回是 JoyOS 的约定)
+    ; (程序用 ret 返回是 KKernel 的约定)
     ret
 
 ; ---------------------------------------------------------------------------

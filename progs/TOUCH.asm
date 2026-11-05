@@ -22,7 +22,7 @@
 [BITS 32]
 [ORG 0x120000]
 
-HEAP_START  equ 0x180000                ; 堆窗口起点(和 include/joyos.h 一致)
+HEAP_START  equ 0x180000                ; 堆窗口起点(和 include/kkernel.h 一致)
 HEAP_PAGES  equ 32                      ; 碰 32 页 = 128 KiB
 IMG_TAIL    equ 0x17E000                ; 镜像窗口里"文件之外"的一页(.bss)
 

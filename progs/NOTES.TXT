@@ -1,4 +1,4 @@
-JoyOS NOTES.TXT
+KKernel NOTES.TXT
 ================
 
 这个文件是给你改着玩的。用编辑器打开它:
