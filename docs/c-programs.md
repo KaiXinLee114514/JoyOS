@@ -111,7 +111,7 @@ ld -m elf_i386 -T lib/kkernel.ld build/crt0.o build/Foo.o build/minic.o -o build
 
 ```
 > run CHELLO
-> run CHELLO README.TXT
+> run CHELLO DOCS/README.TXT
 ```
 
 `ls` 里能看到它:`CHELLO.BIN` 8888 字节 —— 其中大约 6 KB 是迷你 libc 和 crt0,
@@ -120,15 +120,15 @@ ld -m elf_i386 -T lib/kkernel.ld build/crt0.o build/Foo.o build/minic.o -o build
 ## 5. 现成的例子:`progs/` 里的 C 程序和 STEVIE
 
 * `progs/CHELLO.c`:printf / malloc / 参数 / 读文件,把能用的都试一遍;
-* `third_party/stevie/`:**STEVIE 3.68 —— 公有领域的 vi 克隆(vim 的前身)**,整个移植过来了:
+* `extensions/vi/`:**STEVIE 3.68 —— 公有领域的 vi 克隆(vim 的前身)**,整个移植过来了:
 
 ```bash
 make hd
-> run vi NOTES.TXT      # 打开编辑器(:w 存盘、:q 退出、i 进插入模式、ESC 回普通模式)
+> run vi DOCS/NOTES.TXT      # 打开编辑器(:w 存盘、:q 退出、i 进插入模式、ESC 回普通模式)
 ```
 
 它的"机器相关层"本来叫 `nt.c`(Windows NT 版),现在换成我们自己写的
-`third_party/stevie/kkernel.c`:屏幕走 `int 0x30` 的 9/13 号(定位 + 在指定位置画字),
+`extensions/vi/kkernel.c`:屏幕走 `int 0x30` 的 9/13 号(定位 + 在指定位置画字),
 键盘走 10 号(方向键直接映到 STEVIE 的 `K_UARROW` 那套键值),文件走 7/8 号。
 编辑器核心(约 10 900 行)一行没改 —— 这正说明"平台层收得干净"的代码有多好移植。
 

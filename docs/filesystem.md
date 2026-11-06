@@ -213,8 +213,8 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 
 ### 限制(想扩展就从这里挑)
 
-* 只能 8.3 名字(长文件名需要 LFN 的校验和 + 目录簇链);
-* 没有 `del`(删文件)、没有时间戳(目录项里那几字节留着 0);
+* 名字支持 8.3 + VFAT 长文件名(写入时按 LFN 校验和补长名目录项;8.3 别名取自然截断/`~N`);
+* 不写时间戳(目录项里那几字节留着 0);
 * 覆盖写文件时旧的簇链没释放(会漏簇;数据没错,"盘上多占几个簇");
 * FSInfo 只读进来放着,写盘时不更新它(其它系统只是少个"还有多少空闲"的提示);
 * 写文件不做"磁盘满"以外的错误恢复,也不检查簇是不是真的空闲(`fat_alloc_cluster` 只看
@@ -224,19 +224,20 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 
 ```bash
 python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \
-    README.TXT=progs/README.TXT \
-    HELLO.BIN=build/HELLO.BIN
+    DOCS/README.TXT=progs/README.TXT \
+    BIN/HELLO.BIN=build/HELLO.BIN
 ```
 
 * 第 2 个参数是分区起始 LBA(必须和 `FAT_PART_LBA` 一致),第 3 个是分区大小(MB);
 * 后面全是 `镜像里的名字=宿主机上的文件`;
 * 每簇几个扇区是**自动挑**的:`mkfat.py` 会算一遍让簇数落在 FAT16 要求的
   `[4085, 65525)` 里(8 MB 时是 2 扇区/簇,数据区起点 LBA 6241,8143 个簇);
-* 名字以 `/` 结尾 = 建目录;名字里带 `/` 的文件会自动把父目录建出来:
+* 名字以 `/` 结尾 = 建目录;名字里带 `/` 的文件会自动把父目录建出来
+  (系统镜像就是这么分层的:根目录只放 `BIN/ LIB/ SYS/ DOCS/ SRC/ TEST/` 六个分类目录,
 
 ```bash
 python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \
-    README.TXT=progs/README.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
+    DOCS/README.TXT=progs/README.TXT DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
 ```
 
 ### FAT32 分区
@@ -248,7 +249,7 @@ FAT32 规定**簇数至少 65525**,8 MB 的分区怎么调都凑不够,所以镜
 ```bash
 python3 tools/mkimg.py build/boot.bin build/stub.bin build/kernel.bin build/kkernel-hd32.img \
     font/full-kkf.bin --disk-mb 96
-python3 tools/mkfat.py build/kkernel-hd32.img 6144 88 --fat32 README.TXT=progs/README.TXT \
+python3 tools/mkfat.py build/kkernel-hd32.img 6144 88 --fat32 DOCS/README.TXT=progs/README.TXT \
     DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT
 ```
 
@@ -282,7 +283,7 @@ make hd          # 构建 + 直接启动完整硬盘镜像
   `DOCS/SUBFILE.TXT` 是 shell 里 `cd DOCS` 之后 `write` 出来的、`TESTDIR/INNER.TXT`
   是在二级目录里写的、`rmdir` 删掉的空目录真的从根目录消失了;
 * 两份 FAT 里那个簇项都是"链尾",也就是**两份 FAT 都被更新了**;
-* 镜像里原来的 `README.TXT` / `HELLO.BIN` / `COUNT.BIN` 字节和仓库里的源文件**一模一样**;
+* 镜像里原来的 `DOCS/README.TXT` / `BIN/HELLO.BIN` / `BIN/COUNT.BIN` 字节和仓库里的源文件**一模一样**;
 * LBA 2047 的字库描述块 + LBA 2048 起的字库和 `font/full-kkf.bin` 字节一致。
 
 这条证明"字节真的落在磁盘上了" —— 内核自己打印的 `wrote test.txt` 不算证据。

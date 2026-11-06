@@ -61,17 +61,16 @@ void windinit(void)
     linecol = 0;
 }
 
-void windexit(void)
+void windexit(int code)
 {
+    /* ★ 这个函数不只是"关窗口":STEVIE 的 getout()/fatal 错误路径都靠它
+       真正结束进程(原 NT 版在这里调 ExitProcess)。早期移植只打印了一行
+       就返回,于是 :q 之后编辑循环还在跑、shell 永远等不到程序返回。
+       现在打印完直接 exit(code),由 crt0 的退出跳板回到 shell。 */
     flush_line();
     j_clrscr();
     j_print("vi closed.\n");
-    /* 退出去之后 shell 的提示符还没重画(改了帧缓冲,shell 不知情),
-       这里补一个青色 > 让屏幕看起来是干净的 shell —— 只是视觉效果,
-       真正的 shell 提示符在它自己下一次重画时会盖过来。 */
-    j_color(KK_LCYAN);
-    j_print("> ");
-    j_color(KK_GREY);
+    exit(code);
 }
 
 void wchangescreen(void)
@@ -368,15 +367,25 @@ char *fixname(char *s)
 {
     static char f[128];
     char base[64], ext[16];
-    char *p, *dot;
-    int i, n;
+    char *p, *slash, *dot;
+    int i, n, dirlen;
 
     if (!s)
         s = "";
+    /* ★ 现在内核支持子目录(镜像里是 /BIN /LIB /SYS /DOCS ...),
+       所以路径前缀要原样保留,只把"最后一段"收拾成 8.3 大写。
+       早期版本这里把目录剥掉(当时确实还没有目录),于是 run vi DOCS/NOTES.TXT
+       会去找根目录的 NOTES.TXT —— 打开成 [New File],查了半天。 */
     p = s;
-    for (i = 0; s[i]; i++)              /* 只取最后一段(我们没有目录) */
-        if (s[i] == '/' || s[i] == '\\' || s[i] == ':')
+    slash = NULL;
+    for (i = 0; s[i]; i++)
+        if (s[i] == '/' || s[i] == '\\' || s[i] == ':') {
+            slash = s + i;
             p = s + i + 1;
+        }
+    dirlen = slash ? (int)(p - s) : 0;
+    if (dirlen > (int)sizeof(f) - 32)
+        return f;               /* 路径太长了,f 里不折腾 */
 
     dot = strchr(p, '.');
     if (dot) {
@@ -392,18 +401,27 @@ char *fixname(char *s)
         for (i = 0; i < n; i++)
             ext[i] = (char)toupper((unsigned char)dot[1 + i]);
         ext[n] = 0;
-        if (n)
-            sprintf(f, "%s.%s", base, ext);
-        else
-            strcpy(f, base);
     } else {
         n = (int)strlen(p);
         if (n > 8)
             n = 8;
         for (i = 0; i < n; i++)
-            f[i] = (char)toupper((unsigned char)p[i]);
-        f[n] = 0;
+            base[i] = (char)toupper((unsigned char)p[i]);
+        base[n] = 0;
+        ext[0] = 0;
     }
+
+    if (dirlen) {
+        for (i = 0; i < dirlen && i < (int)sizeof(f) - 1; i++)
+            f[i] = s[i];
+        f[dirlen] = 0;
+    } else {
+        f[0] = 0;
+    }
+    if (ext[0])
+        sprintf(f + dirlen, "%s.%s", base, ext);
+    else
+        strcpy(f + dirlen, base);
     return f;
 }
 
@@ -412,7 +430,8 @@ char *fixname(char *s)
 char *mysystem(char *cmd, int async)
 {
     (void)async;
-    windexit();
+    flush_line();
+    j_clrscr();
     j_color(KK_LCYAN);
     j_print("KKernel has no shell escape (no processes yet): ");
     j_print(cmd ? cmd : "");

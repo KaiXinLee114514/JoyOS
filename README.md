@@ -15,9 +15,14 @@
 
 ![vi 跑在 KKernel 上](docs/screenshot-vi.png)
 
-还有图形模式(800×600 VBE)里敲 `info` 和 `cat ZH.TXT`(中文 / emoji 演示)的样子:
+还有图形模式(800×600 VBE)里敲 `info` 和 `cat DOCS/ZH.TXT`(中文 / emoji 演示)的样子:
 
-![KKernel shell](docs/screenshot.png) ![中文显示(cat ZH.TXT)](docs/screenshot-zh.png)
+![KKernel shell](docs/screenshot.png) ![中文显示(cat DOCS/ZH.TXT)](docs/screenshot-zh.png)
+
+> 注:这几张截图拍自**早期版本** —— 项目当时还叫 JoyOS,文件也都摊在根目录。
+> 现在它叫 KKernel,文件收进了 `/BIN /LIB /SYS /DOCS /SRC /TEST` 六个分类目录
+> (`run HELLO` 这类命令不变,shell 会自动去 `/BIN` 找)。功能和界面没变,只是路径不一样;
+> 截图留作早期版本的存档。
 
 一个**从头写的、4000 多行的 x86 操作系统**,能启动、能分页、能读硬盘、
 有自己的文件系统和 shell,还能**跑你写的小程序**。
@@ -76,8 +81,8 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **多 shell(4 条)** | 4 条 shell 各是一条内核线程,**Ctrl+←/→ 换键盘焦点**(在键盘中断里切,所以卡在程序里的那条也能被换走);`shell` 列出、`shell 3` 直接跳;每条 shell 有自己的行缓冲和当前目录,切换时没敲完的半行会跟着走;**一次只让一个程序跑**(别人在跑就拒绝),shell 线程本身杀不掉(见 §5) |
 | **提示符样式** | `style` 一条命令换提示符:**plain(朴素 `>`)** / **moe(萌,粉色的 `かいかーねる>`,报错也换成吐槽)** / **DOS(`C:\>`)** / **C64(`READY.`)**;也能在 `RC.CONF` 里写 `style = moe` 开机就生效 |
 | **ring 3 用户态** | 程序不再由内核 `call` 进去,而是 `iret` 到 **CPL=3**:内核运行时重建 GDT(0x1B 用户代码 / 0x23 用户数据 / 0x28 TSS)+ `ltr` 装 TSS(从 ring 3 掉回内核的栈只能从 TSS 取);程序页表项带 U/S 位,**内核的页它碰不到** —— 故意读内核内存会被页错误干掉、内核自己接着用(`run FAULT` 现场演示);程序结尾照旧 `ret`:内核在用户栈顶压了**弹床页**(0x17F000,三条指令 `int 0x30` 功能号 15 退出),所以现有程序一行都不用改(见 §5) |
-| **rc.conf 服务 / 事件库** | 根目录的 `RC.CONF` 是**纯 `key=value`**(BSD / OpenRC 那种,不是 systemd 段):`hostname` / `boot_msg` / `autostart` / `on_crash` + `service_N`(程序、参数、启用开关)。`rc` 一条命令管起来:`rc list` 看服务、`rc get KEY` 取值、`rc start N` **把服务当程序跑**(借 `run` 那条路:ring 3 + 按需分页)、`rc reload` 重读刚写的配置;另有**事件账本**:开机 / 读配置 / 服务起停 / 程序跑完 / 程序崩了 / 线程被 kill / 换 shell,每种连 100 Hz 的 tick 一起记 16 条(`rc log`);`autostart=YES` 就是开机按配置跑服务,`on_crash=reboot` 则程序崩了直接重启(见 [docs/rc-conf.md](docs/rc-conf.md)) |
-| **拼音输入法** | 按 **Shift** 切中英;打 `shuang` 出候选行「1.双 2.爽 3.霜 …」,**数字 1-9 或空格**选字,回车出候选、Esc 取消;一页 9 个、**`,` / `.` 翻页**(提示里有页码)。词表是盘上的 `PINYIN.BIN`(6000 常用字,按词频排序,`tools/mkpinyin.py` 生成) |
+| **rc.conf 服务 / 事件库** | 挂盘里的 `/SYS/RC.CONF` 是**纯 `key=value`**(BSD / OpenRC 那种,不是 systemd 段):`hostname` / `boot_msg` / `autostart` / `on_crash` + `service_N`(程序、参数、启用开关)。`rc` 一条命令管起来:`rc list` 看服务、`rc get KEY` 取值、`rc start N` **把服务当程序跑**(借 `run` 那条路:ring 3 + 按需分页)、`rc reload` 重读刚写的配置;另有**事件账本**:开机 / 读配置 / 服务起停 / 程序跑完 / 程序崩了 / 线程被 kill / 换 shell,每种连 100 Hz 的 tick 一起记 16 条(`rc log`);`autostart=YES` 就是开机按配置跑服务,`on_crash=reboot` 则程序崩了直接重启(见 [docs/rc-conf.md](docs/rc-conf.md)) |
+| **拼音输入法** | 按 **Shift** 切中英;打 `shuang` 出候选行「1.双 2.爽 3.霜 …」,**数字 1-9 或空格**选字,回车出候选、Esc 取消;一页 9 个、**`,` / `.` 翻页**(提示里有页码)。词表是盘上的 `/SYS/PINYIN.BIN`(6000 常用字,按词频排序,`tools/mkpinyin.py` 生成) |
 | **实时时钟(CMOS)** | 从 CMOS(`0x70`/`0x71`)读日期/时间/星期:等 UIP 清零 + **读两遍比对**(正好翻秒就重试,最多 3 遍)、BCD→二进制、12 小时制的 PM 位也认、世纪没有就按 20xx 猜;`date` 一条命令看时间,`date ymd` / `mdy` / `dmy` / `time` 换格式(见第 7 节) |
 | **PCI 总线枚举** | 开机扫 bus 0:`pci` 列出机器上所有设备(厂商:设备号 / 类别名 / 中断号),`pci 0:1.2` 看单台设备详情(类别、命令寄存器、六个 BAR 是内存还是 I/O、内存 BAR 多大);配置空间走 **机制 #1**(`0xCF8` 地址 / `0xCFC` 数据),多功能设备的"兄弟功能"也会一起扫出来 —— 这是 USB 的前置工作(见 [docs/pci.md](docs/pci.md)) |
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
@@ -89,7 +94,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,可见光标(亮绿 `_`)、方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-F` 查找(大小写不敏感、找完自动绕回开头,再按一次找下一个)、`Ctrl-Q` 退出 |
 | **组件:蜂鸣器 + 文本谱播放器(不含示例谱,自备谱文件)** | `run PLAY MYSONG.TXT`:PC 喇叭按 FAT 上的**纯文本谱**唱歌(注释、音名 `C4`~`B5` 带 `#`、时值、tempo 都能改);`run PLAY --list` 只解析不出声、把谱子打到屏幕上(可测);内核那头就是 14 号 `beep`,忙等标定见 [kernel/speaker.asm](kernel/speaker.asm)(见 [docs/quickstart.md](docs/quickstart.md)) |
 | **键盘扩展键** | `0xE0` 前缀的方向键/Home/End/Del/PgUp/PgDn,还有 Ctrl 组合键(Ctrl-S / Ctrl-Q / Ctrl-F) |
-| **vi(STEVIE 移植)** | `run VI NOTES.TXT`:公有领域的 vi 克隆(STEVIE 3.68,vim 的前身),约 10 900 行 C 一行没改,只把平台层换成 `int 0x30` —— 插入模式、方向键、`:w` 存盘、`:q` 退出(移植记在 [docs/vi.md](docs/vi.md)) |
+| **vi(STEVIE 移植)** | `run VI DOCS/NOTES.TXT`:公有领域的 vi 克隆(STEVIE 3.68,vim 的前身),约 10 900 行 C 一行没改,只把平台层换成 `int 0x30` —— 插入模式、方向键、`:w` 存盘、`:q` 退出(移植记在 [docs/vi.md](docs/vi.md)) |
 | **C 语言支持** | 普通 `gcc -m32` 就能编(`make cc-check`);自带 crt0 + 迷你 libc(malloc/printf/stdio)+ `kkernel.h`,程序照样是平铺二进制丢进 FAT16 跑(见 [docs/c-programs.md](docs/c-programs.md)) |
 | **图形模式** | 实模式 stub 里用 VBE 问出 **800×600×32 线性帧缓冲**模式,页表把帧缓冲映射进来,终端直接往显存画像素 |
 | **点阵字库** | GNU Unifont:内核里编了 416 字形保底,硬盘镜像上放**完整 40 208 个字形**(1.7 MB),启动时用 ATA 读进内存 |
@@ -131,26 +136,27 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 在硬盘模式里值得敲一遍的:
 
 ```
-> ls                    ← 列 FAT16 根目录
-> cat README.TXT        ← 读一个 UTF-8 文本文件(里面有中文)
+> ls                    ← 列当前目录(根目录只有六个分类子目录)
+> cat DOCS/README.TXT   ← 读一个 UTF-8 文本文件(里面有中文)
 > run HELLO             ← 跑磁盘上的程序
 > write MY.TXT hello    ← 写文件(真的落到磁盘上)
 > cat MY.TXT            ← 再读回来
 > run                   ← 裸敲 run 会打印程序接口说明书
 > run CALC              ← 计算器:12.5*4=  7s(平方)  c(清零)  q(退出)
-> run EDIT              ← 编辑器:改 NOTES.TXT,方向键移动,Ctrl-S 存盘,Ctrl-F 查找,Ctrl-Q 退出
+> run EDIT              ← 编辑器:改 DOCS/NOTES.TXT,方向键移动,Ctrl-S 存盘,Ctrl-F 查找,Ctrl-Q 退出
 > run EDIT MY.TXT       ← 也可以指定文件(不存在就是新文件)
-> run VI NOTES.TXT      ← vi(STEVIE 移植):i 进插入模式,ESC 回普通模式,:w 存盘,:q 退出
+> run VI DOCS/NOTES.TXT ← vi(STEVIE 移植):i 进插入模式,ESC 回普通模式,:w 存盘,:q 退出
 > run PLAY MYSONG.TXT   ← 蜂鸣器按文本谱唱歌(谱子自己写,音名/时值/tempo 都在 txt 里)
 > run PLAY --list MYSONG.TXT ← 只解析:把谱子打到屏幕上(不出声,改谱时拿它对答案)
-> ls DOCS               ← 列子目录(目录显示成 <DIR>)
+> ls BIN                ← 列 /BIN 里的程序(目录显示成 <DIR>)
+> ls DOCS               ← 列 /DOCS 里的文档与演示文本
 > cat DOCS/NOTE.TXT     ← 路径里带目录也行(斜杠/反斜杠都认)
 > cd DOCS               ← 进目录,提示符变成 DOCS>
 > mkdir SUB              ← 建目录(自动写好 . 和 ..)
 > rmdir SUB              ← 删空目录(非空的会拒绝,不会把文件弄丢)
 > rm OLD.TXT             ← 删文件(目录要用 rmdir;它占的簇会还回盘上)
 > cd ..                  ← 回上一层;cd / 回根目录
-> run DOCS/HELLO.BIN    ← 子目录里的程序照样能跑
+> run TEST/HELLO.BIN    ← 子目录里的程序照样能跑(其实 run HELLO 也行:/BIN 兜底)
 ```
 
 QEMU 窗口里的常用键:`Ctrl+Alt+g` 放开鼠标键盘抓取,`Ctrl+Alt+2` 切到 monitor 控制台(`Ctrl+Alt+1` 切回来)。
@@ -207,8 +213,8 @@ kernel/pit.asm         8254 定时器:通道 0 按 100 Hz 发 IRQ0,只加 tick �
 kernel/rtc.asm         CMOS 实时时钟:等 UIP、读两遍比对、BCD/12 小时制换算、日期格式化(date 靠它)
 kernel/sched.asm       内核线程 + 抢占式轮转:TCB 表、20 ms 时间片、IRQ0 里换栈、spawn/kill 的栈管理(ps 靠它)
 kernel/pci.asm         PCI 总线枚举:配置机制 #1、扫 bus 0(含多功能设备的兄弟功能)、类别名表、BAR 类型与大小
-kernel/rc.asm          rc.conf 服务/事件库:读根目录 RC.CONF、就地拆 key=value、按配置跑服务(借 shell 的 run)、16 条事件账本(rc 靠它)
-kernel/ime.asm          拼音输入法:开机读 PINYIN.BIN、按音节查候选、挑字塞进命令行(Shift 切换在 keyboard.asm)
+kernel/rc.asm          rc.conf 服务/事件库:读 /SYS/RC.CONF、就地拆 key=value、按配置跑服务(借 shell 的 run)、16 条事件账本(rc 靠它)
+kernel/ime.asm          拼音输入法:开机读 /SYS/PINYIN.BIN、按音节查候选、挑字塞进命令行(Shift 切换在 keyboard.asm)
 tools/mkpinyin.py       生成 PINYIN.BIN(wordfreq 挑常用字 + pypinyin 取读音;`make pinyin`)
 kernel/fbterm.asm      帧缓冲终端:自己画字(光标/换行/滚屏/颜色)
 kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 fbterm)
@@ -224,17 +230,17 @@ progs/CALC.asm         组件:计算器(定点小数,自己算 ±2147.483647)
 progs/EDIT.asm         组件:全屏文本编辑器(方向键 + 存盘 + 打开)
 progs/TOUCH.asm        示例程序(按需分页演示:一页页碰内存再验证)
 progs/NOTES.TXT        放进镜像的示例文本(编辑器默认打开它)
-progs/JPKR.TXT         放进镜像的示例文本(日文/韩文显示演示,shell 里 cat JPKR.TXT)
-progs/ZH.TXT           放进镜像的示例文本(中文/UTF-8 演示,shell 里 cat ZH.TXT)
-progs/EN.TXT           放进镜像的示例文本(莎士比亚 Sonnet 18,cat EN.TXT)
+progs/JPKR.TXT         放进镜像的示例文本(日文/韩文显示演示,shell 里 cat DOCS/JPKR.TXT)
+progs/ZH.TXT           放进镜像的示例文本(中文/UTF-8 演示,shell 里 cat DOCS/ZH.TXT)
+progs/EN.TXT           放进镜像的示例文本(莎士比亚 Sonnet 18,cat DOCS/EN.TXT)
 progs/CHELLO.c         C 写的示例程序(printf / malloc / 参数 / 读文件)
 progs/PLAY.C           组件:文本谱播放器(读 FAT 上的谱子 → int 0x30 的 beep;--list 只解析;不含示例谱)
 include/kkernel.h        C 程序用的头:15 个 int 0x30 包装 + 颜色/键值常量
 lib/minic.c            迷你 libc(约 600 行:字符串/内存/printf/一点点 stdio)
 lib/crt0.asm           C 程序入口:清 BSS → main() → ret 回 shell
 lib/kkernel.ld           链接脚本:0x120000 + 平铺二进制 + BSS 边界符号
-third_party/stevie/    公版 STEVIE(vi 克隆)的源码 + 我们写的 kkernel.c 后端(替换 nt.c)
-progs/README.TXT       也放进镜像,shell 里 cat README.TXT 能看(UTF-8 中文)
+extensions/vi/    公版 STEVIE(vi 克隆)的源码 + 我们写的 kkernel.c 后端(替换 nt.c)
+progs/README.TXT       也放进镜像(盘上在 /DOCS/README.TXT),shell 里 cat DOCS/README.TXT 能看(UTF-8 中文)
 tools/mkimg.py         拼镜像:boot(第 0 扇区)+ stub + kernel + 磁盘字库
 tools/mkfat.py         在镜像里造 FAT16 或 FAT32 分区(--fat32),并把文件/目录放进去
 tools/unifont2bin.py   Unifont .hex → KKF0 二进制字库 / VGA 字模 / 中文文案
@@ -560,7 +566,7 @@ unknown command: 霜 hai
 
 数字 1-9 直接选**当前页**对应的候选、空格选当前页第 1 个、`,` / `.` 翻上一页 / 下一页
 (候选只有一页时提示里不显示页码)、Esc 取消;候选按**词频**排(最常用的在最前面)。
-数据在磁盘的 `PINYIN.BIN`(6000 常用字、400 个音节,`ji` 这种音有 11 页),由
+数据在磁盘的 `/SYS/PINYIN.BIN`(6000 常用字、400 个音节,`ji` 这种音有 11 页),由
 `tools/mkpinyin.py` 用 wordfreq + pypinyin 生成;想换词表就跑 `make pinyin`(需要这两个 python 包)。
 盘上没有这个文件时输入法会自己安静地关掉,不影响其它功能。
 
@@ -568,7 +574,7 @@ unknown command: 霜 hai
 
 ### rc.conf:开机读配置、按配置跑服务
 
-根目录的 `RC.CONF` 就是一行行 `key=value`(BSD / OpenRC 那种写法,不是 systemd 的段)。
+`/SYS/RC.CONF` 就是一行行 `key=value`(BSD / OpenRC 那种写法,不是 systemd 的段)。
 开机时内核读它、把 `boot_msg` 打出来、按 `autostart` 决定要不要把启用的服务跑起来;
 `rc` 一条命令就能看配置、看服务、起服务、重读刚写下的文件,还有一本带 PIT tick 的
 事件账本。细节和全部 key 见 [docs/rc-conf.md](docs/rc-conf.md)。
@@ -1116,7 +1122,7 @@ EOF
 
 ### 6.39 帧缓冲慢,是因为每画一个字就要碰一次显存
 
-`cat README.TXT`(2 KB 中文)在 VBE 800x600 下要 5.7 秒。慢的根源不是"画字算法",
+`cat DOCS/README.TXT`(2 KB 中文)在 VBE 800x600 下要 5.7 秒。慢的根源不是"画字算法",
 而是**每画一个字符就往显存(MMIO)写 16 次**——显存写比内存慢得多。
 
 改法是给终端加一块"当前行"的行缓冲(`kernel/fbterm.asm`,13 页 = 53 KB,开机时从
@@ -1151,7 +1157,7 @@ debug <什么>  诊断/自检类命令都在这条下面(演示命令以前散�
   debug ptest        自测:分配→建表→虚拟地址写/物理地址读→解映射→归还,查泄漏
   debug fault        故意踩没映射的地址,看页错误 panic 屏
 reboot        重启(通过 8042 键盘控制器)
-ls            列 FAT16 根目录(名字 + 字节数;硬盘模式才有)
+ls            列当前目录(名字 + 字节数;硬盘模式才有;根目录下是六个分类子目录)
 cat <file>    把文件(UTF-8 文本)打出来,中文能直接看
 write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
 run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不带点会自动补 .BIN;
@@ -1172,7 +1178,7 @@ rc [什么]     rc.conf(key=value 的服务/事件库,见 docs/rc-conf.md):
   rc get <key>      取一个 key 的值(key 不分大小写)
   rc start <n>      把第 n 号服务当程序跑一遍(和 run 同一条路)
   rc log            事件账本:开机/读配置/服务起停/程序跑完/崩了/kill/换 shell,各带 tick
-  rc reload         重新读磁盘上的 RC.CONF(shell 里 write 过就能立刻生效)
+  rc reload         重新读磁盘上的 /SYS/RC.CONF(shell 里 write 过就能立刻生效)
 ```
 
 `uptime` / `sleep` 的样子(定时器就是靠 100 Hz 的 IRQ0 数出来的):
@@ -1227,7 +1233,7 @@ unmapped, gave back 0x00400000  (page returned to the pool; empty page table rec
 ```
 
 键盘直接给字节、**没有输入法**,所以命令行本身只能打 ASCII;
-想看中文就用 `cat`(文件里是 UTF-8):`cat ZH.TXT` 是现成的演示。
+想看中文就用 `cat`(文件里是 UTF-8):`cat DOCS/ZH.TXT` 是现成的演示。
 
 ## 8. 怎么改
 
@@ -1288,9 +1294,9 @@ cmd_table:
 
 ```bash
 python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \
-    NOTES.TXT=my-notes.txt HELLO.BIN=build/HELLO.BIN
+    DOCS/NOTES.TXT=my-notes.txt BIN/HELLO.BIN=build/HELLO.BIN
 make hd
-> cat NOTES.TXT
+> cat DOCS/NOTES.TXT
 ```
 
 参数含义、为什么是 6144、每簇几个扇区怎么选的,见
@@ -1370,7 +1376,7 @@ token 只从环境变量 `GH_TOKEN` 读,**不写进 config、不落盘**。想�
 
 ## 9. 中文与字库(详见 font/README.md)
 
-中文**能正常显示**:图形模式下把 16×16 点阵直接 blit 到帧缓冲,`cat ZH.TXT` 就能看到
+中文**能正常显示**:图形模式下把 16×16 点阵直接 blit 到帧缓冲,`cat DOCS/ZH.TXT` 就能看到
 (演示文本放在镜像里;中文/日文/韩文/英文各一个 .TXT,不做成命令)。
 
 数据来源与生成方式见 [font/README.md](font/README.md):`font/` 目录里是 GNU Unifont 抽出的字形

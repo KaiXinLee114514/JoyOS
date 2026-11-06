@@ -195,7 +195,7 @@ $(BUILD)/bigdir/.stamp: | $(BUILD)
 # 用 make 自己的 $(shell ...) 生成清单:以前写成 recipe 里的 shell 循环,
 # 一旦 `seq`/引号在某个环境里不合适,清单就变成空的 → mkfat 收到怪名字
 # (比如 BIGDIR/F.TXT),根目录里的文件全乱(踩过)。
-BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 31),BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
+BIGDIR_SPECS := $(foreach i,$(shell seq -w 0 31),TEST/BIGDIR/F$(i).TXT=$(BUILD)/bigdir/f$(i).txt)
 
 # 输入法用的拼音表:常用字 + 单字读音(wordfreq 按频次排、pypinyin 取读音)。
 # 需要 pypinyin/wordfreq 才有数据;装不上就生成一个空表(输入法自动关掉),不影响编译。
@@ -211,20 +211,32 @@ $(PINYIN_BIN): progs/PINYIN.BIN tools/mkpinyin.py | $(BUILD)
 pinyin:
 	python3 tools/mkpinyin.py 6000 progs/PINYIN.BIN
 
+# ---------------------------------------------------------------------------
+#  镜像里的文件系统布局:根目录只留子目录,不再散落文件。
+#  名字带 A/B/C.TXT=hostpath 就是放进子目录(mkfat 自动建父目录);
+#  以 / 结尾的名字是"建一个空目录"。
+#    /BIN   程序、TCC                     /LIB   .o 中间文件
+#    /SYS   配置与数据(RC.CONF/拼音表)    /DOCS  文档与演示文本
+#    /SRC   C 源码示例                    /TEST  测试用(大目录/长名/子目录程序)
+# ---------------------------------------------------------------------------
+MKFAT_FILES := BIN/ BIN/TCC.BIN=$(BUILD)/TCC.BIN \
+	    $(foreach p,$(PROGS) $(C_PROGS),BIN/$(p)=$(BUILD)/$(p)) \
+	    LIB/ LIB/CRT_TCC.O=$(CRT_TCC_OBJ) LIB/MINIC.O=$(MINIC_OBJ) \
+	    SYS/ SYS/RC.CONF=progs/RC.CONF SYS/PINYIN.BIN=$(PINYIN_BIN) \
+	    DOCS/ DOCS/README.TXT=progs/README.TXT DOCS/NOTES.TXT=progs/NOTES.TXT \
+	    DOCS/ZH.TXT=progs/ZH.TXT DOCS/EN.TXT=progs/EN.TXT DOCS/JPKR.TXT=progs/JPKR.TXT \
+	    DOCS/NOTE.TXT=progs/NOTES.TXT DOCS/Long_Note.txt=progs/NOTES.TXT \
+	    SRC/ SRC/T1.C=progs/T1.C SRC/T2.C=progs/T2.C \
+	    TEST/ TEST/HELLO.BIN=$(BUILD)/HELLO.BIN TEST/LONGNAME_TEST.txt=progs/README.TXT \
+	    TEST/BIGDIR/ $(BIGDIR_SPECS)
+
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-kkf.bin \
           $(PINYIN_BIN) $(BUILD)/TCC.BIN \
           $(PROG_BINS) progs/README.TXT progs/NOTES.TXT progs/RC.CONF progs/JPKR.TXT progs/ZH.TXT progs/EN.TXT \
           tools/mkimg.py tools/mkfat.py \
           $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HDIMG) font/full-kkf.bin
-	python3 tools/mkfat.py $(HDIMG) 6144 8 README.TXT=progs/README.TXT \
-	    NOTES.TXT=progs/NOTES.TXT JPKR.TXT=progs/JPKR.TXT ZH.TXT=progs/ZH.TXT EN.TXT=progs/EN.TXT LONGNAME_TEST.txt=progs/README.TXT \
-	    DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT DOCS/Long_Note.txt=progs/NOTES.TXT \
-	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
-	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \
-	    TCC.BIN=$(BUILD)/TCC.BIN T1.C=progs/T1.C T2.C=progs/T2.C \
-	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p)) \
-	    CRT_TCC.O=$(CRT_TCC_OBJ) MINIC.O=$(MINIC_OBJ)
+	python3 tools/mkfat.py $(HDIMG) 6144 8 $(MKFAT_FILES)
 
 hd: $(HDIMG)
 	@rm -f $(QMP_SOCK)
@@ -242,13 +254,7 @@ $(HD32IMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OB
             $(BUILD)/bigdir/.stamp
 	python3 tools/mkimg.py $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(HD32IMG) \
 	    font/full-kkf.bin --disk-mb 96
-	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 README.TXT=progs/README.TXT \
-	    NOTES.TXT=progs/NOTES.TXT JPKR.TXT=progs/JPKR.TXT ZH.TXT=progs/ZH.TXT EN.TXT=progs/EN.TXT LONGNAME_TEST.txt=progs/README.TXT \
-	    DOCS/ DOCS/NOTE.TXT=progs/NOTES.TXT DOCS/Long_Note.txt=progs/NOTES.TXT \
-	    DOCS/HELLO.BIN=$(BUILD)/HELLO.BIN BIGDIR/ $(BIGDIR_SPECS) \
-	    RC.CONF=progs/RC.CONF PINYIN.BIN=$(PINYIN_BIN) \
-	    $(foreach p,$(PROGS) $(C_PROGS),$(p)=$(BUILD)/$(p)) \
-	    CRT_TCC.O=$(CRT_TCC_OBJ) MINIC.O=$(MINIC_OBJ)
+	python3 tools/mkfat.py $(HD32IMG) 6144 88 --fat32 $(MKFAT_FILES)
 
 hd32: $(HD32IMG)
 	@rm -f $(QMP_SOCK)
@@ -268,7 +274,7 @@ ext: $(EXT_BINS)
 
 $(EXT_IMG): $(EXT_BINS) $(HDIMG)
 	cp $(HDIMG) $@
-	python3 tools/mkfat.py $@ 6144 8 $(foreach b,$(notdir $(EXT_BINS)),$(b)=$(BUILD)/$(b))
+	python3 tools/mkfat.py $@ 6144 8 $(MKFAT_FILES) $(foreach b,$(notdir $(EXT_BINS)),BIN/$(b)=$(BUILD)/$(b))
 
 ext-img: $(EXT_IMG)
 

@@ -18,9 +18,9 @@
 | `EDIT.asm` | **全屏文本编辑器**:可见光标(亮绿 `_`)、方向键、`Ctrl-F` 查找、存盘、打开 | 6 / 7 / 8 / 9 / 10 / 11 / 12 / 13 |
 | `PLAY.C` | **文本谱播放器**(C 写的):读 FAT 上的谱子让蜂鸣器唱 | 7 / 14 |
 | `TOUCH.asm` | **按需分页的演示**:一页一页碰内存,回头检查每页还是自己写的 | 0 / 1 / 3 / 4 |
-| `ZH.TXT` | 放进镜像的演示文本:中文/UTF-8(黄鹤楼、emoji、坏字节替换符),`cat ZH.TXT` 看 | – |
-| `EN.TXT` | 放进镜像的演示文本:莎士比亚 Sonnet 18,`cat EN.TXT` 看 | – |
-| `JPKR.TXT` | 放进镜像的演示文本:日文/韩文,`cat JPKR.TXT` 看 | – |
+| `ZH.TXT` | 放进镜像的演示文本:中文/UTF-8(黄鹤楼、emoji、坏字节替换符),`cat DOCS/ZH.TXT` 看 | – |
+| `EN.TXT` | 放进镜像的演示文本:莎士比亚 Sonnet 18,`cat DOCS/EN.TXT` 看 | – |
+| `JPKR.TXT` | 放进镜像的演示文本:日文/韩文,`cat DOCS/JPKR.TXT` 看 | – |
 | `RING3.asm` | **ring 3 演示**:把 CS / CPL / SS / ESP / [ESP] 打出来,证明程序真在用户态跑、栈和弹床页都是内核给的 | 0 / 2 / 4 |
 | `FAULT.asm` | **保护演示**:故意去读内核的 `0x00100000`,被页错误干净干掉(内核自己接着用) | 0 / 4 |
 
@@ -86,7 +86,7 @@ program returned to the shell
 | 9 | 定位光标 | ebx = 行, ecx = 列(从 0 起,超界自动夹住) | — |
 | 10 | 等一个**键事件** | — | eax = ASCII 或 `0x100+编号` |
 | 11 | 屏幕尺寸 | — | eax = 列数, ebx = 行数 |
-| 12 | 取程序参数 | — | esi = 参数串(`run EDIT NOTES.TXT` 里那截) |
+| 12 | 取程序参数 | — | esi = 参数串(`run EDIT DOCS/NOTES.TXT` 里那截) |
 | 13 | 在指定位置画字 | esi = 串, ebx = 行, ecx = 列, edx = 最多几格 | eax = 实际占几格 |
 | 14 | **蜂鸣器**:响 freq Hz 持续 ms | ebx = 频率 Hz, ecx = 毫秒(频率 <= 0 = 静音等这么久) | — |
 
@@ -149,7 +149,7 @@ program returned to the shell
 * 但**内核窗口照旧恒等映射**(0~ident):好处是 `int 0x30` 随手就能用、内核也能
   直接读程序传进来的指针;代价是程序仍然能改内核内存 —— "读不到别人的页"有了,
   "改不了内核"要等 ring 3;
-* 程序**可以**带参数:`run EDIT NOTES.TXT` 时 shell 把 `NOTES.TXT` 写进参数块
+* 程序**可以**带参数:`run EDIT DOCS/NOTES.TXT` 时 shell 把 `NOTES.TXT` 写进参数块
   `0x11F000`(`PROG_ARG_ADDR`),程序用 12 号功能取(没有参数就是空串)。
 
 ## 4. 一个稍复杂点的例子:`COUNT.asm`
@@ -190,7 +190,7 @@ start:
 
 ## 5. 程序里怎么用中文
 
-现成的完整演示是镜像里的 `ZH.TXT`(shell 里 `cat ZH.TXT`):点阵汉字、4 字节 emoji、
+现成的完整演示是镜像里的 `ZH.TXT`(shell 里 `cat DOCS/ZH.TXT`):点阵汉字、4 字节 emoji、
 以及刻意写坏的字节怎么画成替换字符 `�` 而不是卡死。
 
 自己写的话直接写 UTF-8 字节就行,内核的 `term_print` 会自己解码:

@@ -1,6 +1,6 @@
 # 把 vi 搬进 KKernel:STEVIE 移植记
 
-`run VI NOTES.TXT` —— 这个 KKernel 里跑的 vi,不是我们从头写的,是把一份
+`run VI DOCS/NOTES.TXT` —— 这个 KKernel 里跑的 vi,不是我们从头写的,是把一份
 **公有领域**的 vi 克隆搬过来的。这一页讲清楚:搬的是哪一份、为什么挑它、
 我们改了什么(以及**没**改什么)、踩了哪些坑。
 
@@ -40,7 +40,7 @@ The good news about stevie is that it is extremely portable.
 ## 2. 我们只搬了公有领域的部分
 
 ```
-third_party/stevie/
+extensions/vi/
     alloc.c ascii.h cmdline.c edit.c env.h fileio.c help.c hexchars.c
     keymap.h linefunc.c mark.c misccmds.c normal.c ops.c ops.h param.c
     param.h ptrfunc.c regexp.c regexp.h regmagic.h regsub.c screen.c
@@ -142,7 +142,7 @@ STEVIE 是 1991 年的编辑器,只认字节:文件里的 UTF-8 汉字在它眼�
 ```bash
 make hd
 # shell 里:
-run VI NOTES.TXT
+run VI DOCS/NOTES.TXT
     i            进插入模式
     打字…        打完按 ESC
     :w           存盘(真的写进 FAT16)

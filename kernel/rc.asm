@@ -10,7 +10,7 @@
 ;  这里做两件小事:
 ;    · **事件账本**:内核里任何人调 evt_log(事件号, 参数),就把这件事
 ;      连时间(tick)一起记进一个 16 格的环。shell 里 `rc log` 能翻这本账。
-;    · **配置**:磁盘根目录的 RC.CONF,rc.conf 风格(**纯 key=value**,一行一个),
+;    · **配置**:/SYS/RC.CONF,rc.conf 风格(**纯 key=value**,一行一个),
 ;      能改主机名、开机提示、要不要开机自动起服务、程序崩了怎么办;
 ;      也能把磁盘上的程序登记成"服务",用 `rc start N` 跑起来。
 ;
@@ -18,7 +18,7 @@
 ;  这个玩具不需要。rc.conf 就是一行一个 key=value —— 用 shell 的 `write` 命令
 ;  就能改,改完 `rc reload` 立刻生效(不用重做镜像)。
 ;
-;  RC.CONF 长这样(空行和 # 开头的行忽略,值可以带双引号):
+;  SYS/RC.CONF 长这样(空行和 # 开头的行忽略,值可以带双引号):
 ;      # KKernel 的配置
 ;      hostname="kkernel"
 ;      boot_msg="hello from rc.conf"
@@ -32,7 +32,7 @@
 ;  (私有地址空间 + ring 3 + 按需分页),所以服务崩了内核也照样没事。
 ; ============================================================================
 
-; ★ RC.CONF 读进 rc_buf(内核自己的静态缓冲,见数据区)。
+; ★ SYS/RC.CONF 读进 rc_buf(内核自己的静态缓冲,见数据区)。
 ;   第一版把它放在固定地址 0x10C000,结果**压在 FAT_BUF(0x100000-0x10FFFF)里**:
 ;   fat_read_file 一边读扇区一边往 FAT_BUF 拷,目的地就在那里面,于是读回来是 0 字节
 ;   (症状:开机那次能读到 9 个 key,因为那时没人动过 FAT_BUF;`write` 之后再 reload 就 0 keys)。
@@ -73,15 +73,21 @@ evt_log:
     ret
 
 ; ============================================================================
-;  rc_load:读 RC.CONF → 解析 → 打一行开机日志
+;  rc_load:读 SYS/RC.CONF → 解析 → 打一行开机日志
 ;  文件不在也不报错:告诉用户"用内置默认值",然后照常开机
 ; ============================================================================
 rc_load:
     pushad
+    mov eax, [fat_dir]                  ; 读完要把"当前目录"还给 shell(别让它停在 SYS)
+    mov [rc_saved_dir], eax
     mov dword [rc_ok], 0
     mov dword [rc_keys], 0
     mov dword [rc_len], 0
+    mov dword [fat_dir], 0              ; RC.CONF 在 /SYS 下:从根目录开始找
     mov esi, rc_fname
+    call fat_path
+    jc .no_file
+    mov esi, eax                        ; fat_path 返回的是最后一段(文件名)
     mov edi, rc_buf
     call fat_read_file
     cmp eax, -1
@@ -101,6 +107,8 @@ rc_load:
     xor ebx, ebx
     call evt_log
     call rc_print_boot
+    mov eax, [rc_saved_dir]
+    mov [fat_dir], eax
     popad
     ret
 
@@ -1128,7 +1136,7 @@ cmd_rc:
 ; ============================================================================
 ;  数据
 ; ============================================================================
-rc_fname      db 'RC.CONF', 0
+rc_fname      db 'SYS/RC.CONF', 0
 rc_k_svc      db 'service_', 0
 rc_k_hostname db 'hostname', 0
 rc_k_osname   db 'osname', 0
@@ -1142,6 +1150,7 @@ rc_def_host   db 'kkernel', 0
 rc_def_osname db 'KKernel', 0
 
 rc_ok         dd 0                  ; 1 = 真的读到了 RC.CONF
+rc_saved_dir  dd 0                  ; rc_load 借走 fat_dir 时先存在这儿
 rc_buf        times RC_MAX db 0     ; RC.CONF 的内容(就地解析:key=value 就地改 0)
 rc_len        dd 0
 rc_keys       dd 0

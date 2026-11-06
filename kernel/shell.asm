@@ -438,12 +438,14 @@ shell_readline_resume:
     cmp eax, [sh_active]
     jne .yield
     call shell_wait_key                   ; 只为活动 shell 等键(见上面的说明)
+    ; ---- 输入法:Shift 单独按一下 = 中英切换 ----
+    ;      ★ 先于"挑候选"判断:否则选字过程中按 Shift 会被吃掉,
+    ;      人卡在候选模式里出不来(测试里表现为整段后续用例连环失败)。
+    cmp al, KBD_IME_TOGGLE
+    je .ime_toggle
     ; ---- 输入法:正在挑候选 → 所有键都先交给它 ----
     cmp dword [ime_state], 1
     je .ime_picking
-    ; ---- 输入法:Shift 单独按一下 = 中英切换 ----
-    cmp al, KBD_IME_TOGGLE
-    je .ime_toggle
     ; ---- 中文状态:a-z 敲的是拼音,不进命令行 ----
     cmp dword [ime_on], 0
     je .plain_key
@@ -1382,6 +1384,10 @@ cmd_write:
 cmd_run:
     cmp byte [fat_ok], 0
     je cmd_ls.nomount
+    ; 找程序时 fat_path 会 chdir(比如兜底到 /BIN),但程序里的文件接口是相对
+    ; **shell 的 cwd** 的:先记下来,读完程序再还回去(不然 run EDIT DOCS/X 会存不进盘)。
+    mov eax, [fat_dir]
+    mov [cmd_saved_dir], eax
     ; ---- 一次只让一条 shell 跑程序:space_* 那套地址空间状态还是全局的 ----
     mov eax, [prog_owner]
     cmp eax, -1
@@ -1472,15 +1478,54 @@ cmd_run:
     pop edx
     jmp .copied
 .no_ext:
-    ; 先只看目录项里的大小:太大就别读了,免得把字库盖掉一半
+    ; ---- 先按用户写的路径找;找不到再去 /BIN 里找 ----
+    ;   run HELLO       → HELLO.BIN 不在根目录 → /BIN/HELLO.BIN
+    ;   run DOCS/X.BIN  → 先走原路径(支持子目录)
+    ;   记录一下这次是不是已用过 /BIN 兜底,防止来回重试。
+    mov dword [run_try_bin], 0
+.try_path:
     mov esi, name_buf
-    call fat_path                       ; 支持 run DOCS/PROG.BIN
-    jc .notfound
+    cmp dword [run_try_bin], 0
+    je .resolve
+    ; ---- 拼出 "BIN/<名字>",从根目录开始找 ----
+    mov dword [fat_dir], 0
+    mov esi, name_buf
+    mov edi, run_path_buf
+    mov al, 'B'
+    stosb
+    mov al, 'I'
+    stosb
+    mov al, 'N'
+    stosb
+    mov al, '/'
+    stosb
+    mov ecx, 63
+.copy_alt:
+    lodsb
+    stosb
+    test al, al
+    jz .alt_ready
+    dec ecx
+    jnz .copy_alt
+    mov byte [edi], 0
+.alt_ready:
+    mov esi, run_path_buf
+.resolve:
+    call fat_path
+    jc .retry_bin
     mov [prog_name_ptr], eax            ; 前面的目录已经进去了,这截才是文件名
     mov esi, eax
     call fat_stat
     cmp eax, -1
-    je .notfound
+    je .retry_bin
+    jmp .found
+.retry_bin:
+    cmp dword [run_try_bin], 0
+    jne .notfound                       ; /BIN 也找过了 → 真没有
+    mov dword [run_try_bin], 1
+    jmp .try_path
+.found:
+    ; 先只看目录项里的大小:太大就别读了,免得把字库盖掉一半
     mov [prog_size], eax
     cmp eax, (SPACE_IMG_PAGES - 1) * 4096
                                         ; 窗口 512 KiB,最后一页留给 ring 3 的弹床
@@ -1503,6 +1548,9 @@ cmd_run:
     mov [prog_size], eax
     mov [prog_entry], edx
 .flat_ready:
+    ; 程序马上要跑:把 cwd 还给 shell 的目录(上面找程序可能进过 /BIN 或子目录)
+    mov eax, [cmd_saved_dir]
+    mov [fat_dir], eax
     mov al, COL_HEADER
     call term_set_color
     mov esi, msg_running
@@ -3098,6 +3146,9 @@ FILE_MAX       equ PROG_ARG_ADDR - FILE_BUF
                                         ; 0xF000 = 60 KB:再往上就是程序参数块(0x11F000)
 
 name_buf   times 64 db 0              ; 名字里可能带目录(DOCS/NOTE.TXT),留宽一点
+run_path_buf times 72 db 0             ; run 的 PATH 兜底用:拼出 "BIN/<name>"
+run_try_bin dd 0                       ; run 的 PATH 兜底状态:0=还没试 /BIN,1=试过了
+cmd_saved_dir dd 0                      ; cmd_run 进来时 shell 的 [fat_dir],跑程序前还回去
 prog_name_ptr dd 0                      ; run 用的:去掉目录部分之后的程序名
 prog_size   dd 0                        ; run 用的:程序文件多大(按它往私有页里拷)
 prog_entry  dd 0                        ; run 用的:进 ring 3 的入口(平铺=0x120000, ELF 用 e_entry)

@@ -308,11 +308,22 @@ class Fat16:
         hi = int.from_bytes(raw[20:22], "little")
         return ((hi << 16) | lo) & 0x0FFFFFFF
 
+    def root_entries(self):
+        """根目录的所有 32 字节目录项:FAT16 是固定区域,FAT32 是根目录簇链"""
+        if self.fat32:
+            blobs, cl = [], self.root_cluster
+            while 2 <= cl < self.eoc:
+                off = self.data_lba + (cl - 2) * self.spc * 512
+                sec = self.img[off:off + self.spc * 512]
+                blobs += [sec[i:i + 32] for i in range(0, len(sec), 32)]
+                cl = self.next_cluster(cl)
+            return blobs
+        return [self.img[self.root_lba + i * 32:self.root_lba + i * 32 + 32]
+                for i in range(self.root_ents)]
+
     def entries(self):
-        for i in range(self.root_ents):
-            e = self.root_lba + i * 32
-            raw = self.img[e:e + 32]
-            if raw[0] == 0x00:
+        for raw in self.root_entries():
+            if len(raw) < 32 or raw[0] == 0x00:
                 return
             if raw[0] == 0xE5 or (raw[11] & 0x0F) == 0x0F:
                 continue
@@ -342,9 +353,7 @@ class Fat16:
         """按名字找目录项原始 32 字节;注意必须按原始槽位扫,"""
         """不能拿 entries() 的序号当槽位(根目录里有 LFN 项时两者会错位)"""
         want = want.upper()
-        for i in range(self.root_ents):
-            e = self.root_lba + i * 32
-            raw = self.img[e:e + 32]
+        for raw in self.root_entries():
             if len(raw) < 32 or raw[0] == 0x00:
                 return None
             if raw[0] == 0xE5 or (raw[11] & 0x0F) == 0x0F:
@@ -601,12 +610,12 @@ def offline_checks(img: str, font_path: str = "font/full-kkf.bin",
     # (vi 的离线校验跟着 vi 一起搬去扩展了)
 
     # ---- 3) 对照:镜像里本来就有的文件,字节应该和仓库里的源文件一致 ----
-    for name, path in (("README.TXT", "progs/README.TXT"),
-                       ("HELLO.BIN", "build/HELLO.BIN"),
-                       ("COUNT.BIN", "build/COUNT.BIN")):
+    for name, path in (("DOCS/README.TXT", "progs/README.TXT"),
+                       ("BIN/HELLO.BIN", "build/HELLO.BIN"),
+                       ("BIN/COUNT.BIN", "build/COUNT.BIN")):
         want = open(path, "rb").read()
         try:
-            got = fs.read(name)
+            got = fs.read_path(name)
             out.append((f"离线:{name} 字节一致", got == want,
                         f"{len(want)} 字节,实际 {len(got)} 字节"))
         except Exception as e:                               # noqa: BLE001
@@ -953,13 +962,14 @@ def main() -> int:
                             and layout_val("pages") == (pool_end - pool_start) // 4096,
                             f"layout: {layout}"))
             run("ls")
-            results.append(("ls 列目录",
-                            has("README.TXT") and has("HELLO.BIN") and has("COUNT.BIN"),
-                            "README.TXT / HELLO.BIN / COUNT.BIN"))
+            results.append(("ls 列目录(根目录只剩分类子目录)",
+                            has("BIN") and has("LIB") and has("SYS")
+                            and has("DOCS") and has("SRC") and has("TEST"),
+                            "BIN / LIB / SYS / DOCS / SRC / TEST"))
 
             # 中文断言用 NOTES.TXT:它短,一屏放得下;READER 文件 2 KB 多,
             # 头几行会被滚屏顶掉(head 部分看不见,不是显示不出来)
-            run("cat notes.txt", wait=1.2)
+            run("cat docs/notes.txt", wait=1.2)
             results.append(("cat 读 UTF-8 文本", has("这个文件是给你改着玩的"),
                             "文件里的中文(UTF-8)显示出来"))
             results.append(("cat 读中文行", has("看看存进去的样子"),
@@ -967,12 +977,12 @@ def main() -> int:
 
             # 日文/韩文:磁盘上的 JPKR.TXT(假名/谚文都在完整字库里)。
             # 用户要求这类演示只放文本文件,不做命令/程序 —— 测试也只是 cat 出来看。
-            run("cat jpkr.txt", wait=1.0)
+            run("cat docs/jpkr.txt", wait=1.0)
             results.append(("cat 日文/韩文行",
                             has("こんにちは") and has("안녕하세요"),
                             "JPKR.TXT:假名和谚文都画出来了"))
 
-            run("cat readme.txt", wait=0.6, idle=True)
+            run("cat docs/readme.txt", wait=0.6, idle=True)
             results.append(("cat 读得到正文", has("int 0x30"),
                             "README.TXT 里的 int 0x30(接口表)"))
 
@@ -1231,7 +1241,7 @@ def main() -> int:
 
             # ---- 中文 / 英文演示:都是磁盘上的 .TXT,cat 出来看(不做命令/程序)----
             run("clear", wait=0.8)
-            run("cat zh.txt", wait=2.0)
+            run("cat docs/zh.txt", wait=2.0)
             results.append(("中文显示", has("黄鹤楼"), "黄鹤楼"))
             results.append(("中文长句", has("昔人已乘黄鹤去"), "昔人已乘黄鹤去"))
             results.append(("UTF-8 三字节", has("晴川历历汉阳树"), "晴川历历汉阳树"))
@@ -1240,7 +1250,7 @@ def main() -> int:
                             has("broken UTF-8: [") and has("��") and has("still shows"),
                             "[??](两个替换字符)且后面的字还在"))
             run("clear", wait=0.8)
-            run("cat en.txt", wait=2.0)
+            run("cat docs/en.txt", wait=2.0)
             results.append(("英文文本", has("Shall I compare thee") and has("So long lives this"),
                             "EN.TXT:莎士比亚 Sonnet 18"))
 
@@ -1300,7 +1310,7 @@ def main() -> int:
                             wait_for("event log") and has("boot") and has("rc.conf")
                             and has("service start") and has("service ok"),
                             "带 tick 的事件账本"))
-            run('write RC.CONF hostname="newbox"', wait=1.5)
+            run('write SYS/RC.CONF hostname="newbox"', wait=1.5)
             run("rc reload", wait=1.5)
             results.append(("rc reload:重新读盘上的 RC.CONF",
                             wait_for("RC.CONF, 1 keys") and has("hostname newbox"),
@@ -1524,8 +1534,11 @@ def main() -> int:
 
             # ---- 子目录:路径解析 / cd / mkdir / rmdir / 子目录里读写 ----
             run("ls docs")
-            results.append(("ls 列子目录", has("NOTE.TXT") and has("HELLO.BIN"),
-                            "DOCS 里的 NOTE.TXT / HELLO.BIN"))
+            results.append(("ls 列子目录", has("NOTE.TXT"),
+                            "DOCS 里的 NOTE.TXT"))
+            run("ls test")
+            results.append(("ls 列 TEST 目录", has("HELLO.BIN") and has("BIGDIR"),
+                            "TEST 里的 HELLO.BIN / BIGDIR"))
             results.append(("ls 不列 . 和 ..", ".  <DIR>" not in screen_lines(),
                             "目录里不显示 . / .."))
 
@@ -1533,7 +1546,7 @@ def main() -> int:
             results.append(("cat 带路径读子目录文件", wait_for("看看存进去的样子"),
                             "DOCS/NOTE.TXT 的内容"))
 
-            run("run docs/hello.bin", wait=1.1)
+            run("run test/hello.bin", wait=1.1)
             results.append(("run 带路径跑子目录里的程序",
                             has("Hello from HELLO.BIN - I was loaded from the FAT16 disk!"),
                             "HELLO.BIN 从 DOCS 里被读出来跑掉"))
@@ -1610,16 +1623,16 @@ def main() -> int:
                             "FREE1/FREE2/FREE3 都不在了"))
 
             # ---- 目录满一簇:内核要能往簇链上再挂一簇(不能只会看第一簇)----
-            run("ls bigdir", wait=1.6, idle=True)
+            run("ls test/bigdir", wait=1.6, idle=True)
             results.append(("列出一整个装满的目录(要跟着簇链走)",
                             has("F00.TXT") and has("F31.TXT"),
                             "F00.TXT 和 F31.TXT 都列得出来(第 2 簇里也有)"))
-            run("cat bigdir/f31.txt", wait=1.0)
+            run("cat test/bigdir/f31.txt", wait=1.0)
             results.append(("读得到第 2 簇里的文件", has("file 31"), "'file 31'"))
-            run("write bigdir/f32.txt chain-extension")
-            results.append(("目录第二簇里还能继续写文件", has("wrote bigdir/f32.txt"),
-                            "wrote bigdir/f32.txt"))
-            run("cat bigdir/f32.txt")
+            run("write test/bigdir/f32.txt chain-extension")
+            results.append(("目录第二簇里还能继续写文件", has("wrote test/bigdir/f32.txt"),
+                            "wrote test/bigdir/f32.txt"))
+            run("cat test/bigdir/f32.txt")
             results.append(("新扩的簇里的文件读得回来", has("chain-extension"),
                             "chain-extension"))
 

@@ -46,9 +46,21 @@ ime_load:
     mov dword [ime_ok], 0
     cmp byte [fat_ok], 0
     je .out
+    ; 拼音表在 /SYS/PINYIN.BIN —— 先记下当前目录,切到根目录走一遍路径,
+    ; 读完把目录恢复(shell 启动靠 saved_dir,这里不恢复会把它带到 SYS 去)
+    mov eax, [fat_dir]
+    mov [ime_saved_dir], eax
+    mov dword [fat_dir], 0
     mov esi, msg_ime_file
+    call fat_path
+    jc .restore
+    mov esi, eax
     mov edi, PINYIN_ADDR
     call fat_read_file
+    push eax
+    mov eax, [ime_saved_dir]
+    mov [fat_dir], eax
+    pop eax
     cmp eax, 16
     jle .out                            ; 太小了,不可能是拼音表
     cmp eax, PINYIN_MAX
@@ -61,6 +73,10 @@ ime_load:
     mov eax, [esi + 8]
     mov [ime_nchar], eax
     mov dword [ime_ok], 1
+    jmp .out
+.restore:
+    mov eax, [ime_saved_dir]
+    mov [fat_dir], eax
 .out:
     popad
     ret
@@ -343,12 +359,13 @@ ime_reset:
 ;  数据
 ; ---------------------------------------------------------------------------
 msg_ime_none    db '  (没有这个音 —— 或者盘上没有 PINYIN.BIN)', 10, 0
-msg_ime_file    db 'PINYIN.BIN', 0
+msg_ime_file    db 'SYS/PINYIN.BIN', 0
 msg_ime_hint    db ' 1-9 pick  space pick first', 0
 msg_ime_page    db '  ,/. page ', 0
 msg_ime_hint_end db ' Esc cancel', 10, 0
 
 ime_ok          dd 0
+ime_saved_dir   dd 0
 ime_on          dd 0
 ime_state       dd 0                    ; 0 = 敲拼音,1 = 挑候选
 ime_nsyll       dd 0
