@@ -1537,10 +1537,10 @@ def main() -> int:
             results.append(("HANG 之后键盘还活着", wait_for("back-after-hang", 20.0),
                             "HANG 跑完之后 shell 1 照样收键盘(下面编辑器那串全靠它)"))
 
-            # ---- 提示符样式:style 命令(朴素/萌/DOS/C64)----
+            # ---- 提示符样式:style 命令(颜文字/朴素/萌/DOS/C64)----
             run("style", wait=1.0)
-            results.append(("style 报当前样式", wait_for("prompt style: plain", 10.0),
-                            "裸 style 打出现用样式"))
+            results.append(("style 报当前样式", wait_for("prompt style: kao", 10.0),
+                            "裸 style 打出默认的颜文字样式"))
             run("style dos", wait=1.0)
             results.append(("style dos 换成 C:\\>", wait_for("C:\\>", 10.0),
                             "DOS 样式提示符"))

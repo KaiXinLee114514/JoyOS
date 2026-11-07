@@ -79,7 +79,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **定时器(PIT)** | 8254 通道 0 以 **100 Hz** 发 IRQ0,内核只做一件事:`inc` 一个 tick 计数。`uptime` 读开机秒数,`sleep <秒>` 用 `hlt` 等(空闲时不烧 CPU);**抢占式多任务就是在 IRQ0 里切栈**(见 §5「线程与调度」) |
 | **内核线程 + 抢占式轮转** | 6 个线程槽、每个线程 **20 ms 时间片**(`kernel/sched.asm`):IRQ0 里存 esp/CR3、轮转、换栈;`ps` 看线程表、`spawn` 起演示线程(alpha / beta 每秒各打一行)、`kill` 杀掉并把栈还给物理页池;要是被杀的那条正占着程序的地址空间,顺手把那套页目录 + 私有页表也收摊还回去(见 §5) |
 | **多 shell(4 条)** | 4 条 shell 各是一条内核线程,**Ctrl+←/→ 换键盘焦点**(在键盘中断里切,所以卡在程序里的那条也能被换走);`shell` 列出、`shell 3` 直接跳;每条 shell 有自己的行缓冲和当前目录,切换时没敲完的半行会跟着走;**一次只让一个程序跑**(别人在跑就拒绝),shell 线程本身杀不掉(见 §5) |
-| **提示符样式** | `style` 一条命令换提示符:**plain(朴素 `>`)** / **moe(萌,粉色的 `かいかーねる>`,报错也换成吐槽)** / **DOS(`C:\>`)** / **C64(`READY.`)**;也能在 `RC.CONF` 里写 `style = moe` 开机就生效 |
+| **提示符样式** | **kao(颜文字,默认:黄色 `(・ω・)`,命令报错时变红 `(；ω；)`)** / **plain(朴素 `>`)** / **moe(萌,粉色的 `かいかーねる>`,报错也换成吐槽)** / **DOS(`C:\>`)** / **C64(`READY.`)**;`style` 命令现场换,也能在 `RC.CONF` 里写 `style = moe`(或 kao/plain/dos/c64)开机就生效 |
 | **ring 3 用户态** | 程序不再由内核 `call` 进去,而是 `iret` 到 **CPL=3**:内核运行时重建 GDT(0x1B 用户代码 / 0x23 用户数据 / 0x28 TSS)+ `ltr` 装 TSS(从 ring 3 掉回内核的栈只能从 TSS 取);程序页表项带 U/S 位,**内核的页它碰不到** —— 故意读内核内存会被页错误干掉、内核自己接着用(`run FAULT` 现场演示);程序结尾照旧 `ret`:内核在用户栈顶压了**弹床页**(0x17F000,三条指令 `int 0x30` 功能号 15 退出),所以现有程序一行都不用改(见 §5) |
 | **rc.conf 服务 / 事件库** | 挂盘里的 `/SYS/RC.CONF` 是**纯 `key=value`**(BSD / OpenRC 那种,不是 systemd 段):`hostname` / `boot_msg` / `autostart` / `on_crash` + `service_N`(程序、参数、启用开关)。`rc` 一条命令管起来:`rc list` 看服务、`rc get KEY` 取值、`rc start N` **把服务当程序跑**(借 `run` 那条路:ring 3 + 按需分页)、`rc reload` 重读刚写的配置;另有**事件账本**:开机 / 读配置 / 服务起停 / 程序跑完 / 程序崩了 / 线程被 kill / 换 shell,每种连 100 Hz 的 tick 一起记 16 条(`rc log`);`autostart=YES` 就是开机按配置跑服务,`on_crash=reboot` 则程序崩了直接重启(见 [docs/rc-conf.md](docs/rc-conf.md)) |
 | **拼音输入法** | 按 **Shift** 切中英;打 `shuang`,**屏幕最底行浮出候选条**「1.双 2.爽 3.霜 …」(不打断正在敲的命令行,选完字拼音原地换成汉字),**数字 1-9 或空格**选字、回车出候选、Esc 取消;一页 9 个、**`,` / `.` 翻页**(提示里有页码)。词表是盘上的 `/SYS/PINYIN.BIN`(6000 常用字,按词频排序,`tools/mkpinyin.py` 生成) |
@@ -591,29 +591,33 @@ shell 的意义。
 
 ### 提示符样式:一个 `style` 命令看腻就换
 
-天天盯着一样的 `>` 确实眼睛疼,所以提示符做成了可换的样式(0.13 版):
+天天盯着一样的 `>` 确实眼睛疼,所以提示符做成了可换的样式(0.14 版起**默认就是颜文字**):
 
 ```
-> style
-prompt style: plain   (style plain|moe|dos|c64 换样式;RC.CONF 里写 style = moe 开机生效)
-> style moe
-prompt style -> かいかーねる>
-かいかーねる> cat nosuch.txt
-(ﾟーﾟ) あれ? file がないよ... disk-tan が食べちゃった? (file not found)
-かいかーねる> bogus
-(ﾟーﾟ;) ん? そんなコマンド知らない... bogus
+(・ω・)> style
+prompt style: kao   (style plain|moe|dos|c64|kao 换样式,默认 kao;RC.CONF 里写 style = moe 开机生效)
+(・ω・)> cat nosuch.txt
+file not found
+(；ω；)> ls
+BIN  <DIR>
+LIB  <DIR>
+...
+(・ω・)>
 ```
 
 | 样式 | 长什么样 |
 |---|---|
-| `plain`(默认) | `>` / `docs>` / `2>` |
+| `kao`(默认) | 黄色 `(・ω・)>` / `(・ω・)docs>`;命令出错后脸变红 `(；ω；)`,下一次输入就恢复 |
+| `plain` | `>` / `docs>` / `2>` |
 | `moe` | 粉色 `かいかーねる>`,文件找不到、命令不认识也换成吐槽文案 |
 | `dos` | `C:\>` / `C:\docs>` |
 | `c64` | `READY.`,一行一条命令,Commodore 64 BASIC 那味儿 |
 
-`RC.CONF` 里加一行 `style = moe`,开机就是萌样式(见 [docs/rc-conf.md](docs/rc-conf.md))。
-萌文案不是乱写的:字库里有半角片假名和 CJK,但**没有** `• ́ ̀ ︿ ω ∀` 这些符号,
-所以所有 kaomoji 都是拿"假名 + 半角片假名 + ASCII"拼出来的(见 §6.38)。
+`RC.CONF` 里加一行 `style = moe`(或 `kao` / `plain` / `dos` / `c64`),开机就用那个样式(见 [docs/rc-conf.md](docs/rc-conf.md))。
+萌文案不是乱写的:字库里有半角片假名和 CJK;0.13 版又把希腊/标点/数学/箭头/几何/符号等范围补进字库,
+kaomoji 能用的素材多了一大把。
+
+![颜文字提示符](docs/screenshot-style-kao.png)
 
 ![萌样式提示符](docs/screenshot-style-moe.png)
 
@@ -1176,7 +1180,7 @@ A | B         管道(顺序执行,最多 4 段):A 的屏幕输出被内核吃进
               例:cat DOCS/README.TXT | run WC / ls BIN | run GREP HELLO
               管道工具:WC(行/词/字节)、UPPER(转大写)、GREP <子串>、HEAD [行数]
 date [fmt]    读 CMOS 时钟:裸 date 打日期+时间+星期,加 ymd / mdy / dmy / time 换格式
-style [名字]  换提示符样式:plain(朴素 >)/ moe(萌:かいかーねる>,报错带吐槽)/ dos(C:\>)/ c64(READY.);裸 style 看现在用的哪个
+style [名字]  换提示符样式:kao(颜文字 (・ω・),报错变 (；ω；),默认)/ plain(朴素 >)/ moe(萌:かいかーねる>,报错带吐槽)/ dos(C:\>)/ c64(READY.);裸 style 看现在用的哪个
 pci [b:s.f]   PCI 总线枚举:裸 pci 列出总线上所有设备,加 0:1.2 这种地址看单台详情
 uptime        开机到现在多久(内含 tick 数,例:up 4 s (432 ticks at 100 Hz))
 sleep <秒>    用 hlt 睡这么多秒(空闲不烧 CPU;上限 3600 秒)

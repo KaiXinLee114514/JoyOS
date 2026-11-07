@@ -93,14 +93,17 @@ shell_main:
 ; ---------------------------------------------------------------------------
 ;  shell_print_prompt:活动 shell 的提示符
 ;
-;  样式放在 [sh_style] 里(0 = 朴素,1 = 萌,2 = DOS,3 = C64):
+;  样式放在 [sh_style] 里(0 = 朴素,1 = 萌,2 = DOS,3 = C64,4 = 颜文字):
 ;     0:  >            2:  C:\>
 ;     1:  かいかーねる>  3:  READY.   (C64 BASIC 那味儿)
+;     4:  (・ω・)>      颜文字:命令报错时脸会变 (；ω；),下一次输入再恢复
 ;  用 `style` 命令现场切换,或者在 RC.CONF 里写 style = moe 让它开机就生效
-;  (见 shell_apply_rc_style)。多 shell 的编号在朴素/萌样式里照旧带出来。
+;  (见 shell_apply_rc_style)。多 shell 的编号在朴素/萌/颜文字样式里照旧带出来。
 ; ---------------------------------------------------------------------------
 shell_print_prompt:
     pushad
+    cmp dword [sh_style], 4
+    je .kao
     cmp dword [sh_style], 3
     je .c64
     cmp dword [sh_style], 2
@@ -142,6 +145,37 @@ shell_print_prompt:
     inc eax
     call term_print_dec
 .m_mark:
+    mov esi, msg_prompt
+    call term_print
+    jmp .done
+
+.kao:
+    mov eax, [sh_kao_err]
+    mov dword [sh_kao_err], 0          ; 每次画提示符都恢复好心情
+    test eax, eax
+    jnz .k_sad
+    mov al, 0x0E                       ; 亮黄
+    call term_set_color
+    mov esi, msg_prompt_kao
+    call term_print
+    jmp .k_tail
+.k_sad:
+    mov al, 0x0C                       ; 亮红
+    call term_set_color
+    mov esi, msg_prompt_kao_sad
+    call term_print
+.k_tail:
+    cmp byte [cwd_str], 0
+    je .k_num
+    mov esi, cwd_str
+    call term_print
+.k_num:
+    mov eax, [sh_active]
+    test eax, eax
+    jz .k_mark
+    inc eax
+    call term_print_dec
+.k_mark:
     mov esi, msg_prompt
     call term_print
     jmp .done
@@ -196,6 +230,10 @@ shell_apply_rc_style:
     je .c64
     cmp al, 'C'
     je .c64
+    cmp al, 'k'
+    je .kao
+    cmp al, 'K'
+    je .kao
     jmp .out
 .moe:
     mov dword [sh_style], 1
@@ -205,6 +243,9 @@ shell_apply_rc_style:
     jmp .out
 .c64:
     mov dword [sh_style], 3
+    jmp .out
+.kao:
+    mov dword [sh_style], 4
 .out:
     popad
     ret
@@ -214,6 +255,7 @@ shell_apply_rc_style:
 ; ---------------------------------------------------------------------------
 shell_msg_nofile:
     pushad
+    mov dword [sh_kao_err], 1          ; 颜文字提示符:记一笔"刚出过错"
     mov al, COL_ERR
     call term_set_color
     cmp dword [sh_style], 1
@@ -816,6 +858,7 @@ shell_execute_plain:
     mov [fat_dir], eax
     jmp .ret
 .unknown:
+    mov dword [sh_kao_err], 1          ; 颜文字提示符:记一笔"刚出过错"
     mov al, COL_ERR
     call term_set_color
     cmp dword [sh_style], 1
@@ -3124,11 +3167,12 @@ n_style_plain db 'plain', 0
 n_style_moe   db 'moe', 0
 n_style_dos   db 'dos', 0
 n_style_c64   db 'c64', 0
+n_style_kao   db 'kao', 0
 msg_date_usage db 'date: unknown format, try ymd / mdy / dmy / time (got: ', 0
 msg_date_usage_end db ')', 0
 
 ; ---------------------------------------------------------------------------
-;  cmd_style:看/切换提示符样式(style / style plain|moe|dos|c64)
+;  cmd_style:看/切换提示符样式(style / style plain|moe|dos|c64|kao)
 ; ---------------------------------------------------------------------------
 cmd_style:
     mov esi, [cmd_arg]
@@ -3165,6 +3209,11 @@ cmd_style:
     call str_eq
     test eax, eax
     jnz .set_c64
+    mov esi, [cmd_arg]
+    mov edx, n_style_kao
+    call str_eq
+    test eax, eax
+    jnz .set_kao
     jmp .usage
 
 .set_plain:
@@ -3178,6 +3227,10 @@ cmd_style:
     jmp .ok
 .set_c64:
     mov dword [sh_style], 3
+    jmp .ok
+.set_kao:
+    mov dword [sh_style], 4
+    jmp .ok
 .ok:
     mov al, COL_OK
     call term_set_color
@@ -3268,16 +3321,19 @@ msg_shell_unknown_moe db '(ﾟーﾟ;) ん? そんなコマンド知らない...
 msg_no_file_moe  db '(ﾟーﾟ) あれ? file がないよ... disk-tan が食べちゃった? (file not found)', 10, 0
 
 ; ---- 提示符样式(style 命令 / RC.CONF 的 style 键)----
-sh_style        dd 0                     ; 0=朴素 1=萌 2=DOS 3=C64
-style_names     dd n_style_plain, n_style_moe, n_style_dos, n_style_c64
+sh_style        dd 4                     ; 0=朴素 1=萌 2=DOS 3=C64 4=颜文字(默认);RC.CONF 的 style 键可覆盖
+sh_kao_err      dd 0                     ; 颜文字样式:上次命令是否报错(画完提示符清 0)
+style_names     dd n_style_plain, n_style_moe, n_style_dos, n_style_c64, n_style_kao
 msg_prompt_moe      db 'かいかーねる', 0
 msg_prompt_dos      db 'C:\', 0
 msg_prompt_dos_end  db '> ', 0
 msg_prompt_c64      db 'READY.', 10, 0
+msg_prompt_kao      db '(・ω・)', 0
+msg_prompt_kao_sad  db '(；ω；)', 0
 msg_style_cur       db 'prompt style: ', 0
-msg_style_list      db '   (style plain|moe|dos|c64 换样式;RC.CONF 里写 style = moe 开机生效)', 10, 0
+msg_style_list      db '   (style plain|moe|dos|c64|kao 换样式,默认 kao;RC.CONF 里写 style = moe 开机生效)', 10, 0
 msg_style_set       db 'prompt style -> ', 0
-msg_style_usage     db 'style: usage style plain|moe|dos|c64', 10, 0
+msg_style_usage     db 'style: usage style plain|moe|dos|c64|kao', 10, 0
 key_style           db 'style', 0
 msg_fault       db 'touching an unmapped address on purpose...', 10, 0
 msg_reboot      db 'rebooting...', 10, 0
@@ -3339,7 +3395,7 @@ msg_help db \
     'uptime        how long the PIT has been ticking', 10, \
     'sleep <sec>   sleep N seconds (hlt while waiting, max 3600)', 10, \
     'date [fmt]    read the CMOS clock: no arg = full, or ymd / mdy / dmy / time', 10, \
-    'style [name]  prompt style: plain / moe / dos / c64 (RC.CONF: style = moe)', 10, \
+    'style [name]  prompt style: plain / moe / dos / c64 / kao(颜文字,默认) (RC.CONF: style = kao)', 10, \
     'pci [b:s.f]   list the PCI devices on bus 0, or show one in detail', 10, \
     'usb           UHCI controller / ports / USB keyboard status', 10, \
     'ps            list scheduler threads (id / name / ticks / runs)', 10, \
