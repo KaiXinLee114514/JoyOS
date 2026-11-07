@@ -228,7 +228,9 @@ MKFAT_FILES := BIN/ BIN/TCC.BIN=$(BUILD)/TCC.BIN \
 	    DOCS/NOTE.TXT=progs/NOTES.TXT DOCS/Long_Note.txt=progs/NOTES.TXT \
 	    SRC/ SRC/T1.C=progs/T1.C SRC/T2.C=progs/T2.C \
 	    TEST/ TEST/HELLO.BIN=$(BUILD)/HELLO.BIN TEST/LONGNAME_TEST.txt=progs/README.TXT \
-	    TEST/BIGDIR/ $(BIGDIR_SPECS)
+	    TEST/BIGDIR/ $(BIGDIR_SPECS) \
+	    DEV/ DEV/README.TXT=progs/UPDATE_SOON.txt \
+	    MNT/ MNT/README.TXT=progs/UPDATE_SOON.txt
 
 $(HDIMG): $(BUILD)/boot.bin $(BUILD)/stub.bin $(BUILD)/kernel.bin $(CRT_TCC_OBJ) $(MINIC_OBJ) font/full-kkf.bin \
           $(PINYIN_BIN) $(BUILD)/TCC.BIN \

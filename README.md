@@ -20,7 +20,7 @@
 ![KKernel shell](docs/screenshot.png) ![中文显示(cat DOCS/ZH.TXT)](docs/screenshot-zh.png)
 
 > 注:这几张截图拍自**早期版本** —— 项目当时还叫 JoyOS,文件也都摊在根目录。
-> 现在它叫 KKernel,文件收进了 `/BIN /LIB /SYS /DOCS /SRC /TEST` 六个分类目录
+> 现在它叫 KKernel,文件收进了 `/BIN /LIB /SYS /DOCS /SRC /TEST /DEV /MNT` 八个分类目录
 > (`run HELLO` 这类命令不变,shell 会自动去 `/BIN` 找)。功能和界面没变,只是路径不一样;
 > 截图留作早期版本的存档。
 
@@ -136,7 +136,7 @@ QEMU_DISPLAY=none ./tools/run.sh   # 无窗口跑
 在硬盘模式里值得敲一遍的:
 
 ```
-> ls                    ← 列当前目录(根目录只有六个分类子目录)
+> ls                    ← 列当前目录(根目录只有八个分类子目录)
 > cat DOCS/README.TXT   ← 读一个 UTF-8 文本文件(里面有中文)
 > run HELLO             ← 跑磁盘上的程序
 > write MY.TXT hello    ← 写文件(真的落到磁盘上)
@@ -1157,7 +1157,7 @@ debug <什么>  诊断/自检类命令都在这条下面(演示命令以前散�
   debug ptest        自测:分配→建表→虚拟地址写/物理地址读→解映射→归还,查泄漏
   debug fault        故意踩没映射的地址,看页错误 panic 屏
 reboot        重启(通过 8042 键盘控制器)
-ls            列当前目录(名字 + 字节数;硬盘模式才有;根目录下是六个分类子目录)
+ls            列当前目录(名字 + 字节数;硬盘模式才有;根目录下是八个分类子目录)
 cat <file>    把文件(UTF-8 文本)打出来,中文能直接看
 write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
 run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不带点会自动补 .BIN;

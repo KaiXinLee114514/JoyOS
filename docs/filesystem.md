@@ -233,7 +233,7 @@ python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \
 * 每簇几个扇区是**自动挑**的:`mkfat.py` 会算一遍让簇数落在 FAT16 要求的
   `[4085, 65525)` 里(8 MB 时是 2 扇区/簇,数据区起点 LBA 6241,8143 个簇);
 * 名字以 `/` 结尾 = 建目录;名字里带 `/` 的文件会自动把父目录建出来
-  (系统镜像就是这么分层的:根目录只放 `BIN/ LIB/ SYS/ DOCS/ SRC/ TEST/` 六个分类目录,
+  (系统镜像就是这么分层的:根目录只放 `BIN/ LIB/ SYS/ DOCS/ SRC/ TEST/ DEV/ MNT/` 八个分类目录,
 
 ```bash
 python3 tools/mkfat.py build/kkernel-hd.img 6144 8 \
