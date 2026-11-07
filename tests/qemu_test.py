@@ -948,9 +948,10 @@ def main() -> int:
                              layout.get("pool", ""))
                 return (int(m.group(1), 16), int(m.group(2), 16)) if m else (-1, -1)
             def expected_free_pages():
-                """boot 后页池固定占用:19 页常驻(6 页 + 行缓冲 13 页)
+                """boot 后页池固定占用:32 页常驻(6 页 + 行缓冲 13 页
+                + 输入法悬浮条还原缓冲 13 页)
                 + 恒等映射 4 MiB 以上每 4 MiB 一张页表(动态从页池拿)"""
-                return (layout_val("pages") - 19
+                return (layout_val("pages") - 32
                         - (layout_val("ident") // 0x400000 - 1))
             pool_start, pool_end = layout_pool()
             results.append(("layout 行: RAM → 恒等映射 → 页池,大小自洽",
@@ -1062,11 +1063,11 @@ def main() -> int:
                             "page beyond the file (bss at 0x17E000): was zero, as it should be"))
 
             run("debug pmem")
-            # 基线 = 池总页数 - 19(6 页常驻 + 行缓冲 13 页)
+            # 基线 = 池总页数 - 32(6 页常驻 + 行缓冲 13 页 + 悬浮条缓冲 13 页)
             #        - 恒等映射页表页数(4 MiB 以上每 4 MiB 一张,动态从池里拿)。
             # 这条断言要抓的是"跑完程序没泄漏",数字按 layout 行动态算。
             results.append(("程序退出后页池没泄漏", has(f"free: {expected_free_pages()} pages"),
-                            f"free: {expected_free_pages()} pages(19 页常驻 + 动态页表 {layout_val('ident')//0x400000 - 1} 页)"))
+                            f"free: {expected_free_pages()} pages(32 页常驻 + 动态页表 {layout_val('ident')//0x400000 - 1} 页)"))
 
             # ---- 定时器(PIT):tick 在涨、uptime 读得到、sleep 真的等够 ----
             def uptime_ticks() -> int:

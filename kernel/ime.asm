@@ -205,9 +205,155 @@ ime_char_ptr:
     ret
 
 ; ---------------------------------------------------------------------------
-;  ime_show:把当前这一页的候选打出来(本页第 1 个反白),再打提示行
+;  ime_show:画候选。优先"悬浮条"——借屏幕最后一行来画,不换行、不碰命令行
+;            (老画法每次都要换行+重画,敲字体验很差);
+;            页池里没有备用缓冲(低内存)时退回老办法(换行打候选)。
 ; ---------------------------------------------------------------------------
 ime_show:
+    pushad
+    ; 页号夹好、算出本页第一个候选的全局序号(两种画法共用)
+    mov eax, [ime_page]
+    imul eax, IME_CAND_PAGE
+    cmp eax, [ime_count]
+    jb .have_win
+    mov eax, [ime_count]
+    dec eax
+    xor edx, edx
+    mov ecx, IME_CAND_PAGE
+    div ecx
+    mov [ime_page], eax
+    imul eax, IME_CAND_PAGE
+.have_win:
+    mov [ime_win], eax
+    ; 页数 = (候选数 + 8) / 9
+    mov eax, [ime_count]
+    add eax, IME_CAND_PAGE - 1
+    xor edx, edx
+    mov ecx, IME_CAND_PAGE
+    div ecx
+    mov [ime_pages], eax
+    call fb_bar_begin
+    jc .old
+    call ime_draw_bar
+    popad
+    ret
+.old:
+    popad
+    jmp ime_show_old
+
+; ---------------------------------------------------------------------------
+;  ime_put_str:在悬浮条那一行的当前列画一个字符串,自动推进 ime_col
+;               esi = UTF-8 串
+; ---------------------------------------------------------------------------
+ime_put_str:
+    pushad
+    mov ebx, [ime_row]
+    mov ecx, [ime_col]
+    mov edx, [fb_width]
+    shr edx, 3                          ; 一行最多几个字符格
+    call term_puts_at
+    add [ime_col], eax
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  ime_put_dec:eax = 数值 → 在悬浮条当前列写十进制并推进 ime_col
+; ---------------------------------------------------------------------------
+ime_put_dec:
+    pushad
+    mov edi, ime_numbuf + 7
+    mov byte [edi], 0
+    mov ecx, 10
+.dig:
+    xor edx, edx
+    div ecx
+    add dl, '0'
+    dec edi
+    mov [edi], dl
+    test eax, eax
+    jnz .dig
+    mov esi, edi
+    call ime_put_str
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  ime_draw_bar:把当前这一页画到悬浮条上(选中项反白,末尾带提示和页码)
+; ---------------------------------------------------------------------------
+ime_draw_bar:
+    pushad
+    mov dword [fb_no_lb], 1             ; 悬浮条直接写显存:别去认领行缓冲
+    mov eax, [fb_bar_row]
+    shr eax, 4                          ; 像素 y → 字符行号
+    mov [ime_row], eax
+    mov dword [ime_col], 0
+    xor ebx, ebx                        ; ebx = 本页第几个
+.row:
+    cmp ebx, IME_CAND_PAGE
+    jae .tail
+    mov eax, [ime_win]
+    add eax, ebx
+    cmp eax, [ime_count]
+    jae .tail                           ; 最后一页可能不满 9 个
+    mov [ime_tmp], eax
+    ; 本页第 1 个反白(黑底白字);其余普通色
+    mov al, COL_NORMAL
+    cmp ebx, [ime_sel]
+    jne .color
+    mov al, 0x70
+.color:
+    call term_set_color
+    ; " 1." 前缀
+    mov edi, ime_pref
+    mov byte [edi], ' '
+    mov eax, ebx
+    inc eax
+    add al, '0'
+    mov [edi + 1], al
+    mov byte [edi + 2], '.'
+    mov byte [edi + 3], 0
+    mov esi, ime_pref
+    call ime_put_str
+    ; 候选字
+    mov eax, [ime_tmp]
+    call ime_char_ptr
+    mov esi, eax
+    mov edi, ime_ch
+    mov ecx, 3
+    rep movsb
+    mov byte [ime_ch + 3], 0
+    mov esi, ime_ch
+    call ime_put_str
+    inc ebx
+    jmp .row
+.tail:
+    mov al, COL_NORMAL
+    call term_set_color
+    mov esi, msg_ime_hint
+    call ime_put_str
+    ; 多于 1 页才写页码
+    cmp dword [ime_pages], 1
+    jbe .eol
+    mov esi, msg_ime_page
+    call ime_put_str
+    mov eax, [ime_page]
+    inc eax
+    call ime_put_dec
+    mov esi, ime_slash
+    call ime_put_str
+    mov eax, [ime_pages]
+    call ime_put_dec
+.eol:
+    mov esi, msg_ime_hint_end_bar
+    call ime_put_str
+    mov dword [fb_no_lb], 0
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  ime_show_old:老画法(换行 + 一行候选 + 提示),没有悬浮条缓冲时兜底
+; ---------------------------------------------------------------------------
+ime_show_old:
     pushad
     ; 窗口起点 = 页号 × 9。页号大到超出候选数时(理论上不会)夹到最后一页,
     ; 免得 div 出怪页号、画出一行空候选。
@@ -315,33 +461,104 @@ ime_page_next:
     ret
 
 ; ---------------------------------------------------------------------------
-;  ime_pick:eax = 候选序号 → 把那个汉字塞进 shell_buf、重画提示行
+;  ime_pick:eax = 候选序号 → 把那个汉字塞进 shell_buf
+;  悬浮条在:收条、用退格擦掉行尾拼音回显,再原地画出汉字(不换行、不重画整行)
+;  悬浮条不在(低内存兜底):老办法 —— 换行 + 提示符 + 整行重画
 ;  (候选序号越界就当没选)
 ; ---------------------------------------------------------------------------
 ime_pick:
     cmp eax, [ime_count]
     jae .out
     call ime_char_ptr
+    ; 先把这个字的 3 字节 UTF-8 拷出来(下面追加和回显都要用)
+    mov esi, eax
+    mov edi, ime_ch
+    mov ecx, 3
+    rep movsb
+    mov byte [ime_ch + 3], 0
     ; ---- 追加到命令行缓冲 ----
     mov ebx, [shell_len]
     cmp ebx, SHELL_LINE_MAX - 3
     jae .out
-    mov dl, [eax]
-    mov [shell_buf + ebx], dl
-    mov dl, [eax + 1]
-    mov [shell_buf + ebx + 1], dl
-    mov dl, [eax + 2]
-    mov [shell_buf + ebx + 2], dl
+    mov eax, [ime_ch]                   ; 顺带把结尾 0 一起拷,下一句再补一次无非多写
+    mov [shell_buf + ebx], eax
     add ebx, 3
     mov [shell_len], ebx
     mov byte [shell_buf + ebx], 0
-    ; ---- 屏幕上重画:换行 + 提示符 + 已经打进去的整行 ----
+    ; ---- 屏幕上 ----
+    cmp dword [fb_bar_active], 0
+    je .old_repaint
+    call fb_bar_end
+    call ime_erase_echo                 ; 擦掉行尾拼音
+    mov esi, ime_ch
+    call term_print                     ; 原地画出汉字
+    ret
+.old_repaint:
     mov al, 10
     call term_putc
     call shell_print_prompt
     mov esi, shell_buf
     call term_print
 .out:
+    ret
+
+; ---------------------------------------------------------------------------
+;  ime_erase_echo:擦掉命令行末尾的拼音回显(ime_len 个 ASCII 格)
+;   先画空格盖住,再退格把光标移回来
+; ---------------------------------------------------------------------------
+ime_erase_echo:
+    ;   擦掉命令行上回显的拼音(ASCII, 8px 一格):
+    ;   退格本身会把退到的那一格擦成空格, 所以敲 ime_len 个退格就够,
+    ;   光标正好回到拼音开始处, 接着就可以原地写汉字。
+    pushad
+    mov eax, [ime_len]
+    mov [ime_tmp], eax
+.back:
+    cmp dword [ime_tmp], 0
+    jle .out
+    mov al, 8
+    call term_putc
+    dec dword [ime_tmp]
+    jmp .back
+.out:
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  ime_cancel:取消挑候选 —— 收悬浮条、擦拼音回显、清状态
+;              (没有悬浮条时退回老样子:换个行)
+; ---------------------------------------------------------------------------
+ime_cancel:
+    pushad
+    cmp dword [fb_bar_active], 0
+    je .old
+    call fb_bar_end
+    call ime_erase_echo
+    call ime_reset
+    popad
+    ret
+.old:
+    mov al, 10
+    call term_putc
+    call ime_reset
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
+;  ime_abort:放弃当前拼音(切中英/这个音没有候选时用):收条、擦回显、清状态
+; ---------------------------------------------------------------------------
+ime_abort:
+    pushad
+    cmp dword [fb_bar_active], 0
+    je .no_bar
+    call fb_bar_end
+.no_bar:
+    cmp dword [ime_len], 0
+    je .out
+    call ime_erase_echo
+.out:
+    call ime_reset
+    popad
     ret
 
 ; ---------------------------------------------------------------------------
@@ -363,6 +580,12 @@ msg_ime_file    db 'SYS/PINYIN.BIN', 0
 msg_ime_hint    db ' 1-9 pick  space pick first', 0
 msg_ime_page    db '  ,/. page ', 0
 msg_ime_hint_end db ' Esc cancel', 10, 0
+msg_ime_hint_end_bar db ' Esc cancel', 0   ; 悬浮条用:末尾不带换行
+ime_slash       db '/', 0
+ime_row         dd 0                    ; 悬浮条那行的字符行号
+ime_col         dd 0                    ; 画到第几列(会随画随推进)
+ime_pref        times 4 db 0            ; " 1." 前缀
+ime_numbuf      times 8 db 0            ; 页码转十进制用
 
 ime_ok          dd 0
 ime_saved_dir   dd 0

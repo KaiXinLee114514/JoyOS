@@ -512,21 +512,21 @@ shell_readline_resume:
     jmp .next
 
 .ime_none:
+    call ime_abort                      ; 擦掉行尾拼音,免得屏幕残留
     mov al, COL_ERR
     call term_set_color
     mov esi, msg_ime_none
     call term_print
     mov al, COL_NORMAL
     call term_set_color
-    call ime_reset
     jmp .next
 
 .ime_toggle:
+    call ime_abort                      ; 收悬浮条 + 擦掉没上屏的拼音回显
     mov eax, [ime_on]
     xor eax, 1
     mov [ime_on], eax
     mov dword [ime_state], 0
-    call ime_reset
     jmp .next
 
 .ime_picking:
@@ -576,9 +576,8 @@ shell_readline_resume:
     call shell_wait_key
     pop eax
 .ime_cancel:
-    mov al, 10
-    call term_putc
-    call ime_reset
+    call ime_cancel                     ; 收条 + 擦拼音回显(悬浮条不在时内部退化成换行)
+    jmp .ime_pick_done
 .ime_pick_done:
     mov dword [ime_state], 0
     call ime_reset

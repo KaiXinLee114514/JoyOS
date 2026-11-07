@@ -221,6 +221,9 @@ fb_blit:
     mov edi, [fb_lb_base]
     test edi, edi
     jz .vram
+    cmp dword [fb_no_lb], 0             ; 悬浮条等"临时浮层"直接写显存:
+    jne .vram                           ; 不能让浮层内容认领/污染行缓冲
+                                        ; (行缓冲里还存着正在编辑的那一行)
     mov eax, [blit_y]
     shr eax, 4                          ; 目标行号(字符行)
     cmp eax, [fb_lb_row]
@@ -541,6 +544,80 @@ fb_newline:
     ret
 
 ; ---------------------------------------------------------------------------
+;  悬浮条:把屏幕最后一行临时借来画浮层(输入法候选词),画完把这行像素原样还回去
+;
+;  fb_bar_begin:刷行缓冲 → 记下借哪一行(如果当前输入行正好在最后一行,往上借一行,
+;               免得把自己正在敲的命令行糊掉)→ 把这行 16 扫描行的像素存进页池缓冲
+;               → 清黑准备画;CF=1 = 没有备用缓冲(低内存),调用方退回老办法
+;  fb_bar_end:  把借来那一行恢复成原样
+; ---------------------------------------------------------------------------
+fb_bar_begin:
+    pushad
+    cmp dword [fb_bar_base], 0
+    je .fail
+    cmp dword [fb_bar_active], 0
+    jne .clear_only                     ; 已经借出来了(翻页重画):不再保存,清一下重画
+    call fb_flush                       ; 先把脏行落盘,免得保存到半截像素
+    mov eax, [fb_height]
+    and eax, ~(FB_CELL_H - 1)
+    sub eax, FB_CELL_H                  ; 屏幕最后一行(字符行号 = y/16)
+    cmp eax, [fb_cur_y]
+    jne .have_row
+    sub eax, FB_CELL_H                  ; 输入行就在最后一行 → 往上借一行
+.have_row:
+    mov [fb_bar_row], eax
+    ; 保存:16 个扫描行 × pitch 字节
+    mov eax, [fb_bar_row]
+    imul eax, [fb_pitch]
+    mov esi, [fb_phys]
+    add esi, eax
+    mov edi, [fb_bar_base]
+    mov ecx, [fb_pitch]
+    imul ecx, FB_CELL_H
+    shr ecx, 2
+    rep movsd
+    mov dword [fb_bar_active], 1
+.clear_only:
+    ; 清黑借来那一行
+    mov eax, [fb_bar_row]
+    imul eax, [fb_pitch]
+    mov edi, [fb_phys]
+    add edi, eax
+    mov ecx, [fb_pitch]
+    imul ecx, FB_CELL_H
+    shr ecx, 2
+    xor eax, eax
+    rep stosd
+    popad
+    clc
+    ret
+.fail:
+    popad
+    stc
+    ret
+
+; ---------------------------------------------------------------------------
+;  fb_bar_end:把借来那一行像素原样还回去(没借过就什么都不做)
+; ---------------------------------------------------------------------------
+fb_bar_end:
+    pushad
+    cmp dword [fb_bar_active], 0
+    je .out
+    mov edi, [fb_phys]
+    mov eax, [fb_bar_row]
+    imul eax, [fb_pitch]
+    add edi, eax
+    mov esi, [fb_bar_base]
+    mov ecx, [fb_pitch]
+    imul ecx, FB_CELL_H
+    shr ecx, 2
+    rep movsd
+    mov dword [fb_bar_active], 0
+.out:
+    popad
+    ret
+
+; ---------------------------------------------------------------------------
 ;  fb_init:记下参数 + 清屏
 ; ---------------------------------------------------------------------------
 fb_init:
@@ -556,15 +633,23 @@ fb_init:
     mov dword [fb_lb_base], 0
     mov eax, [fb_pitch]
     test eax, eax
-    jz .no_buf
+    jz .no_bar                          ; 没有图形显存 → 行缓冲和悬浮条都用不上
     cmp eax, FB_LINE_PAGES * 4096 / FB_CELL_H   ; 一行 16 个扫描行塞得进 52 KiB?
-    ja .no_buf                                  ; 塞不进(比如 pitch > 3200)→ 不用缓冲
+    ja .no_bar                                  ; 塞不进(比如 pitch > 3200)→ 不用缓冲
     mov ecx, FB_LINE_PAGES
     call pmem_alloc_pages
     test eax, eax
-    jz .no_buf                          ; 页池没页了 → 退回逐字直写,绝不能挂
+    jz .no_lb                           ; 页池没页了 → 退回逐字直写,绝不能挂
     mov [fb_lb_base], eax
-.no_buf:
+.no_lb:
+    ; ---- 悬浮条缓冲:再要 13 页,用来保存"借来画候选词的那一行"像素 ----
+    ;   (输入法候选条会把屏幕最后一行临时借走,画完原样还回去)
+    mov ecx, FB_LINE_PAGES
+    call pmem_alloc_pages
+    test eax, eax
+    jz .no_bar
+    mov [fb_bar_base], eax
+.no_bar:
     call fb_clear
     ret
 
@@ -603,6 +688,11 @@ fb_lb_row       dd -1                   ; 缓冲里装的是第几个字符行;-
 fb_dirty_line   dd 0                    ; 脏标志:1 = 缓冲里有没刷进显存的内容
 fb_lb_x0        dd 800                  ; 脏段左边界(像素,含)
 fb_lb_x1        dd 0                    ; 脏段右边界(像素,不含)
+; ---- 悬浮条(输入法候选等)的记账 ----
+fb_bar_base     dd 0                    ; 悬浮条保存缓冲(页池,13 页);0 = 没要到 → 不用悬浮
+fb_bar_row      dd 0                    ; 借的是哪一行(像素 y)
+fb_bar_active   dd 0                    ; 1 = 当前正借着一行
+fb_no_lb        dd 0                    ; 1 = 下一次 fb_blit 绕开行缓冲直接写显存
 fb_mask8:                           ; 字节 → 8 个像素掩码(0 或 0xFFFFFFFF)
     dd 0, 0, 0, 0, 0, 0, 0, 0
     dd 0, 0, 0, 0, 0, 0, 0, 0xFFFFFFFF
