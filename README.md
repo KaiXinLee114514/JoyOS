@@ -88,6 +88,7 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **ATA 驱动** | 直接操作 `0x1F0~0x1F7` 的 PIO 读写硬盘(分块 + 每扇区等 DRQ + FLUSH CACHE),见 [docs/filesystem.md](docs/filesystem.md) |
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
 | **子目录** | `ls DOCS`、`cat DOCS/NOTE.TXT`、`cd` / `mkdir` / `rmdir` / `rm`、路径里 `/` 和 `\` 都认;子目录里的程序 `run DOCS/HELLO.BIN` 和 `int 0x30` 的读写接口都跟着当前目录走;子目录满了会自动往簇链上接新簇 |
+| **/DEV 设备抽象层** | 「一切皆文件」的最小版:`DEV/` 开头的名字不查磁盘,改查内核设备表 —— `DEV/NULL`(黑洞)/`DEV/ZERO`(零)/`DEV/RANDOM`(伪随机)/`DEV/RTC`(实时时钟)/`DEV/CON`(写屏幕)/`DEV/DEVICES`(列设备);`cat`/`write` 和 `int 0x30` 的读写接口共用同一批 handler,C 程序 `fopen("DEV/RTC")` 直接能读(见 [docs/devices.md](docs/devices.md)) |
 | **跑磁盘上的程序** | `run HELLO`:从磁盘读进来 → 给这个程序**建一套自己的页目录**(私有页,见下) → 切 CR3 → 执行(镜像超 384 KB 直接拒绝),程序用 `int 0x30` 调用内核(见 [docs/programs.md](docs/programs.md)) |
 | **程序接口 15 个功能** | 打印/颜色/收键 + 清屏、读写文件、定位光标、读键事件(方向键)、屏幕尺寸、程序参数、定位画字、**蜂鸣器(14 号 `beep`)** —— 够写全屏程序,还够唱一首 |
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
@@ -221,6 +222,7 @@ kernel/vgafont.asm     文本模式终端分支 + 码位分发(图形模式走 f
 kernel/ata.asm         ATA(IDE)PIO 驱动:读扇区 + 写扇区 + FLUSH CACHE
 kernel/fontdisk.asm    启动时把完整字库从磁盘读进 0x200000(读不到就用内建子集)
 kernel/fat.asm         FAT16/FAT32:挂载(BPB 自动判)/找文件/读/写/删(rm/rmdir)/列目录/子目录
+kernel/dev.asm         /DEV 设备抽象层:设备表 + 名字解析 + 六个虚拟设备(devices.md)
 kernel/api.asm         int 0x30 程序接口(打印字符串/数字/码位、设颜色、等按键)
 kernel/speaker.asm     PC 蜂鸣器:14 号 beep(PIT 通道 2 定音高 + 0x61 开关扬声器,毫秒是忙等估的)
 kernel/shell.asm       shell:行编辑、命令解析、各命令实现
@@ -333,6 +335,8 @@ layout: tramp=0x0017F000 args=0x003AE000 stack=0x003AFFFC
 结果**汉字左右两半反了**(每个字看着像"对折过"的样子)。修法是 `rol ax, 8` 把两个字节换回来。
 
 ## 5. 磁盘:字库、FAT16、跑程序
+
+磁盘之上还有一层很薄的「设备」抽象:`/DEV` 下的名字由内核设备表接管(见 [docs/devices.md](docs/devices.md))。
 
 这一块单独写了一页:**[docs/filesystem.md](docs/filesystem.md)** —— 镜像的 LBA 地图、
 ATA PIO 的寄存器顺序和两个坑、磁盘字库怎么加载、FAT16 的字段和写文件流程、
@@ -1160,8 +1164,10 @@ debug <什么>  诊断/自检类命令都在这条下面(演示命令以前散�
   debug fault        故意踩没映射的地址,看页错误 panic 屏
 reboot        重启(通过 8042 键盘控制器)
 ls            列当前目录(名字 + 字节数;硬盘模式才有;根目录下是八个分类子目录)
-cat <file>    把文件(UTF-8 文本)打出来,中文能直接看
-write <f> <t> 写文件(创建或覆盖,真的落到磁盘上)
+cat <file>    把文件(UTF-8 文本)打出来,中文能直接看;
+              /DEV 下是虚拟设备:cat DEV/RTC 看时间、cat DEV/DEVICES 列设备
+write <f> <t> 写文件(创建或覆盖,真的落到磁盘上);
+              /DEV 下:write DEV/CON hi 打到屏幕、write DEV/NULL 丢进黑洞
 run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不带点会自动补 .BIN;
               裸敲 run 打印接口说明;跑完会报补了多少页:run TOUCH 最能看出来)
 date [fmt]    读 CMOS 时钟:裸 date 打日期+时间+星期,加 ymd / mdy / dmy / time 换格式

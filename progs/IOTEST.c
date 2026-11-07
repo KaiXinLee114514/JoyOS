@@ -27,5 +27,22 @@ int main(void)
     for (i = 0; i < 2000; i++)
         if (b[i] != a[i]) { bad++; if (bad <= 4) printf("mismatch@%d %02x!=%02x\n", i, b[i], a[i]); }
     printf("mismatch=%d\n", bad);
+
+    /* ---- /DEV 设备抽象层:虚拟设备不占磁盘,读写在内存里现做 ---- */
+    {
+        char t[64];
+        memset(t, 0, sizeof t);
+        f = fopen("DEV/RTC", "rb");
+        if (!f) { printf("dev/rtc open fail\n"); return 1; }
+        r = (int)fread(t, 1, sizeof t - 1, f);
+        printf("dev/rtc read=%d [%s]\n", r, t);
+        fclose(f);
+
+        f = fopen("DEV/NULL", "wb");
+        if (!f) { printf("dev/null open fail\n"); return 1; }
+        r = (int)fwrite("discard me", 1, 10, f);
+        printf("dev/null write=%d\n", r);
+        fclose(f);
+    }
     return 0;
 }

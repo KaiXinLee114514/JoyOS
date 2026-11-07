@@ -158,6 +158,10 @@ api_dispatch:
     mov [api_name], esi                 ; 先存原始名字(可能带目录)
     mov [api_buf], edi
     mov [api_max], ecx
+    mov esi, [api_name]                 ; 先问 /DEV:虚拟设备不走磁盘
+    call dev_lookup
+    test eax, eax
+    jnz .read_dev
     mov eax, [fat_dir]                  ; 记下内核当前目录:fat_path 会 chdir 进去,
     mov [api_saved_dir], eax            ; 调完必须还回来(不然程序连存两次会跑错目录)
     mov esi, [api_name]                 ; 支持 DOCS/NOTE.TXT(相对当前目录)
@@ -180,6 +184,17 @@ api_dispatch:
     mov [fat_dir], eax
     pop eax
     ret
+.read_dev:
+    mov edx, [eax + 4]                  ; 设备读函数(0 = 这个设备不可读)
+    test edx, edx
+    jz .read_dev_fail
+    mov edi, [api_buf]
+    mov ecx, [api_max]
+    call edx
+    ret
+.read_dev_fail:
+    mov eax, -1
+    ret
 .read_fail:
     mov eax, [api_saved_dir]            ; 失败也恢复:别把 cwd 留在半路
     mov [fat_dir], eax
@@ -190,6 +205,10 @@ api_dispatch:
     mov [api_name], esi                 ; 同样支持带目录的名字
     mov [api_buf], edi
     mov [api_max], ecx
+    mov esi, [api_name]                 ; 先问 /DEV:虚拟设备不走磁盘
+    call dev_lookup
+    test eax, eax
+    jnz .write_dev
     mov eax, [fat_dir]                  ; 同读文件:记下 cwd,调完还回来
     mov [api_saved_dir], eax
     mov esi, [api_name]
@@ -203,6 +222,17 @@ api_dispatch:
     mov eax, [api_saved_dir]
     mov [fat_dir], eax
     pop eax
+    ret
+.write_dev:
+    mov edx, [eax + 8]                  ; 设备写函数(0 = 这个设备不可写)
+    test edx, edx
+    jz .write_dev_fail
+    mov esi, [api_buf]
+    mov ecx, [api_max]
+    call edx
+    ret
+.write_dev_fail:
+    mov eax, -1
     ret
 .write_fail:
     mov eax, [api_saved_dir]

@@ -987,6 +987,35 @@ def main() -> int:
             results.append(("cat 读得到正文", has("int 0x30"),
                             "README.TXT 里的 int 0x30(接口表)"))
 
+            # ---- /DEV 设备抽象层:虚拟设备不占磁盘,读写在内存里现做 ----
+            run("ls DEV", wait=1.0)
+            results.append(("ls 列 DEV 设备目录",
+                            has("NULL") and has("ZERO") and has("RANDOM")
+                            and has("RTC") and has("CON") and has("DEVICES"),
+                            "NULL / ZERO / RANDOM / RTC / CON / DEVICES"))
+            run("cat DEV/RTC", wait=1.2)
+            results.append(("cat DEV/RTC 读到实时时钟",
+                            re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}",
+                                      "".join(screen_lines())) is not None,
+                            "RTC 直接吐出 YYYY-MM-DD HH:MM:SS"))
+            run("cat DEV/DEVICES", wait=1.0)
+            results.append(("cat DEV/DEVICES 列出设备名",
+                            wait_for("NULL ZERO RANDOM RTC CON DEVICES", 6.0),
+                            "设备表自己报名字"))
+            run("write DEV/NULL discard-me")
+            results.append(("write DEV/NULL 成功丢弃",
+                            has("wrote DEV/NULL"), "写 /dev/null 不落盘"))
+            run("cat DEV/NULL")
+            run("echo after-dev-null")
+            results.append(("cat DEV/NULL 读 0 字节不炸 shell",
+                            wait_for("after-dev-null", 6.0),
+                            "空设备读完,shell 照常执行下一条命令"))
+            run("run iotest", wait=2.5)
+            results.append(("iotest 经 int 0x30 读写设备",
+                            wait_for("dev/rtc read=", 10.0)
+                            and "dev/null write=10" in "".join(screen_lines()),
+                            "minic 的 fopen/fread/fwrite 也能走设备层"))
+
             # 2 KB 中文滚过好几屏之后,屏幕还必须"读得出来" —— 以前这里会花屏
             # (滚屏后文字落不到 16 像素的格子线上,同一屏里出现两种相位)。
             # 拿 uptime 的输出当探针:它只出现在**输出**里,不会跟命令行回显混。

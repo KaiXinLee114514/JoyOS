@@ -1263,6 +1263,11 @@ cmd_cat:
     je cmd_ls.nomount
     mov esi, [cmd_arg]
     call strip_name                    ; 去掉尾巴上的空格
+    ; ---- 先问 /DEV:虚拟设备不占磁盘,读的是内存里现做的数据 ----
+    mov esi, [cmd_arg]
+    call dev_lookup
+    test eax, eax
+    jnz .device
     mov esi, [cmd_arg]
     ; ---- 支持路径:DOCS/NOTE.TXT 这样先把前面的目录一层层进去 ----
     call fat_path
@@ -1293,6 +1298,37 @@ cmd_cat:
     mov al, COL_ERR
     call term_set_color
     mov esi, msg_file_toobig
+    call term_print
+    ret
+.device:
+    ; eax = 设备表项;读函数在 +4
+    mov edx, [eax + 4]
+    test edx, edx
+    jz .dev_noread
+    mov edi, FILE_BUF
+    mov ecx, FILE_MAX
+    call edx                            ; eax = 读到的字节数 / -1
+    cmp eax, -1
+    je .notfound
+    test eax, eax
+    jz .dev_empty                       ; 读了 0 字节(如 /dev/null):什么都不打
+    mov [file_size], eax
+    ; 设备给的是"裸字节",补个 0 再 print,免得把缓冲区里上一次的内容也打出来
+    cmp eax, FILE_MAX
+    jae .dev_print
+    mov byte [FILE_BUF + eax], 0
+.dev_print:
+    mov esi, FILE_BUF
+    call term_print
+    mov al, 10
+    call term_putc
+    ret
+.dev_empty:
+    ret
+.dev_noread:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_dev_noread
     call term_print
     ret
 .notfound:
@@ -1333,6 +1369,10 @@ cmd_write:
     mov edi, esi                        ; 内容是 UTF-8,原样写
     call strlen
     mov ecx, eax
+    mov esi, name_buf                   ; 先问 /DEV:虚拟设备不走磁盘
+    call dev_lookup
+    test eax, eax
+    jnz .device_write
     mov esi, name_buf                   ; 支持子目录路径:先解析 DOCS/ 这样的前缀
     call fat_path                       ; (fat_path 保留 edi/ecx,只改 eax)
     jc .failed
@@ -1340,6 +1380,7 @@ cmd_write:
     call fat_write_file
     cmp eax, -1
     je .failed
+.wrote:
     mov al, COL_OK
     call term_set_color
     mov esi, msg_wrote
@@ -1354,6 +1395,21 @@ cmd_write:
     mov al, COL_ERR
     call term_set_color
     mov esi, msg_write_usage
+    call term_print
+    ret
+.device_write:
+    mov edx, [eax + 8]                  ; 设备写函数在 +8
+    test edx, edx
+    jz .dev_nowrite
+    mov esi, edi                        ; 数据指针(edi 一直是内容开头)
+    call edx                            ; eax = 0 成功 / -1 失败
+    cmp eax, -1
+    je .failed
+    jmp .wrote
+.dev_nowrite:
+    mov al, COL_ERR
+    call term_set_color
+    mov esi, msg_dev_nowrite
     call term_print
     ret
 .failed:
@@ -3032,10 +3088,11 @@ msg_help db \
     'mkdir <d>     create a directory', 10, \
     'rmdir <d>     remove an empty directory', 10, \
     'rm <file>     delete a file (directories: use rmdir)', 10, \
-    'cat <file>    print a text file (UTF-8)', 10, \
-    'write <f> <t> create/overwrite a file', 10, \
+    'cat <file>    print a text file (UTF-8; /DEV: cat DEV/RTC)', 10, \
+    'write <f> <t> create/overwrite a file (/DEV: write DEV/CON hi)', 10, \
     'run <file>    run a program from disk (.BIN; bare "run" = the ABI)', 10, \
-    '              demo texts: cat ZH.TXT / EN.TXT / JPKR.TXT', 10, 0
+    '              devices: cat DEV/DEVICES lists /DEV', 10, \
+    '              demo texts: cat DOCS/ZH.TXT / DOCS/EN.TXT / DOCS/JPKR.TXT', 10, 0
 
 msg_info_head    db '--- KKernel info ---', 10, 0
 msg_info_disk    db 'boot disk   : ', 0
@@ -3136,6 +3193,8 @@ msg_demand_and  db ' + heap ', 0
 msg_demand_first db '), first page ', 0
 msg_space_nomem db 'no free physical pages: cannot build an address space for the program', 10, 0
 msg_file_toobig db 'file too big to print (over 60 KiB)', 10, 0
+msg_dev_noread  db 'device is not readable', 10, 0
+msg_dev_nowrite db 'device is not writable (cat/write 方向不支持)', 10, 0
 
 PROG_ADDR      equ 0x120000             ; 程序加载地址(progs/*.asm 里的 ORG 要和它一致)
 PROG_MAX_SIZE  equ FONT_LOAD_ADDR - PROG_ADDR
