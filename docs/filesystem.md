@@ -43,7 +43,7 @@ BIOS 的软盘读盘路径是另一条测试路线(`make test-fda`)。
 
 * BIOS 只有"读第 N 个扇区"这一种操作,**它不知道什么是文件**;
 * `int 0x13` 是实模式的中断,进了保护模式还得来回切,麻烦;
-* 我们要用硬盘上的字库(1.7 MB),BIOS 一次读的那点量也不合适。
+* 我们要用硬盘上的字库(1.8 MB),BIOS 一次读的那点量也不合适。
 
 所以进保护模式之后直接操作 **ATA 控制器端口**(0x1F0~0x1F7),这条路子叫 PIO
 (Programmed I/O:CPU 一个一个字地把数据搬进来,不用 DMA)。
@@ -103,11 +103,11 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
 
 ## 4. 磁盘字库(`kernel/fontdisk.asm`)
 
-内核区只有 128 KiB(`KERNEL_SECTS = 256`),而完整字库是 **1.7 MB / 40 208 个字形**,
+内核区只有 128 KiB(`KERNEL_SECTS = 256`),而完整字库是 **1.8 MB / 42 112 个字形**,
 不可能 `incbin` 进去。所以:
 
 * `font/font-kkf.bin`(416 字形,约 12 KB)**编进内核**,是保底方案;
-* `font/full-kkf.bin`(40 208 字形)**放在磁盘上**,启动时读进内存。
+* `font/full-kkf.bin`(42 112 字形)**放在磁盘上**,启动时读进内存。
 
 启动流程(`font_load_from_disk`):
 
@@ -124,7 +124,7 @@ ATA_MAX_CHUNK equ 16          ; 块大小:255 是硬件上限,16(=8 KB)实测最
   读进去就能当普通指针用(不用再建映射);
 * **为什么读失败也不慌**:任何一步不对就退回内建子集,系统照常启动 ——
   字库是增强,不是必需品。软盘启动时走的就是这条路;
-* 屏幕上那行 `font: loaded from disk (ATA), 40208 glyphs` 就是证据
+* 屏幕上那行 `font: loaded from disk (ATA), 42112 glyphs` 就是证据
   (`font: built-in subset, 416 glyphs` 说明它退回去了)。
 
 ## 5. FAT16(`kernel/fat.asm`)

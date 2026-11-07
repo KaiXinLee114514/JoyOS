@@ -10,7 +10,7 @@
 ;  pci.asm 把 BAR4 原样记在 [pci_usb_bar](低两位是 I/O 空间标志,要 & 0xFFFC)。
 ;
 ;  ── 内存放哪(任务里写 0x200000,但那里不是空的!)──────────────────────
-;  0x200000 是 fontdisk.asm 的字库(FONT_LOAD_ADDR),启动时 1.7 MB 从磁盘读进来,
+;  0x200000 是 fontdisk.asm 的字库(FONT_LOAD_ADDR),启动时 1.8 MB 从磁盘读进来,
 ;  现在运行时搬到恒等映射顶部(ident-2 MiB);0x3B0000 起是 PINYIN.BIN 的拼音表;
 ;  0x400000 起才是 pmem 的物理页池。所以 USB 的帧列表/QH/TD 放在 **0x3C0000–0x3C1FFF**:
 ;  在拼音表之后、页池之前,恒等映射里,也没有别人用。具体分配见下面的 equ。

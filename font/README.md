@@ -16,6 +16,8 @@ VGA 文本模式字模表。授权见下面的"授权"一节(和仓库根目录�
 | `vga-font.bin` | **生成物**:8192 字节的 VGA 文本模式字模表(256 字符 × 32 字节) |
 | `vga-zh-map.asm` | **生成物**:汉字 → 字模号 映射表(给汇编用) |
 | `vga-zh-strings.asm` | **生成物**:中文文案的码位数组(给汇编用) |
+| `font-kkf.bin` | **生成物**:编进内核的 416 字形子集(文本模式点阵,`KKF0` 格式,16.4 KB) |
+| `full-kkf.bin` | **生成物**:放磁盘上的完整字库(42 112 个字形,1.8 MB,`KKF0` 格式;ASCII/拉丁/希腊/标点/数学/箭头/几何/各类符号 + CJK + 韩文 + 全角 + 部分 emoji) |
 
 重新生成(不需要联网,源就在本目录):
 
@@ -26,8 +28,17 @@ python3 tools/unifont2bin.py --hex font/unifont-subset.hex \
 # 或者: make font
 ```
 
-想用完整的 Unifont(不是子集),去 USTC 镜像下(见下),然后
-`make font UNIFONT_HEX=/path/to/unifont_all-18.0.01.hex`。
+想用完整的 Unifont(不是子集),去 USTC 镜像下(见下),然后:
+
+```bash
+# 重新生成磁盘字库 font/full-kkf.bin(范围表在 Makefile 的 FULL_FONT_RANGES)
+make font-full UNIFONT_FULL=/path/to/unifont_all-18.0.01.hex
+# 或者重新生成内核内置子集
+make font UNIFONT_HEX=/path/to/unifont_all-18.0.01.hex
+```
+
+> 颜文字素材:新加的符号范围(Greek/标点/数学/箭头/几何/符号/dingbats/CJK 兼容形式等)
+> 让 `(・ω・)ﾉ  •ω•  ╯□╰` 这类颜文字都能显示;改范围后重新 `make font-full` 即可。
 
 ## 源数据从哪来
 

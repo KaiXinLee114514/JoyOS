@@ -841,8 +841,9 @@ def main() -> int:
             # 先看开机那几行(还没敲命令,屏幕上一次输出全在)
             results.append(("字库从磁盘加载", has("font: loaded from disk (ATA),"),
                             "font: loaded from disk (ATA), ..."))
-            results.append(("完整字库字数", has("40208 glyphs") and not has("416 glyphs"),
-                            "40208 glyphs(内置子集是 416)"))
+            font_count = int.from_bytes(open(font_path, "rb").read()[8:12], "little")
+            results.append(("完整字库字数", has(f"{font_count} glyphs") and not has("416 glyphs"),
+                            f"{font_count} glyphs(内置子集是 416)"))
 
             if fat32_mode:
                 results.append(("FAT32 自动识别(BPB 的 f16 每 FAT 扇区数 = 0)",

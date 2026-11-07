@@ -29,6 +29,8 @@ NASM    := nasm
 # 字库源:子集(已入库,make font 离线可用)和完整字库(font/.cache/,不入库)
 UNIFONT_HEX ?= font/unifont-subset.hex
 UNIFONT_FULL ?= font/.cache/unifont_all.hex
+# 磁盘字库(完整 Unifont 抽出来的字形范围):ASCII/拉丁/希腊/标点/数学/箭头/几何/各类符号(颜文字素材) + CJK + 韩文 + 全角 + 部分 Emoji
+FULL_FONT_RANGES := 0x20-0x7E,0xA0-0xFF,0x2B0-0x2FF,0x370-0x3FF,0x2000-0x206F,0x2100-0x214F,0x2190-0x21FF,0x2200-0x22FF,0x2300-0x23FF,0x2500-0x257F,0x2580-0x259F,0x25A0-0x25FF,0x2600-0x26FF,0x2700-0x27BF,0x3000-0x30FF,0x3400-0x4DBF,0x4E00-0x9FFF,0xAC00-0xD7AF,0xFE30-0xFE4F,0xFE50-0xFE6F,0xFF00-0xFFEF,0xFFFD-0xFFFD,0x1F300-0x1F64F
 QEMU    := qemu-system-i386
 BUILD   := build
 .DEFAULT_GOAL := all
@@ -114,7 +116,7 @@ VI_OBJS     := $(addprefix $(BUILD)/vi/,$(notdir $(patsubst %.c,%.o,$(wildcard e
 
 PROG_BINS   := $(addprefix $(BUILD)/,$(PROGS) $(C_PROGS))
 
-.PHONY: all run run-font hd hd32 ext ext-img run-ext subset test makefile-check test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check pinyin
+.PHONY: all run run-font font-full hd hd32 ext ext-img run-ext subset test makefile-check test-fda test-hda test-div test-pgfault test-kbd test-shell test-hd-font test-hd32 div font clean lst cc-check pinyin
 
 all: $(IMG) $(HDIMG)
 
@@ -327,6 +329,11 @@ subset: tools/unifont2bin.py font/charset.txt font/charset-cjk.txt font/charset-
 	    echo "    https://mirrors.ustc.edu.cn/gnu/unifont/unifont-18.0.01/unifont_all-18.0.01.hex.gz"; \
 	    echo "  gunzip -c font/.cache/unifont_all.hex.gz > $(UNIFONT_FULL)"; exit 1; }
 	python3 tools/mkfontsubset.py $(UNIFONT_FULL) font/unifont-subset.hex font/charset-all.txt
+
+# 从完整 Unifont .hex 重新生成磁盘字库(需要 font/.cache/unifont_all.hex,见 font/README.md)
+font-full:
+	@test -f $(UNIFONT_FULL) || { echo "缺 $(UNIFONT_FULL) —— 见 font/README.md 的下载说明"; exit 1; }
+	python3 tools/unifont2bin.py --hex $(UNIFONT_FULL) --ranges "$(FULL_FONT_RANGES)" --out font/full-kkf.bin
 
 font: tools/unifont2bin.py font/charset.txt font/strings.txt
 	python3 tools/unifont2bin.py --hex $(UNIFONT_HEX) \
