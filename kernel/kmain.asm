@@ -564,6 +564,9 @@ term_set_color:
 
 ; al = 字符(支持 \n \r \b)
 term_putc:
+    ; ---- 管道捕获:整条链在抓输出时,字符不画屏,原样进管道缓冲 ----
+    cmp dword [pipe_capture_on], 0
+    jne .pipe_cap
     cmp dword [vbe_ok], 0
     jne fb_putc                         ; 图形模式:走帧缓冲终端
     push eax
@@ -605,6 +608,9 @@ term_putc:
     pop edi
     pop ebx
     pop eax
+    ret
+.pipe_cap:
+    call pipe_capture_byte
     ret
 
 ; edi = 光标处的显存地址 = VGA_MEM + 行×160 + 列×2
@@ -830,6 +836,9 @@ term_puts_at:
 ; esi = 以 0 结尾的 **UTF-8** 字符串
 ; (以前是逐字节 lodsb,现在先解码成码位再画 —— 这样中英都走一条路,而且跟外界一致)
 term_print:
+    ; ---- 管道捕获:整串原样存(程序写出来的 UTF-8 字节一个不改) ----
+    cmp dword [pipe_capture_on], 0
+    jne pipe_capture_str
     push eax
     push esi
 .next:

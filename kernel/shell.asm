@@ -741,6 +741,24 @@ shell_wait_key:
 ;  shell_execute:把 shell_buf 切成命令 + 参数
 ; ---------------------------------------------------------------------------
 shell_execute:
+    ; ---- 先扫一眼有没有管道符 '|';有就走管道执行器 ----
+    push esi
+    mov esi, shell_buf
+.pipe_scan:
+    mov al, [esi]
+    test al, al
+    jz .pipe_none
+    cmp al, '|'
+    je .pipe_yes
+    inc esi
+    jmp .pipe_scan
+.pipe_yes:
+    pop esi
+    call shell_pipe_execute
+    ret
+.pipe_none:
+    pop esi
+shell_execute_plain:
     ; ---- 跳过开头的空格 ----
     mov esi, shell_buf
 .skip:
@@ -816,6 +834,239 @@ shell_execute:
     mov al, COL_NORMAL
     call term_set_color
 .ret:
+    ret
+
+; ---------------------------------------------------------------------------
+;  shell_pipe_execute:把 shell_buf 里的 "A | B | C" 拆段顺序执行
+;
+;  语义:生产者程序的输出(API0/1/3/13 + term_print)在管道里被内核捕获成
+;  字节流(pipe.asm 的 pipe_capture_*),跑完后作为下一段的 stdin(程序用
+;  int 0x30 功能 17 读)。KKernel 一次只跑一个程序,不需要并发和等待队列,
+;  但数据语义跟 Unix 管道一致。
+;
+;  限制:最多 4 段;每段可以是内建命令,也可以是 run PROG;
+;        缓冲从页池现借现还(16 页/4 页/1 页逐级降,越多段需要越多块)。
+; ---------------------------------------------------------------------------
+shell_pipe_execute:
+    pushad
+    cmp dword [pipe_buf0], 0
+    jne .busy
+    ; ---- 拆段:按 '|' 切成 0 结尾的段,拷进 pipe_stage_buf ----
+    mov esi, shell_buf
+    mov edi, pipe_stage_buf
+    xor ecx, ecx                        ; ecx = 段数
+.split_skip:
+    cmp byte [esi], ' '                 ; 跳过段首空格
+    jne .split_start
+    inc esi
+    jmp .split_skip
+.split_start:
+    cmp byte [esi], 0
+    je .split_done
+    cmp ecx, 4
+    jae .too_many
+    mov [pipe_stage_ptrs + ecx*4], edi
+    inc ecx
+.split_copy:
+    mov al, [esi]
+    test al, al
+    jz .split_done
+    cmp al, '|'
+    je .split_bar
+    mov [edi], al
+    inc edi
+    inc esi
+    jmp .split_copy
+.split_bar:
+    inc esi
+    ; 去掉段尾空格(否则 cat 的参数会带上尾巴)
+    mov edx, ecx
+    dec edx
+    mov eax, [pipe_stage_ptrs + edx*4]
+.trim_tail:
+    cmp edi, eax
+    jbe .trim_done
+    cmp byte [edi - 1], ' '
+    jne .trim_done
+    dec edi
+    jmp .trim_tail
+.trim_done:
+    mov byte [edi], 0
+    inc edi
+    jmp .split_skip
+.split_done:
+    mov byte [edi], 0
+    mov [pipe_nstage], ecx
+    cmp ecx, 2
+    jb .empty
+    ; ---- 检查空段 ----
+    xor ebx, ebx
+.check_stage:
+    cmp ebx, ecx
+    jae .check_ok
+    mov esi, [pipe_stage_ptrs + ebx*4]
+    cmp byte [esi], 0
+    je .empty
+    inc ebx
+    jmp .check_stage
+.check_ok:
+    ; ---- 借缓冲:16 页(64KB) → 4 页 → 1 页 ----
+    mov ecx, 16
+    call pmem_alloc_pages
+    test eax, eax
+    jnz .got16
+    mov ecx, 4
+    call pmem_alloc_pages
+    test eax, eax
+    jnz .got4
+    mov ecx, 1
+    call pmem_alloc_pages
+    test eax, eax
+    jz .nomem
+    mov dword [pipe_buf_pages], 1
+    jmp .have0
+.got4:
+    mov dword [pipe_buf_pages], 4
+    jmp .have0
+.got16:
+    mov dword [pipe_buf_pages], 16
+.have0:
+    mov [pipe_buf0], eax
+    mov ecx, [pipe_buf_pages]
+    shl ecx, 12
+    mov [pipe_buf_size], ecx
+    ; 三段以上:第二块
+    cmp dword [pipe_nstage], 2
+    jbe .alloc_done
+    mov ecx, [pipe_buf_pages]
+    call pmem_alloc_pages
+    test eax, eax
+    jz .nomem2
+    mov [pipe_buf1], eax
+    jmp .alloc_done
+.nomem2:
+    mov eax, [pipe_buf0]
+    mov ecx, [pipe_buf_pages]
+    call pmem_free_pages
+    mov dword [pipe_buf0], 0
+    jmp .nomem
+.alloc_done:
+    mov dword [pipe_active], 1
+    mov dword [pipe_prev_buf], 0
+    mov dword [pipe_prev_len], 0
+    mov dword [pipe_trunc_any], 0
+    mov dword [pipe_stage_idx], 0
+.stage_loop:
+    mov eax, [pipe_stage_idx]
+    cmp eax, [pipe_nstage]
+    jae .stages_done
+    ; ---- 输入:上一段的输出 ----
+    test eax, eax
+    jz .no_input
+    mov eax, [pipe_prev_buf]
+    mov ecx, [pipe_prev_len]
+    call pipe_in_set
+    jmp .have_input
+.no_input:
+    mov dword [pipe_in_on], 0
+.have_input:
+    ; ---- 输出:不是最后一段就捕获到缓冲 ----
+    mov eax, [pipe_stage_idx]
+    inc eax
+    cmp eax, [pipe_nstage]
+    jae .last_stage
+    mov eax, [pipe_stage_idx]
+    test eax, 1
+    jnz .out_b1
+    mov eax, [pipe_buf0]
+    jmp .out_set
+.out_b1:
+    mov eax, [pipe_buf1]
+.out_set:
+    mov ecx, [pipe_buf_size]
+    call pipe_out_begin
+    jmp .run_stage
+.last_stage:
+    mov dword [pipe_capture_on], 0
+.run_stage:
+    ; ---- 把这一段的文本拷回 shell_buf,走普通命令路径 ----
+    mov eax, [pipe_stage_idx]
+    mov esi, [pipe_stage_ptrs + eax*4]
+    mov edi, shell_buf
+    mov ecx, SHELL_LINE_MAX - 1
+.copy_stage:
+    lodsb
+    stosb
+    test al, al
+    jz .copied
+    dec ecx
+    jnz .copy_stage
+    mov byte [edi], 0
+.copied:
+    call shell_execute_plain            ; ★ 注意:这里会改 ebx/ecx/esi/edi,段号从内存重读
+    ; ---- 收尾本段 ----
+    cmp dword [pipe_capture_on], 0
+    je .next_stage
+    call pipe_out_end                   ; eax = 长度, edx = 1 表示截断
+    mov [pipe_prev_len], eax
+    test edx, edx
+    jz .prev_ok
+    mov dword [pipe_trunc_any], 1
+.prev_ok:
+    mov eax, [pipe_stage_idx]
+    test eax, 1
+    jnz .prev_b1
+    mov eax, [pipe_buf0]
+    jmp .prev_store
+.prev_b1:
+    mov eax, [pipe_buf1]
+.prev_store:
+    mov [pipe_prev_buf], eax
+.next_stage:
+    mov dword [pipe_in_on], 0
+    inc dword [pipe_stage_idx]
+    jmp .stage_loop
+.stages_done:
+    ; ---- 有截断就提示 ----
+    cmp dword [pipe_trunc_any], 0
+    je .free_buffers
+    mov esi, msg_pipe_trunc
+    call term_print
+.free_buffers:
+    mov eax, [pipe_buf0]
+    test eax, eax
+    jz .free1
+    mov ecx, [pipe_buf_pages]
+    call pmem_free_pages
+.free1:
+    mov eax, [pipe_buf1]
+    test eax, eax
+    jz .all_done
+    mov ecx, [pipe_buf_pages]
+    call pmem_free_pages
+.all_done:
+    mov dword [pipe_buf0], 0
+    mov dword [pipe_buf1], 0
+    jmp .reset_and_out
+.empty:
+    mov esi, msg_pipe_empty
+    call term_print
+    jmp .reset_and_out
+.too_many:
+    mov esi, msg_pipe_many
+    call term_print
+    jmp .reset_and_out
+.nomem:
+    mov esi, msg_pipe_nomem
+    call term_print
+    jmp .reset_and_out
+.busy:
+    mov esi, msg_pipe_busy
+    call term_print
+.reset_and_out:
+    mov dword [pipe_active], 0
+    call pipe_reset
+    popad
     ret
 
 ; ---------------------------------------------------------------------------
@@ -1606,6 +1857,9 @@ cmd_run:
     ; 程序马上要跑:把 cwd 还给 shell 的目录(上面找程序可能进过 /BIN 或子目录)
     mov eax, [cmd_saved_dir]
     mov [fat_dir], eax
+    ; ---- 管道里跑:别刷 "running ..." 这类提示,会混进数据流 ----
+    cmp dword [pipe_active], 0
+    jne .pipe_skip_run_msg
     mov al, COL_HEADER
     call term_set_color
     mov esi, msg_running
@@ -1616,6 +1870,7 @@ cmd_run:
     call term_putc
     mov al, COL_NORMAL
     call term_set_color
+.pipe_skip_run_msg:
 
     ; ---- 建一套空地址空间:页目录 + 页表两页,窗口里的页一页都不给 ----
     ; 文件也不往私有页里拷了:程序第一次碰到哪一页,页错误处理才从暂存区
@@ -1629,6 +1884,8 @@ cmd_run:
     jz .nomem
     mov eax, [prog_size]
     call space_set_image                ; 告诉分页层镜像多大(决定 `.bss` 从哪页开始)
+    cmp dword [pipe_active], 0
+    jne .pipe_skip_space_msg
     mov al, COL_HEADER
     call term_set_color
     mov esi, msg_space_head
@@ -1639,6 +1896,7 @@ cmd_run:
     call term_print
     mov al, COL_NORMAL
     call term_set_color
+.pipe_skip_space_msg:
 
     ; ---- 切到程序自己的页目录,iret 进 ring 3 ----
     ;  程序从这之后跑在 CPL=3:看得见的只有这个空间里 U/S=1 的页(镜像 + 堆),
@@ -1679,11 +1937,16 @@ cmd_run:
     jmp .nomem
 .after_prog:                            ; ← run_resume_kernel 从文件末尾跳回这里
 
+    cmp dword [pipe_active], 0
+    jne .ap_quiet                        ; 管道里:收摊信息也静音
     mov al, 10
     call term_putc
+.ap_quiet:
     ; ---- 收摊:按需给出去的页 + 私有页表 + 页目录,全还给页池 ----
     call space_destroy
     mov [space_freed], eax
+    cmp dword [pipe_active], 0
+    jne .ap_quiet2
     mov al, COL_OK
     mov esi, msg_prog_done
     cmp dword [run_status], 0
@@ -1727,6 +1990,7 @@ cmd_run:
     call term_putc
     mov al, COL_NORMAL
     call term_set_color
+.ap_quiet2:
     mov dword [prog_owner], -1          ; 程序跑完了:别的 shell 也能跑了
     mov eax, EV_PROG_EXIT               ; 事件账本:跑完了(附带按需补了几页)
     mov ebx, [space_pf_run]
@@ -3091,6 +3355,9 @@ msg_help db \
     'cat <file>    print a text file (UTF-8; /DEV: cat DEV/RTC)', 10, \
     'write <f> <t> create/overwrite a file (/DEV: write DEV/CON hi)', 10, \
     'run <file>    run a program from disk (.BIN; bare "run" = the ABI)', 10, \
+    'pipe: A | B   把 A 的输出接给 B 的 stdin(最多 4 段;顺序执行)', 10, \
+    '              例: cat DOCS/README.TXT | run WC / ls BIN | run GREP HELLO', 10, \
+    '              工具: WC(数行/词/字节) UPPER GREP <子串> HEAD [行数]', 10, \
     '              devices: cat DEV/DEVICES lists /DEV', 10, \
     '              demo texts: cat DOCS/ZH.TXT / DOCS/EN.TXT / DOCS/JPKR.TXT', 10, 0
 
@@ -3195,6 +3462,24 @@ msg_space_nomem db 'no free physical pages: cannot build an address space for th
 msg_file_toobig db 'file too big to print (over 60 KiB)', 10, 0
 msg_dev_noread  db 'device is not readable', 10, 0
 msg_dev_nowrite db 'device is not writable (cat/write 方向不支持)', 10, 0
+
+; ---- 管道(pipe) ----
+pipe_stage_ptrs times 8 dd 0            ; 每段命令在 pipe_stage_buf 里的起点
+pipe_stage_idx  dd 0                    ; 当前执行到第几段
+pipe_nstage     dd 0                    ; 段数
+pipe_buf0       dd 0                    ; 管道缓冲块 0
+pipe_buf1       dd 0                    ; 管道缓冲块 1(三段以上)
+pipe_buf_pages  dd 0                    ; 每块页数(16/4/1)
+pipe_buf_size   dd 0                    ; 每块字节数
+pipe_prev_buf   dd 0
+pipe_prev_len   dd 0
+pipe_trunc_any  dd 0
+pipe_stage_buf  times 256 db 0          ; 拆出来的各段文本(4 段 × 64B)
+msg_pipe_empty  db 'pipe: empty command in the pipeline', 10, 0
+msg_pipe_many   db 'pipe: too many stages (max 4)', 10, 0
+msg_pipe_nomem  db 'pipe: not enough free pages for pipe buffers', 10, 0
+msg_pipe_trunc  db 'pipe: output truncated (buffer full)', 10, 0
+msg_pipe_busy   db 'pipe: another pipeline is still running', 10, 0
 
 PROG_ADDR      equ 0x120000             ; 程序加载地址(progs/*.asm 里的 ORG 要和它一致)
 PROG_MAX_SIZE  equ FONT_LOAD_ADDR - PROG_ADDR

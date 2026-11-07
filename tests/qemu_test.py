@@ -1016,6 +1016,26 @@ def main() -> int:
                             and "dev/null write=10" in "".join(screen_lines()),
                             "minic 的 fopen/fread/fwrite 也能走设备层"))
 
+            # ---- 管道(pipe):顺序执行;生产者输出被内核捕获进页池缓冲 ----
+            # ---- 再作为消费者 stdin(int 0x30 功能 17) ----
+            run("cat DOCS/README.TXT | run WC", wait=3.0)
+            results.append(("管道 cat | WC",
+                            re.search(r"\d+ lines \d+ words \d+ bytes",
+                                      "".join(screen_lines())) is not None,
+                            "生产者输出经缓冲喂给 WC 数行/词/字节"))
+            run("ls BIN | run GREP HELLO", wait=2.5)
+            results.append(("管道 ls | GREP 过滤",
+                            wait_for("HELLO.BIN 249 bytes", 15.0),
+                            "只保留含 HELLO 的行(GREP 子串匹配)"))
+            run("help | echo pipe-last", wait=1.5)
+            results.append(("管道末段输出照常上屏",
+                            wait_for("pipe-last", 10.0),
+                            "中间段被捕获,最后一段照常打印"))
+            run("help | | run WC", wait=1.5)
+            results.append(("管道空段报错",
+                            wait_for("pipe: empty command", 10.0),
+                            "空段报 pipe: empty command in the pipeline"))
+
             # 2 KB 中文滚过好几屏之后,屏幕还必须"读得出来" —— 以前这里会花屏
             # (滚屏后文字落不到 16 像素的格子线上,同一屏里出现两种相位)。
             # 拿 uptime 的输出当探针:它只出现在**输出**里,不会跟命令行回显混。
@@ -1335,10 +1355,23 @@ def main() -> int:
                             wait_for("running HELLO.BIN", 15.0)
                             and has("program returned to the shell"),
                             "rc.conf 的服务借用 run 那条路跑"))
-            run("rc log", wait=1.2)
-            results.append(("rc log:事件账本(开机/rc.conf/服务)",
-                            wait_for("event log") and has("boot") and has("rc.conf")
-                            and has("service start") and has("service ok"),
+            # 屏幕 37 行,前面用例攒的输出不少;先清屏保证账本整页可见
+            run("clear", wait=0.8)
+            run("rc log", wait=1.5)
+            # 说明:事件账本是环形缓冲,跑过的程序越多前面的 boot/rc.conf 条目
+            # 越可能被挤掉 —— 这里只断言"账本本身在工作"以及最近的服务事件。
+            # 用 OCR 出来的整屏文本比对(像素 find_text 在长行里偶发匹配失败,
+            # 曾经让这台机器上两套套件都误报——功能其实是好的)。
+            loglines = screen_lines()
+            ok_log = "event log" in loglines
+            ok_ss = "service start" in loglines
+            ok_so = "service ok" in loglines
+            ok_t = re.search(r"t=\d+ ", loglines) is not None
+            if not (ok_log and ok_ss and ok_so and ok_t):
+                print(f"[debug rc log] log={ok_log} ss={ok_ss} so={ok_so} t={ok_t}")
+                print(loglines)
+            results.append(("rc log:事件账本(服务/程序事件)",
+                            ok_log and ok_ss and ok_so and ok_t,
                             "带 tick 的事件账本"))
             run('write SYS/RC.CONF hostname="newbox"', wait=1.5)
             run("rc reload", wait=1.5)

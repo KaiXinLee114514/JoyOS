@@ -201,6 +201,18 @@ static inline const char *j_arg(void)
     return p;
 }
 
+/* 17:读 stdin(管道输入)—— 只有出现在 "A | run PROG" 的右半边才有数据;
+ *     普通 run PROG 时返回 0(EOF)。返回读到的字节数(0 = 没有更多数据)。
+ *     edi = 缓冲区,ecx = 最多读多少(内核保证 ecx/edx/edi/ebp 不变) */
+static inline int j_pipe_read(char *buf, int max)
+{
+    int n;
+    __asm__ volatile("int $0x30" : "=a"(n)
+                     : "a"(17), "D"(buf), "c"(max)
+                     : "memory");
+    return n;
+}
+
 /* 13:在指定位置画一串字(不滚屏、不动光标)→ 占了几格 */
 static inline int j_puts_at(const char *s, int row, int col, int maxcells)
 {

@@ -92,6 +92,22 @@ char *strchr(const char *s, int c)
     return (c == 0) ? (char *)s : NULL;
 }
 
+char *strstr(const char *hay, const char *needle)
+{
+    if (!*needle)
+        return (char *)hay;
+    for (; *hay; hay++) {
+        const char *h = hay, *n = needle;
+        while (*h && *n && *h == *n) {
+            h++;
+            n++;
+        }
+        if (!*n)
+            return (char *)hay;
+    }
+    return NULL;
+}
+
 char *strrchr(const char *s, int c)
 {
     const char *last = NULL;

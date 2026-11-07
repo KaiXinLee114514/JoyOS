@@ -89,8 +89,9 @@ python3 tools/text2alt.py --send build/qmp.sock "こんにちは"
 | **FAT16 / FAT32 文件系统** | 按 BPB 自动认 FAT16 还是 FAT32(`make test-hd32` 跑 88 MB 的 FAT32 镜像);挂载 / 找文件 / 读 / **写**(建目录项、分配簇、更新两份 FAT)/ `ls` 列目录 |
 | **子目录** | `ls DOCS`、`cat DOCS/NOTE.TXT`、`cd` / `mkdir` / `rmdir` / `rm`、路径里 `/` 和 `\` 都认;子目录里的程序 `run DOCS/HELLO.BIN` 和 `int 0x30` 的读写接口都跟着当前目录走;子目录满了会自动往簇链上接新簇 |
 | **/DEV 设备抽象层** | 「一切皆文件」的最小版:`DEV/` 开头的名字不查磁盘,改查内核设备表 —— `DEV/NULL`(黑洞)/`DEV/ZERO`(零)/`DEV/RANDOM`(伪随机)/`DEV/RTC`(实时时钟)/`DEV/CON`(写屏幕)/`DEV/DEVICES`(列设备);`cat`/`write` 和 `int 0x30` 的读写接口共用同一批 handler,C 程序 `fopen("DEV/RTC")` 直接能读(见 [docs/devices.md](docs/devices.md)) |
+| **管道(pipe)** | `A | B` 把 A 的屏幕输出接给 B 的 stdin(顺序执行,不需要并发):最多 4 段,缓冲从物理页池现借现还(64 KB/16 KB/4 KB 逐级降,页池不够就报错不崩);内建命令和 `run PROG` 都能当管道段;配 `WC` / `UPPER` / `GREP` / `HEAD` 四个 C 小工具,见 [docs/pipes.md](docs/pipes.md) |
 | **跑磁盘上的程序** | `run HELLO`:从磁盘读进来 → 给这个程序**建一套自己的页目录**(私有页,见下) → 切 CR3 → 执行(镜像超 384 KB 直接拒绝),程序用 `int 0x30` 调用内核(见 [docs/programs.md](docs/programs.md)) |
-| **程序接口 15 个功能** | 打印/颜色/收键 + 清屏、读写文件、定位光标、读键事件(方向键)、屏幕尺寸、程序参数、定位画字、**蜂鸣器(14 号 `beep`)** —— 够写全屏程序,还够唱一首 |
+| **程序接口 17 个功能** | 打印/颜色/收键 + 清屏、读写文件、定位光标、读键事件(方向键)、屏幕尺寸、程序参数、定位画字、**蜂鸣器(14 号 `beep`)**、**读 stdin(17 号 `j_pipe_read`,管道右半边用)** —— 够写全屏程序,还够唱一首 |
 | **组件:计算器** | `run CALC`:`+ - * /`、小数点、平方,自己实现定点小数(6 位小数),除零/溢出都会报错 |
 | **组件:文本编辑器** | `run EDIT [文件名]`:全屏编辑,可见光标(亮绿 `_`)、方向键/Home/End/Delete/PgUp/PgDn、`Ctrl-S` 存盘、`Ctrl-F` 查找(大小写不敏感、找完自动绕回开头,再按一次找下一个)、`Ctrl-Q` 退出 |
 | **组件:蜂鸣器 + 文本谱播放器(不含示例谱,自备谱文件)** | `run PLAY MYSONG.TXT`:PC 喇叭按 FAT 上的**纯文本谱**唱歌(注释、音名 `C4`~`B5` 带 `#`、时值、tempo 都能改);`run PLAY --list` 只解析不出声、把谱子打到屏幕上(可测);内核那头就是 14 号 `beep`,忙等标定见 [kernel/speaker.asm](kernel/speaker.asm)(见 [docs/quickstart.md](docs/quickstart.md)) |
@@ -1170,6 +1171,10 @@ write <f> <t> 写文件(创建或覆盖,真的落到磁盘上);
               /DEV 下:write DEV/CON hi 打到屏幕、write DEV/NULL 丢进黑洞
 run <file>    给程序建一套独立地址空间(按需分页)再跑(名字不带点会自动补 .BIN;
               裸敲 run 打印接口说明;跑完会报补了多少页:run TOUCH 最能看出来)
+A | B         管道(顺序执行,最多 4 段):A 的屏幕输出被内核吃进 64 KB 缓冲,
+              跑完 A 再把缓冲当 B 的 stdin(B 用 int 0x30 功能 17 读,见 docs/pipes.md);
+              例:cat DOCS/README.TXT | run WC / ls BIN | run GREP HELLO
+              管道工具:WC(行/词/字节)、UPPER(转大写)、GREP <子串>、HEAD [行数]
 date [fmt]    读 CMOS 时钟:裸 date 打日期+时间+星期,加 ymd / mdy / dmy / time 换格式
 style [名字]  换提示符样式:plain(朴素 >)/ moe(萌:かいかーねる>,报错带吐槽)/ dos(C:\>)/ c64(READY.);裸 style 看现在用的哪个
 pci [b:s.f]   PCI 总线枚举:裸 pci 列出总线上所有设备,加 0:1.2 这种地址看单台详情
@@ -1433,6 +1438,9 @@ USB 控制器在哪、它的寄存器窗口(那个 I/O BAR)开在哪儿。
 - **多 shell 的下一层**:现在**一次只让一条 shell 跑程序**(地址空间那套状态还是全局的),
   被 `kill` 掉的线程也不会回收地址空间(见 [docs/known-issues.md](docs/known-issues.md) 第 9 节)。
   想让 4 条 shell 同时跑程序,得把 `space_*` 挂到线程上,再给线程加"退出时清理"
+- **真并发管道**:现在是「先跑完 A 再喂 B」的顺序缓冲管道(见 [docs/pipes.md](docs/pipes.md)),
+  缓冲从页池借、跑完就还;要像 Unix 那样边写边读(流式大输出、`tail -f` 那种),
+  得先让调度器能同时跑多个 ring 3 程序(每任务一套地址空间)+ 管道的阻塞/唤醒原语
 - **调度器的下一层**:现在是纯轮转、没有优先级/阻塞唤醒/锁,线程共用一个地址空间,
   也还是内核态;要往"真进程"走就得动 ring 3 + TSS + 每线程一套页目录(上面那条)
 - **闪烁光标**:有定时器就能做(现在光标是常亮的;`pit_irq` 里翻转一下就行)

@@ -127,6 +127,8 @@ api_dispatch:
     je .exit
     cmp eax, 16
     je .meminfo
+    cmp eax, 17
+    je .read_pipe
     ret
 .print_str:
     call term_print
@@ -141,7 +143,13 @@ api_dispatch:
     ret
 .print_cp:
     mov eax, ebx
+    ; ---- 管道捕获:单字码位编成 UTF-8 存进管道,不画屏 ----
+    cmp dword [pipe_capture_on], 0
+    jne .print_cp_pipe
     call term_print_cp
+    ret
+.print_cp_pipe:
+    call pipe_capture_cp
     ret
 .set_color:
     mov al, bl
@@ -200,6 +208,12 @@ api_dispatch:
     mov [fat_dir], eax
     mov eax, -1
     ret
+.read_pipe:
+    ; int 0x30 功能 17:读 stdin(管道输入)
+    ;   edi = 缓冲区,ecx = 最多读多少 → eax = 读到多少(0 = EOF)
+    call pipe_read
+    ret
+
 ; ---- 写文件:esi = 名字,edi = 数据,ecx = 字节数 ----
 .write_file:
     mov [api_name], esi                 ; 同样支持带目录的名字
